@@ -272,6 +272,9 @@ A candidate is valid when `herdr agent get <pane>` passes `agent_ready`, returns
    to pick in the review pane.
 5. None: refuse.
 
+After a Herdr restart every `terminal_id` is new (ADR 0006), so a stored target never matches and step 3
+falls to `cwd`.
+
 The chosen target is written to `meta.json`. The `send` action never has step 1, so it relies on what
 the TUI saved.
 
