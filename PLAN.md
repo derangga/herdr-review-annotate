@@ -533,15 +533,37 @@ Checks:
 Paste mode (`p`), archive (`archive.jsonl`, under the lock), side-by-side view, word diff, syntax
 highlighting behind a cargo feature, Codex and pi, staged and single-commit specs, reviewer agent.
 
-## 11. Open questions
+## 11. Open questions and spike findings
 
 Settled on 2026-10-04 and written into the sections above: the Herdr keys, the keymap file, edit after
 sent, and the agent name.
 
-- `contexts = ["pane"]` on the `send` action is copied from herdr-annotate. Herdr's docs do not define
-  the values (W24). M1 shows whether the action is offered from the review pane.
-- Target platform: `min_herdr_version = "0.9.1"` matches what is installed. Raise it only if M1 finds a
-  bug fixed in a later release.
+Spike findings, all on Herdr 0.9.1 with the plugin linked from this checkout (2026-10-04):
+
+- **`--env` reaches the pane process (W15).** `herdr plugin action invoke open --plugin review`, then
+  `herdr pane read w8D:p4` showed `REVIEW_DELIVER_TO=w8D:p1` and
+  `REVIEW_DELIVER_TERM=term_65cfeec9f35116` among the pane's variables. Both match `herdr pane list`
+  for the agent pane. The pane's own `HERDR_PANE_ID` is its own id (`w8D:p4`), and its
+  `HERDR_PLUGIN_CONTEXT_JSON` holds the agent pane as `focused_pane_id`, with
+  `invocation_source: "api"`. The plan holds.
+- **The `send` action runs from the review pane, and its context names the review pane (W24).** With the
+  review pane focused, `herdr plugin action invoke send --plugin review` was accepted and started the
+  command. Its context had `focused_pane_id` = the review pane (`w8D:p6`), `focused_pane_status:
+  "unknown"` and no `focused_pane_agent`. So from the review pane the action never sees the agent
+  pane, and section 6.2 step 2 (`meta.json`) is what finds it, as the plan says. Not tested: whether
+  Herdr's command palette or key handler offers a `contexts = ["pane"]` action in the review pane.
+  `action invoke` is the only path the CLI exposes. Check it by hand once `prefix+shift+i` is bound.
+- **`prefix+i` and `prefix+shift+i` bind without a warning.** `herdr config check` on a copy of the
+  user's `config.toml` with these two entries appended (`XDG_CONFIG_HOME=/tmp/hc herdr config check`)
+  printed `config: ok`. A control entry on `prefix+a`, which the config already binds, printed
+  `prefix+a: kept keys.command[4].key, disabled keys.command[9].key`, and an invalid key printed
+  `invalid keybinding`. So `check` does report duplicates between custom commands. It printed `ok` for a
+  `plugin_action` on `prefix+r`, which W3 says is a default, so it does not report a clash with a built-in.
+  It also printed `ok` for `command = "review.nosuch"`, so it does not check that the action exists.
+  The user's `config.toml` is a read-only link into the Nix store, so the keys were not added to it.
+
+- Target platform: `min_herdr_version = "0.9.1"` matches what is installed. Raise it only if a later
+  spike finds a bug fixed in a later release. None has.
 
 ## 12. Design pass
 
