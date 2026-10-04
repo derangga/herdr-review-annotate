@@ -24,6 +24,14 @@ sent to anyway and the TUI says the comments are queued.
 - A comment is marked `sent` after Herdr accepts the prompt. Herdr accepting it does not prove the
   agent read it. If the TUI dies between the two steps the next send repeats the batch. Delivery is
   at-least-once, and the TUI has a resend key for comments that were sent and never handled.
-- What Claude Code does with a prompt that arrives during a turn is not documented by Herdr and has
-  not been tested. Milestone 1 tests it before anything is built on it.
+- Claude Code queues a prompt that arrives during a turn. Tested on 2026-10-04 with Claude Code 2.1.285 and
+  Herdr 0.9.1, by running `spike-send` while the agent was `working` through a 250-line answer:
+  - The prompt appeared under the running turn as a queued message ("ctrl+enter to send now",
+    "Press up to edit queued messages"). The agent stayed `working`.
+  - When the turn finished, Claude Code submitted the queued prompt as its own next turn and
+    answered it. Nothing was merged into the running turn.
+  - With the user pressing Esc while the prompt was queued, Claude Code printed "Interrupted",
+    stopped the running turn, and then submitted the queued prompt as the next turn. The prompt was
+    not lost and not returned to the input box.
+  - Not tested: editing the queued message with the up key. A comment batch edited there would reach the agent changed, and the `sent` event would not show it.
 - The first pass covers Claude Code only. Codex and pi are checked afterwards.
