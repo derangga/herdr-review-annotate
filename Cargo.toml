@@ -1,0 +1,48 @@
+[package]
+name = "herdr-review"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Review a diff in a Herdr pane and send the comments to an agent."
+publish = false
+
+[[bin]]
+name = "herdr-review"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+indexing_slicing = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+too_many_arguments = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+lto = "thin"
+strip = true

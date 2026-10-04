@@ -1,0 +1,27 @@
+id = "review"
+name = "Review"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Review a diff in a pane and send the comments to an agent."
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["bash", "scripts/fetch-herdr-review.sh"]
+
+[[actions]]
+id = "open"
+title = "Review: open diff"
+contexts = ["workspace", "pane"]
+command = ["./bin/herdr-review", "open"]
+
+[[actions]]
+id = "send"
+title = "Review: send comments to agent"
+contexts = ["pane"]
+command = ["./bin/herdr-review", "send"]
+
+[[panes]]
+id = "tui"
+title = "Review"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-review\" tui"]

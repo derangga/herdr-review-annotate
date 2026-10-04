@@ -5,3 +5,7 @@
 
 # Beads runtime lock
 /.beads.gate.lock
+
+# Build output and the staged binary
+/target/
+/bin/
