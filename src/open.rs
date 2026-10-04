@@ -1,18 +1,20 @@
 //! The `open` action: put the review pane to the right of the agent pane.
 
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 use serde_json::Value;
 
+use crate::herdr::{notify, run_herdr_output};
+
 /// What the action context says about the pane the user was in.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Context {
-    pane: Option<String>,
-    cwd: Option<PathBuf>,
+pub struct Context {
+    pub pane: Option<String>,
+    pub cwd: Option<PathBuf>,
 }
 
-fn parse_context(json: Option<&str>) -> Context {
+pub fn parse_context(json: Option<&str>) -> Context {
     let value = json.and_then(|json| serde_json::from_str::<Value>(json).ok());
     let field = |name: &str| {
         value
@@ -64,24 +66,6 @@ fn pane_open_args(root: &str, pane: Option<&str>, terminal: Option<&str>) -> Vec
     args
 }
 
-fn herdr(args: &[String]) -> Result<String, String> {
-    let binary = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let output = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("cannot run herdr: {error}"))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if stderr.is_empty() {
-        "herdr failed".to_owned()
-    } else {
-        stderr
-    })
-}
-
 fn open(
     context: &Context,
     cwd: PathBuf,
@@ -103,18 +87,14 @@ fn open(
     .map(drop)
 }
 
-pub(crate) fn run() -> ExitCode {
+pub fn run() -> ExitCode {
     let context = parse_context(std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok().as_deref());
     let cwd = std::env::current_dir().unwrap_or_default();
-    match open(&context, cwd, herdr) {
+    match open(&context, cwd, run_herdr_output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             // An action has no terminal, so the failure goes to a notification.
-            let _ = herdr(&[
-                "notification".into(),
-                "show".into(),
-                format!("review: {message}"),
-            ]);
+            notify(&format!("review: {message}"), None);
             ExitCode::FAILURE
         }
     }

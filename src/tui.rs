@@ -20,7 +20,7 @@ fn report(
     writeln!(out, "\npress any key to close")
 }
 
-pub(crate) fn run() -> ExitCode {
+pub fn run() -> ExitCode {
     let mut out = std::io::stdout().lock();
     if report(&mut out, std::env::vars())
         .and_then(|()| out.flush())

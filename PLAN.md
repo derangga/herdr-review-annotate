@@ -36,6 +36,8 @@ herdr-review/
   Cargo.toml
   src/
     main.rs            argument parsing and dispatch
+    lib.rs             module list, so the copied files keep their `pub` items
+    open.rs            the `open` action
     store.rs           event log: lock, append, read, fold
     diff.rs            git runner, unified diff parser, anchor matching
     send.rs            prompt format, target resolution, mark sent

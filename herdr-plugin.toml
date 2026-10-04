@@ -25,3 +25,9 @@ id = "tui"
 title = "Review"
 placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-review\" tui"]
+
+[[actions]]
+id = "spike-send"
+title = "Review: spike, send a fixed prompt"
+contexts = ["pane"]
+command = ["./bin/herdr-review", "spike-send"]
