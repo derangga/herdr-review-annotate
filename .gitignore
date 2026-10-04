@@ -1,0 +1,7 @@
+# Reference clones, read-only, each is its own git repository
+/herdr-annotate/
+/hunk/
+/zeron/
+
+# Beads runtime lock
+/.beads.gate.lock

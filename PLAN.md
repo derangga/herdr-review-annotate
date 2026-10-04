@@ -1,0 +1,869 @@
+# herdr-review: technical implementation plan
+
+Date: 2026-10-04. Sources: `RESEARCH.md` (design and the 16 decisions), `RESEARCH.review.md` (the fixes
+referenced below as B1 to B4, G1 to G20, W1 to W24), `docs/adr/` (the decisions that are hard to
+reverse), `CONTEXT.md` (terms).
+
+Where this plan and `RESEARCH.md` disagree, this plan wins. Section 9 lists every difference.
+Section 12 is the design pass: the types, the call graph of every operation, how each step fails, and
+what each step needs. Read it before writing code for a milestone.
+
+## 1. Scope of v1
+
+The core loop, and nothing else:
+
+1. The user opens a review pane beside the agent and reads the diff.
+2. The user comments on a line, a range, or a file.
+3. One key sends the unsent comments to the agent.
+4. The agent fixes, then replies and resolves through the CLI.
+5. The user sees the replies and resolved marks without restarting the pane.
+6. The agent can also start a review by adding its own comments and opening the pane.
+
+In v1: both diff specs, replies, resolve and reopen by either side, the `new` marker, the `outdated`
+tag, resend, the quit prompt, edit and delete of your own comments.
+
+After v1, in this order: paste mode, archive, side-by-side view, word-level diff, syntax highlighting,
+Codex and pi, staged and single-commit specs, a reviewer agent.
+
+Not planned: daemon, file watcher, outbox file, startup hook, generated skill, highlight marks, markup,
+agent-driven navigation.
+
+## 2. Repository layout
+
+```
+herdr-review/
+  herdr-plugin.toml
+  Cargo.toml
+  src/
+    main.rs            argument parsing and dispatch
+    store.rs           event log: lock, append, read, fold
+    diff.rs            git runner, unified diff parser, anchor matching
+    send.rs            prompt format, target resolution, mark sent
+    tui.rs             review pane: layout, render, actions
+    keymap.rs          default keys, config.toml overrides, key parsing
+    editor.rs          multi-line comment editor   (adapted from herdr-annotate)
+    edit_keys.rs       editor key map              (copied)
+    width.rs           display width helpers       (copied)
+    agent_delivery.rs  readiness check and prompt  (copied, see 2.1)
+    herdr.rs           herdr CLI wrapper           (copied)
+  skills/herdr-review/SKILL.md
+  scripts/fetch-herdr-review.sh   prebuilt binary and SHA-256, for `plugin install`
+  scripts/stage-local.sh          build and stage, for `plugin link`
+  tests/fixtures/*.patch
+  .github/workflows/ci.yml, release.yml
+```
+
+Dependencies: `ratatui` 0.30 (brings crossterm), `serde`, `serde_json`, `toml` (for the keymap file,
+section 7.1), `chrono` with the `clock` feature. On Unix, `signal-hook` for clean terminal restore. No `uuid`, `notify`, `tokio`, `similar`,
+`rustix` or git library in v1. Lints and the release profile are copied from
+`herdr-annotate/rust/Cargo.toml`. `rust-version` is 1.89 or newer, for `std::fs::File::lock`.
+
+### 2.1 What is copied from herdr-annotate, and what changes
+
+| File | Change |
+|---|---|
+| `agent_delivery.rs` | Reword "annotations" and "focused pane" in the messages (`:73-75`, `:149`). Drop the five tests that import `archive_workflow` and `types::Annotation` (`:450-559`). Drop `Delivery::Paste` until paste mode is built. |
+| `herdr.rs` | None. |
+| `edit_keys.rs`, `width.rs` | None. |
+| `termination.rs` | None. The TUI loop checks its flag on every tick (section 12.4). |
+| `editor.rs` | Keep the text buffer, cursor and key handling. Remove the popup frame, the store calls and the invocation context (`:16-26`). It becomes a widget the TUI draws inline. |
+| `format.rs` | Copy only `sanitize_terminal_text` (`:7-21`) into `tui.rs`. |
+| `store.rs` | Not copied (ADR 0002). |
+
+## 3. Data
+
+### 3.1 Files
+
+State directory: `${XDG_STATE_HOME:-~/.local/state}/herdr-review/<hash>/`, where `<hash>` is
+`std::hash::DefaultHasher` over the canonical root path, printed as hex. The standard library hasher
+avoids a SHA dependency. The directory is created with mode `0700` and files with `0600`.
+
+| File | Content |
+|---|---|
+| `review.jsonl` | Events, one JSON object per line |
+| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id` |
+| `lock` | Empty. Target of the exclusive lock |
+
+`DefaultHasher` output is not guaranteed stable across Rust releases. `meta.json` stores `root`, so on
+a miss the binary scans the sibling directories for a matching `root` before creating a new one.
+
+### 3.2 Events
+
+Every event has `kind`, `at` (RFC 3339, display only) and `by` (`user`, `agent:<name>`, or plain
+`agent` when the name is unknown, see section 5).
+
+| `kind` | Other fields |
+|---|---|
+| `add` | `id`, `parent` (replies only), `path`, `old_path`, `side`, `line`, `end_line`, `line_text`, `spec`, `body`. A file comment has no `side`, `line` or `line_text`. A reply has only `id`, `parent`, `body`. |
+| `edit` | `id`, `body` |
+| `delete` | `id` |
+| `resolve` | `id` (a root) |
+| `reopen` | `id` (a root) |
+| `sent` | `ids`, `batch` |
+| `seen` | `id` (a root) |
+
+Fold rules:
+
+- Events apply in file order. An event that names an unknown id, or breaks the rights rule (ADR 0004),
+  is skipped.
+- A thread is unsent when its root or any reply by the user has no `sent` event, or when a `reopen` by
+  the user comes after its last `sent`.
+- An `edit` never makes a comment unsent. A user comment with an `edit` after its last `sent` is
+  "edited since sent". The card shows that mark, and the agent sees the new text only on a resend.
+- A thread is `new` when its last `resolve` is by an agent and no `seen` follows it.
+- Deleting a root deletes its thread.
+
+### 3.3 Writing
+
+Every mutation is one call, `store::write(dir, now, build)`. It opens `lock` and tries
+`File::try_lock` every 50 ms for up to 2 seconds, then gives up with `Busy`. Under the lock it reads
+and folds `review.jsonl`, calls `build` with the folded review to validate the request and produce the
+events, writes all lines with one `write_all` on an `O_APPEND` handle, and drops the lock. Ids (`u<n>`
+for the user, `a<n>` for agents, `b<n>` for send batches) are the highest counter in the folded review
+plus one. Section 12.4 has the graph.
+
+### 3.4 Reading
+
+Read the whole file and fold. Ignore a final line with no newline. Skip a line that does not parse and
+count it, so the TUI can show "1 unreadable event". The TUI keeps the byte offset it has read to and
+checks the file length every 250 ms on its input poll timeout. A shorter file means it was rewritten,
+so it reads from the start.
+
+## 4. Diff
+
+### 4.1 Commands
+
+Every `git` call runs with `GIT_OPTIONAL_LOCKS=0` in its environment, so the pane never takes
+`index.lock` while the agent runs its own `git` commands.
+
+Common flags, written as `GIT` below:
+`git -C <root> -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -M -U3`
+
+| Spec | Command |
+|---|---|
+| Working tree | `GIT HEAD`, then `git ls-files --others --exclude-standard -z` |
+| Branch | `GIT $(git merge-base <base> HEAD)`, then the same `ls-files` |
+
+Default base: `origin/HEAD` if it resolves, else `main`, else `master`. `open --base <ref>` overrides
+it and the choice is saved in `meta.json`.
+
+### 4.2 Cases the pipeline must handle
+
+| Case | Behaviour |
+|---|---|
+| Not a git repository | `open` shows a Herdr notification and exits non-zero |
+| No commits (`HEAD` missing) | Diff against the empty tree, `git hash-object -t tree /dev/null` |
+| Base missing | Message in the pane, working-tree spec offered |
+| Empty diff | Message in the pane. Comments not in the diff are still listed |
+| Untracked file | Stat first. Over 1 MiB or containing a NUL byte: listed, not rendered. Otherwise rendered as all-added lines |
+| Binary file | Listed with a "binary" row. File comments allowed |
+| Total patch over 3 MiB | Files past the cap are listed and collapsed |
+| Rename with edits | `old_path` from `rename from`. An old-side comment cites `old_path` (zeron's `cite_path`) |
+| Submodule | One row with the two commit ids |
+| CRLF | `\r` stripped for display and for anchor comparison |
+| Deleted then recreated | Whatever `git` reports. No special handling |
+
+### 4.3 Anchor matching (ADR 0008)
+
+For each root comment whose `spec` equals the current spec:
+
+1. Same path, side and line, and the line text is equal: matched.
+2. Else the nearest row in that file's hunks, on that side, with equal text: matched at the new line.
+3. Else, if the file is in the diff: outdated, drawn at the stored line or the closest hunk.
+4. Else: listed in "comments not in this diff".
+
+Comments written against the other spec go to the same list. Ranges match on their first line.
+
+### 4.4 Reload
+
+The diff reloads when the store changes (the agent replying is the moment its fix landed), when the
+user presses `R`, and when the pane regains focus. It never reloads while the editor is open.
+
+## 5. Command line
+
+```
+herdr-review tui    [--repo <root>]
+herdr-review open   [--repo <root>] [--base <ref>]
+herdr-review send   [--repo <root>] [--all-open]
+herdr-review comment apply   [--repo <root>] [--name <agent>] --stdin
+herdr-review comment list    [--repo <root>] [--status open|resolved] [--author user|agent] [--json]
+herdr-review comment reply   [--repo <root>] [--name <agent>] <id> -
+herdr-review comment resolve [--repo <root>] [--name <agent>] <id> --reply -
+herdr-review comment reopen  [--repo <root>] <id>
+```
+
+- `--repo` defaults to `git rev-parse --show-toplevel` of the current directory. Sent prompts always
+  include it, because an agent's `cwd` can be a parent of the repository.
+- `-` reads the text from stdin. There is no form that takes the text as an argument, so shell
+  substitution in agent text cannot run (G8).
+- `comment apply` reads `{"comments":[{"path","side","line","end_line","body"} | {"reply_to","body"}]}`
+  and validates the whole batch before writing. Limits are in section 12.2.
+- The CLI reads the anchored line's text itself: from the worktree file for the new side, from
+  `git show <base>:<path>` for the old side. A line that does not exist rejects the batch.
+- `resolve` on a resolved thread and `reopen` on an open thread exit 0 and write nothing.
+- Exit codes: 0 done, 1 failed and worth retrying later (busy, disk, git), 2 the request is wrong
+  (usage, unknown id, not allowed, invalid batch).
+- Everything the `comment` subcommands write is authored by an agent. The user writes through the TUI.
+- Agent name: `--name` wins. Otherwise the CLI runs `herdr agent list` and takes the `agent` field of
+  the entry whose `pane_id` is `$HERDR_PANE_ID`, or else of the single entry whose `cwd` matches the
+  current directory, and writes `agent:<name>`. Outside Herdr, or with no single match, it writes
+  `agent`. A failed Herdr call never fails the command.
+- A wrong id prints the open ids (G7). Every failure prints one line on stderr.
+- `comment apply` ends with `herdr notification show "N review comments from <name>"`.
+
+`open`:
+
+1. Find the root. From an action, use `focused_pane_cwd` in `HERDR_PLUGIN_CONTEXT_JSON`. From an
+   agent's shell, use the current directory.
+2. Find the agent pane: the focused pane when it hosts an agent, else `$HERDR_PANE_ID` when
+   `herdr agent get` accepts it, else resolution as in 6.2.
+3. If `meta.json` has a `review_pane_id` that still exists, run `herdr plugin pane focus <id>` and stop
+   (G13).
+4. Otherwise run `herdr plugin pane open --plugin review --entrypoint tui --placement split
+   --direction right --target-pane <agent pane> --cwd <root> --env REVIEW_DELIVER_TO=<pane id>
+   --env REVIEW_DELIVER_TERM=<terminal id> --focus`.
+
+The TUI writes its own `HERDR_PANE_ID` to `meta.json` as `review_pane_id` when it starts.
+
+## 6. Send
+
+### 6.1 Prompt
+
+```
+Address the review comments below. For each one: make the change, then resolve it with a one-line
+reply. If you disagree or are unsure, reply and leave it open.
+
+Resolve:
+'<bin>' comment resolve --repo '<root>' <id> --reply - <<'EOF'
+<one line>
+EOF
+Reply without resolving:
+'<bin>' comment reply --repo '<root>' <id> - <<'EOF'
+<text>
+EOF
+
+Comments on the diff (L = line in the original file, R = in the changed file):
+- [u7] src/lib.rs:42 (R): body text
+  more lines indented by two spaces
+- [u8] src/lib.rs:50-57 (R): comment on a range
+- [u9] src/store.rs (file): comment on the whole file
+- [u3] src/cli.rs:10 (R), reopened: the original comment
+  > agent: Added with_capacity
+  > user: still allocates twice
+- [a2] src/cli.rs:88 (R), your comment: the agent's comment, first line only
+  > user: reply text
+```
+
+`<bin>` is `$HERDR_PLUGIN_ROOT/bin/herdr-review`. Both paths are single-quoted with `'` escaped.
+`send` and the TUI both run as Herdr plugin commands, so the variable is always set.
+
+### 6.2 Target resolution (ADR 0006)
+
+A candidate is valid when `herdr agent get <pane>` passes `agent_ready`, returns the stored
+`terminal_id`, and has a `cwd` equal to the root, inside it, or an ancestor of it.
+
+1. `REVIEW_DELIVER_TO` and `REVIEW_DELIVER_TERM` from the pane's environment. Only the TUI has these.
+2. `target` in `meta.json`.
+3. `herdr agent list`: the agent with the stored `terminal_id`, else agents whose `cwd` is the root or
+   inside it, else a single agent in the workspace whose `cwd` is an ancestor of the root.
+4. Several matches: the TUI shows a picker. The `send` action sends a notification that asks the user
+   to pick in the review pane.
+5. None: refuse.
+
+The chosen target is written to `meta.json`. The `send` action never has step 1, so it relies on what
+the TUI saved.
+
+### 6.3 Steps
+
+1. Collect unsent threads. With `--all-open` or the resend key, collect the chosen open threads too.
+2. None: say "nothing to send".
+3. Resolve the target. Call `deliver_to_agent(Delivery::Send, pane, text, run_herdr_output)`.
+4. On refusal, show the reason in the TUI and as a notification. Nothing is marked.
+5. On success, append one `sent` event with the ids and a batch id, then show `sent N to <agent>`, or
+   `agent is working, N comments queued` when the status was `working`.
+
+## 7. TUI
+
+One thread, one loop: `event::poll(250 ms)`, then the store length check. Layout as in section 4.5 of
+`RESEARCH.md`: file sidebar, one stream of all files, comment cards under their lines, unified view
+only in v1.
+
+| Action name | Default keys | What it does |
+|---|---|---|
+| `up`, `down` | `k` `up`, `j` `down` | Move the cursor one row |
+| `page_up`, `page_down` | `pageup`, `pagedown` | Scroll one page |
+| `prev_hunk`, `next_hunk` | `[`, `]` | Previous or next hunk |
+| `prev_thread`, `next_thread` | `shift+n`, `n` | Previous or next thread |
+| `switch_panel` | `tab` | Switch between sidebar and stream |
+| `comment` | `c` | Comment on the line, the selected range, or the file when the cursor is on a file header |
+| `select_range` | `v` | Start a range |
+| `reply` | `r` | Reply to the focused thread |
+| `edit`, `delete` | `e`, `d` | Edit or delete your own focused comment |
+| `resolve` | `x` | Resolve or reopen the focused thread |
+| `send` | `shift+s` | Send unsent |
+| `resend` | `s` | Resend the focused thread |
+| `reload` | `shift+r` | Reload the diff |
+| `switch_spec` | `b` | Switch diff spec |
+| `help` | `?` | Show every action with its current keys |
+| `quit` | `q` | Quit. With unsent comments, ask send, keep, or stay |
+
+The mouse wheel scrolls and a click moves the cursor. These are not remappable.
+
+### 7.1 Keymap file
+
+The user can change any key in the table. The file is `config.toml` in the plugin config directory
+(`HERDR_PLUGIN_CONFIG_DIR`, printed by `herdr plugin config-dir review`). In v1 it holds only `[keys]`.
+
+```toml
+[keys]
+send = "ctrl+s"                 # one key
+next_hunk = ["]", "ctrl+n"]     # several keys
+switch_spec = ""                # unbound
+```
+
+- Key spelling follows Herdr's config: `ctrl+`, `shift+`, `alt+` and named keys such as `enter`, `tab`,
+  `pageup`. `shift+s` and `S` mean the same key.
+- An action that is not listed keeps its default keys.
+- When a configured key is also another action's default, the configured binding wins and the other
+  action loses that key. The pane shows one warning line that names each action left with no key.
+- An unknown action name or a key that does not parse is skipped with a warning. A file that is not
+  valid TOML is ignored as a whole with a warning. The pane always starts.
+- The file is read once when the pane starts. The footer and the `help` overlay are drawn from the
+  effective keymap, never from hard-coded text.
+- Keys inside the comment editor (cursor movement, save, cancel) are not in `[keys]`. They stay as
+  `edit_keys.rs` defines them.
+- The agent CLI, `open` and `send` do not read the file.
+
+### 7.2 Rules
+
+- Every string from the store or from `git` passes through `sanitize_terminal_text` before it is drawn.
+- `c` captures the anchor when it is pressed. The diff is frozen while the editor is open (G16).
+- A thread is marked seen, with one `seen` event, when the cursor lands on it while it is `new`.
+- The `outdated` tag is drawn on open threads only.
+- The status line shows `S send 3 > claude w1:p2`. The target is resolved at start and after each
+  send, not on every frame.
+- Rendering builds rows for the visible window only. Each file keeps its row count so scrolling does
+  not lay out files that are off screen.
+
+## 8. Plugin manifest and skill
+
+```toml
+id = "review"
+name = "Review"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["bash", "scripts/fetch-herdr-review.sh"]
+
+[[actions]]
+id = "open"
+title = "Review: open diff"
+contexts = ["workspace", "pane"]
+command = ["./bin/herdr-review", "open"]
+
+[[actions]]
+id = "send"
+title = "Review: send comments to agent"
+contexts = ["pane"]
+command = ["./bin/herdr-review", "send"]
+
+[[panes]]
+id = "tui"
+title = "Review"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-review\" tui"]
+```
+
+Herdr keys. `prefix+r` and `prefix+shift+r` are Herdr's defaults for resize mode and reload config
+(W3), so they replace decision 12's keys. The README suggests `prefix+i` to open and `prefix+shift+i`
+to send (decided 2026-10-04). Neither is in `herdr --default-config`, the user's `config.toml`, or the
+herdr-annotate README. These bindings live in the user's own Herdr `config.toml` as `plugin_action`
+entries, so the user can pick any other key there.
+
+`skills/herdr-review/SKILL.md` is a static file. It says:
+
+- Use it only when `HERDR_ENV=1`.
+- Find the binary: `herdr plugin list --plugin review --json`, field `plugin_root`, plus
+  `/bin/herdr-review`. Read it each time, do not remember it (ADR 0005).
+- When a prompt lists review comments, follow the commands in that prompt.
+- To review your own changes: pipe a JSON batch to `comment apply --stdin`, run `open`, then end the
+  turn. The user's replies arrive as the next message.
+
+Install: `plugin install` runs the fetch script. `plugin link` does not, so `stage-local.sh` builds and
+copies the binary to `bin/`. On this machine plugins are linked from the Nix store, so the Nix package
+must build the binary itself.
+
+## 9. Differences from RESEARCH.md
+
+| RESEARCH.md | This plan | Reason |
+|---|---|---|
+| Copy `store.rs`, `flock` | New store with `File::lock` | B2, ADR 0002 |
+| `notify` on the review file and the worktree | Length check on the poll timeout, reload on store change | G15 |
+| `startup` hook, `binary-path` file, `skill` subcommand | `herdr plugin list --json`, static skill | B1, ADR 0005 |
+| Pane id as target | Pane id plus `terminal_id`, checked before send | B3, ADR 0006 |
+| `base...HEAD` | Working tree against the merge base | B4, ADR 0007 |
+| Anchor hash | Line text | G2, ADR 0008 |
+| Cards only under diff lines | Plus a "comments not in this diff" block | B4 |
+| Short random ids `u-7f3a` | Counters `u7` | G6 |
+| `comment reply <id> "<text>"`, then `resolve` | Text from stdin, `resolve --reply -` | G8, G20 |
+| Reopen is the only way to send again | Resend key and `--all-open` | G1 |
+| Outbox file over 8 KB | Removed | Untested guess. Herdr rejects oversized pastes itself |
+| `context`, `files`, `comment add`, `rm`, `clear`, `archive` | Removed or deferred | Not needed for the core loop |
+| `r` for reload and reply | `R` reload, `r` reply | Key conflict |
+| `prefix+r`, `prefix+shift+r` | `prefix+i`, `prefix+shift+i` | W3, decided |
+| Fixed keys in the pane | `[keys]` in `config.toml` | Decided: the user can remap review actions |
+| Config setting for placement | Not in v1, the config holds keys only | Decided |
+| Edit after sent: open question | Stays sent, marked "edited since sent", resend by hand | Decided |
+| `agent:<name>` from an unspecified source | Auto-detect through `herdr agent list`, `--name` overrides | Decided |
+| Paste mode and archive in v1 | After v1 | Decisions 2 and 7 stand, they are built later |
+| macOS state in `~/Library/Application Support` | `~/.local/state` on both systems | One rule |
+
+## 10. Milestones
+
+Each milestone ends with a check that a person can run.
+
+### M1. Skeleton and spikes
+
+Build: Cargo project, manifest, `stage-local.sh`, an `open` action that opens a pane printing its
+environment and `HERDR_PLUGIN_CONTEXT_JSON`, and a hidden `spike-send` action that sends a fixed
+two-line prompt to the agent pane through `agent_delivery.rs`.
+
+Checks:
+
+- `herdr plugin link .` succeeds, and the action opens a split to the right of the agent.
+- The pane prints `REVIEW_DELIVER_TO` and `REVIEW_DELIVER_TERM` (W15).
+- `spike-send` to an idle Claude Code starts a turn. To a working Claude Code, the prompt is handled
+  after the current turn. Record what happens when the user presses Esc while it is queued (W13).
+- Move the agent pane to another workspace, and close a sibling pane. Record whether the pane id
+  changes and whether `terminal_id` stays the same (B3). This accepts or rejects ADR 0006.
+- Bind the two proposed keys and confirm Herdr reports no duplicate.
+
+### M2. Store and agent CLI
+
+Build: `store.rs`, and `comment apply`, `list`, `reply`, `resolve`, `reopen`.
+
+Checks:
+
+- Unit tests for the fold: rights, unsent, `new`, unknown ids, delete of a root.
+- A test starts 8 processes that each append 200 events. The file has 1600 valid lines and no
+  duplicate ids.
+- A test truncates the last line mid-record. The reader returns every earlier event.
+- `comment resolve zz9 --reply -` exits 2 and prints the open ids.
+- The store-write and agent-CLI rows of section 12.7 pass, with no real `git` or Herdr in the tests.
+
+### M3. Diff engine
+
+Build: `diff.rs` with the git runner, the parser, both specs, and anchor matching.
+
+Checks:
+
+- Fixture tests: rename with edits, binary, no newline at end of file, CRLF, a path with spaces and
+  non-ASCII characters, submodule, new and deleted files, a patch over the cap.
+- A test in a temporary repository: no commits, untracked file, base missing, base equal to `HEAD`.
+- Anchor tests for the four outcomes in 4.3.
+
+### M4. TUI, read-only
+
+Build: sidebar, stream, scrolling, hunk keys, reload, spec switch, messages for the empty and error
+cases.
+
+Checks:
+
+- Opened on the `hunk/` checkout with a 50-file diff, the first frame appears with no visible delay.
+  Record cold start and peak memory with `/usr/bin/time -l`.
+- Scrolling to the end and back shows no stale rows.
+- A file whose name contains an ESC byte does not corrupt the screen.
+- Unit tests for the keymap: an override, a list of keys, an unbind, a conflict where the user's
+  binding wins, an unknown action, invalid TOML.
+- With `reload = "r"` in `config.toml`, `r` reloads, the footer shows it, and a warning says `reply`
+  has no key.
+
+### M5. User comments
+
+Build: editor widget, cards, threads, `c`, `r`, `e`, `d`, `x`, `v`, `n` `N`, the not-in-diff block, the
+`outdated` tag, live pickup of agent writes, the `new` marker.
+
+Checks:
+
+- A comment on a line, a range and a file survives closing and reopening the pane.
+- With the pane open, `comment reply` from another shell appears within one second.
+- Editing the commented line in an editor and pressing `R` tags the thread outdated. Committing
+  everything moves the thread to the not-in-diff block.
+- An agent resolve shows `new` until the cursor reaches the thread.
+- `comment reply` run from the Claude Code pane is labelled `agent:claude`. Run from a plain terminal
+  outside Herdr it is labelled `agent`.
+
+### M6. Send
+
+Build: `send.rs`, `S`, `s`, the `send` action, the quit prompt, the status line, the real `open`.
+
+Checks, the v1 acceptance test:
+
+- With Claude Code idle: write two comments, press `S`. Without the user typing anything, the agent
+  edits the code, and both threads show a reply and a resolved mark in the pane.
+- Press `S` again: "nothing to send". Reopen one thread, press `S`: only that thread goes out, marked
+  reopened.
+- Edit a sent comment: `S` says "nothing to send" and the card shows "edited since sent". `s` on that
+  thread sends the new text.
+- With the agent at a permission dialog: `S` is refused, the reason is shown, the comments stay
+  unsent.
+- With focus in the review pane, the `prefix` key for send delivers to the same agent as `S`.
+- Two agents in one worktree: the picker appears once and the choice is remembered.
+- A comment body containing `` `id` `` and `$(id)` reaches the agent as text.
+
+### M7. Agent-initiated review and release
+
+Build: the skill, `open` from the agent's shell, the notification, the fetch script, CI (fmt, clippy,
+tests on macOS and Linux), the release workflow with SHA-256 files, the README.
+
+Checks:
+
+- Ask Claude Code to "review your changes with herdr-review". Comments appear in a pane it opened, and
+  a second `open` focuses that pane instead of adding a split.
+- The user replies to an agent comment and presses `S`. The agent receives the reply.
+- `herdr plugin install <repo>` on a clean machine yields a working `prefix` key.
+- Measure hunk and herdr-review on the same diff with `/usr/bin/time -l` and record both.
+
+### After v1
+
+Paste mode (`p`), archive (`archive.jsonl`, under the lock), side-by-side view, word diff, syntax
+highlighting behind a cargo feature, Codex and pi, staged and single-commit specs, reviewer agent.
+
+## 11. Open questions
+
+Settled on 2026-10-04 and written into the sections above: the Herdr keys, the keymap file, edit after
+sent, and the agent name.
+
+- `contexts = ["pane"]` on the `send` action is copied from herdr-annotate. Herdr's docs do not define
+  the values (W24). M1 shows whether the action is offered from the review pane.
+- Target platform: `min_herdr_version = "0.9.1"` matches what is installed. Raise it only if M1 finds a
+  bug fixed in a later release.
+
+## 12. Design pass
+
+This section applies the design-thinking method (shapes, happy path, failures, dependencies) to every
+operation. It uses the Effect model `Effect<A, E, R>` and maps it onto Rust:
+
+| Effect | Rust in this project |
+|---|---|
+| `A`, the success value | The `Ok` type of a function |
+| `E`, the error channel | The `Err` type, one enum per module. Errors are values until the edge |
+| `R`, the requirements | Function parameters: a `git` closure, a `herdr` closure, a state directory, a clock value, an `Env` struct. No globals, no `std::env` or `Command` calls below `main.rs` |
+| `gen` body is A, `pipe` is E | Inner functions use `?` only. Each error is matched once, at the edge that owns the reaction: `main.rs` for the CLI, the action dispatcher for the TUI |
+| Retry, escape, die | Retry is a bounded loop at the node. Escape returns a fallback value and records a warning. Die is `panic!`, reserved for a broken invariant in our own code |
+| Layer swap for tests | Pass a closure that returns canned output and a temp directory |
+| Scope | A guard value whose `Drop` releases the resource |
+
+Graph notation: steps start with `->`, nested steps are indented, `R:` names what the step needs and
+`E:` names how it fails and what happens then.
+
+### 12.1 Shapes
+
+Ids, each a newtype that can only be built by its parser:
+
+| Type | Form | Built from |
+|---|---|---|
+| `CommentId` | `u<n>` or `a<n>` | Store allocation, CLI argument, JSONL field |
+| `BatchId` | `b<n>` | Store allocation |
+| `PaneId` | `w1:p2` | Herdr JSON, environment |
+| `TerminalId` | `term_...` | Herdr JSON, environment |
+| `RepoRoot` | Canonical absolute path | `git rev-parse --show-toplevel`, then `canonicalize` |
+| `RelPath` | Repo-relative path with no `..` and no leading `/` | Diff parser, agent batch |
+
+Records:
+
+| Type | Fields |
+|---|---|
+| `Event` | `kind`, `at`, `by: Author`, and the fields in section 3.2 |
+| `Comment` | `id`, `parent`, `author`, `body`, `sent_batch`, `edited_since_sent` |
+| `Thread` | `root: Comment`, `anchor: Anchor`, `replies`, `status`, `is_new`, `unsent` |
+| `Anchor` | `path`, `old_path`, `target: AnchorTarget`, `spec: Spec` |
+| `Review` | `threads` in file order, `skipped_lines`. The result of the fold |
+| `Meta` | `root`, `spec`, `target: Option<Target>`, `review_pane: Option<PaneId>` |
+| `Target` | `pane: PaneId`, `terminal: TerminalId`, `agent: String` |
+| `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
+| `Diff` | `files`, `spec`, `notices` (cap reached, base missing, and so on) |
+| `Keymap` | Key to `Action`, plus `warnings` |
+| `Env` | Every `HERDR_*` and `REVIEW_*` value, read once in `main.rs` |
+
+Variants:
+
+| Type | Cases |
+|---|---|
+| `Author` | `User`, `Agent(Option<String>)` |
+| `Side` | `Old`, `New` |
+| `AnchorTarget` | `Line { side, line, text }`, `Range { side, start, end, text }`, `File` |
+| `Status` | `Open`, `Resolved { by: Author }` |
+| `Spec` | `WorkTree`, `Branch { base: String }` |
+| `Placement` | `Matched { line }`, `Outdated { near }`, `NotInDiff`. Computed, never stored |
+| `Change` | `Modified`, `Added`, `Deleted`, `Renamed`, `Untracked`, `Binary`, `Submodule`, `TooLarge`, `Unparsed` |
+| `AgentStatus` | `Idle`, `Working`, `Blocked`, `Done`, `Unknown` |
+| `Action` | The action names in section 7 |
+| `SendOutcome` | `Nothing`, `Sent { n, agent }`, `Queued { n, agent }` |
+
+Errors, one enum per module:
+
+| Type | Cases | Meaning |
+|---|---|---|
+| `StoreError` | `Io(kind)`, `Busy` | The disk failed, or the lock was not free within 2 seconds |
+| `CommandError` | `UnknownId { id, open }`, `NotAllowed { id, why }`, `InvalidBatch { index, why }` | The caller asked for something the review cannot do |
+| `GitError` | `NotInstalled`, `NotARepo`, `NoBase { tried }`, `Failed { args, stderr }` | `git` could not answer |
+| `HerdrError` | `code`, `message` | As parsed by `agent_delivery.rs` |
+| `TargetError` | `NoAgent`, `Ambiguous(Vec<Target>)` | Resolution found zero or several agents |
+| `Refusal` | `Blocked`, `NotReady`, `AgentGone` | The agent cannot take a prompt now |
+| `Warning` | `SkippedLine(n)`, `Config(String)`, `MetaUnreadable`, `SentNotRecorded` | Not an error. Collected and shown, the operation still succeeds |
+
+There is no `ParseError` for diffs. A file the parser cannot read becomes `Change::Unparsed` and the
+review continues.
+
+### 12.2 Boundaries
+
+Untrusted data enters at eight places. Each is parsed once, into the shapes above, and code past the
+boundary never sees a raw string or `serde_json::Value`.
+
+| Boundary | Parsed into | On bad input |
+|---|---|---|
+| `review.jsonl` line | `Event` | `Warning::SkippedLine`, the read continues |
+| `meta.json` | `Meta` | `Warning::MetaUnreadable`, an empty `Meta` is used and rewritten on the next save |
+| `config.toml` | `Keymap` | `Warning::Config`, defaults are used |
+| `git` stdout | `Diff` | `Change::Unparsed` for that file |
+| `herdr` stdout and stderr | `Target`, `AgentStatus`, `HerdrError` | `Refusal::AgentGone` or the raw message |
+| Environment | `Env` | A missing value is `None`. A pane id is trusted only after `agent get` confirms it |
+| CLI arguments | `Command` enum | Usage text, exit 2 |
+| Agent stdin (batch, reply text) | `Vec<NewComment>`, `String` | `CommandError::InvalidBatch`, nothing is written |
+
+Limits checked at the agent stdin boundary: a body is at most 16 KiB after trimming and must not be
+empty, a batch holds at most 200 comments, a path must parse as `RelPath`, a line must be 1 or more
+and exist in the file. Every body is stored as written. Control characters are removed when it is
+drawn and ESC is removed when it is sent.
+
+### 12.3 Requirements
+
+Six dependencies exist. Every function below `main.rs` receives the ones it needs as parameters.
+
+| Name | Production | Tests |
+|---|---|---|
+| `git` | `Command::new("git")` with `GIT_OPTIONAL_LOCKS=0` | A closure that returns fixture bytes |
+| `herdr` | `herdr.rs`, through `HERDR_BIN_PATH` | A closure that records calls and returns canned JSON, as `agent_delivery.rs` tests do today |
+| `dir` | The state directory from section 3.1 | A temp directory |
+| `now` | `chrono::Utc::now()` formatted once per operation | A fixed string |
+| `env` | `Env::from_process()` | An `Env` literal |
+| `term` | crossterm on stdout | ratatui `TestBackend` and a list of key events |
+
+`GIT_OPTIONAL_LOCKS=0` stops `git diff` from taking `index.lock` to refresh the index. Without it the
+review pane can make the agent's own `git` commands fail while both run in one worktree.
+
+### 12.4 Call graphs
+
+#### Write to the store (every mutation goes through this)
+
+```
+-> store::write(dir, now, build)
+  -> open lock file                        R: dir     E: Io -> propagate
+  -> try_lock, up to 2 s                              E: held -> retry every 50 ms, then Busy
+  -> read review.jsonl, fold               R: dir     E: Io -> propagate
+                                                      E: bad line -> escape, Warning::SkippedLine
+  -> build(&Review) -> Vec<Event>                     E: CommandError -> propagate, nothing written
+       allocates ids from the folded state
+  -> one write_all on O_APPEND                        E: Io -> propagate
+  -> drop guard, lock released             scope: released on every path, also on panic or kill
+```
+
+`build` is where an operation validates against the current state. Validation and append happen under
+one lock, so a `resolve` cannot race with a `delete` of the same thread.
+
+Cardinality: one-shot.
+
+#### Agent CLI: `comment apply`, `reply`, `resolve`, `reopen`
+
+```
+-> parse args                              R: env     E: usage -> exit 2
+-> resolve root                            R: git     E: NotARepo -> exit 1
+-> read stdin, decode batch or text                   E: InvalidBatch -> exit 2, nothing written
+-> for each new root comment: read the anchored line
+  -> new side: read the file in the worktree  R: dir of repo  E: missing line -> InvalidBatch
+  -> old side: git show <base>:<path>         R: git          E: missing line -> InvalidBatch
+-> detect agent name                       R: herdr, env   E: any -> escape, Author::Agent(None)
+-> store::write                            R: dir, now     E: UnknownId, NotAllowed -> exit 2
+                                                           E: Busy, Io -> exit 1
+-> notification show (apply only)          R: herdr        E: any -> escape, ignored
+-> print ids as text or JSON
+```
+
+Rules that fall out of the graph:
+
+- `resolve` on a resolved thread and `reopen` on an open thread succeed and write nothing. An agent
+  that repeats a command does not see an error.
+- The anchored line text is read by the CLI, not supplied by the agent. An agent cannot anchor a
+  comment to text that is not there.
+- Nothing after `store::write` can turn a success into a failure.
+
+#### `open`
+
+```
+-> find root
+  -> from HERDR_PLUGIN_CONTEXT_JSON        R: env     E: absent or unparseable -> escape, use cwd
+  -> git rev-parse --show-toplevel         R: git     E: NotARepo -> notify, exit 1
+-> load meta                               R: dir     E: unreadable -> escape, empty Meta
+-> review pane already open?
+  -> herdr pane get <review_pane>          R: herdr   E: pane_not_found -> continue to open
+  -> herdr plugin pane focus               R: herdr   E: any -> continue to open
+-> resolve agent pane (section 6.2)        R: herdr, env   E: NoAgent -> open without a target
+                                                           E: Ambiguous -> open without a target
+-> herdr plugin pane open                  R: herdr   E: HerdrError -> notify, exit 1
+```
+
+A review with no target still opens. The user can read and comment, and the picker runs at the first
+send. An action has no terminal, so every failure of `open` is shown with `herdr notification show`.
+
+#### TUI start
+
+```
+-> load keymap                             R: env (config dir)   E: any -> escape, defaults + warning
+-> find root, load meta                    R: git, dir           E: NotARepo -> message screen
+-> enter raw mode and alternate screen     R: term    scope: restored by a guard on exit, panic, SIGTERM, SIGHUP
+-> store read, fold                        R: dir     E: Io -> message screen with the path
+-> load diff (below)                       R: git     E: see below
+-> save review_pane to meta                R: dir     E: Io -> escape, warning
+-> resolve target for the status line      R: herdr   E: any -> escape, status line shows "no agent"
+```
+
+The pane never exits on a startup error. It shows the error and waits for `reload` or `quit`, so the
+user can read what went wrong.
+
+#### Load the diff
+
+```
+-> git diff for the spec                   R: git     E: NotInstalled -> message screen
+                                                      E: NoBase -> notice, fall back to WorkTree
+                                                      E: Failed -> message screen with stderr
+-> git ls-files --others                   R: git     E: Failed -> escape, notice "untracked files not shown"
+-> parse patch into DiffFile               (pure)     E: unreadable file section -> Change::Unparsed
+-> stat and read untracked files           R: fs      E: Io -> that file listed, not rendered
+-> apply the 3 MiB cap                     (pure)
+-> place every thread (section 4.3)        (pure)     -> Placement per thread
+```
+
+Parsing and placement are pure functions of bytes and threads, so all of milestone 3 is tested without
+`git` installed.
+
+Cardinality: one-shot, called again on each reload. A reload that fails keeps the previous diff on
+screen and shows the error in the status line.
+
+#### TUI loop
+
+This is the only stream in the program. It merges two sources.
+
+```
+-> loop
+  -> termination flag set?                 R: signal flag   -> save draft (below), leave the loop
+  -> poll terminal, 250 ms                 R: term    E: Io -> leave the loop, restore terminal
+    -> key -> Keymap -> Action             (pure)     no binding -> ignored
+    -> apply Action to the app state       R: per action, see the next graphs
+  -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
+    -> read from offset, fold, reload diff
+  -> draw                                  R: term
+```
+
+The loop holds no lock between ticks. A panic hook restores the terminal before the message prints.
+
+If the pane is closed while the editor holds text, the draft is saved as a comment at the anchor that
+was captured when `comment` was pressed. Losing typed text is the one data-loss path in the pane.
+
+#### User comment, reply, edit, delete, resolve
+
+```
+-> Action (comment, reply, edit, delete, resolve)
+  -> editor returns text, or cancel        (pure state)
+  -> store::write                          R: dir, now   E: Busy -> status line "review is busy, press again"
+                                                         E: Io -> status line, the editor keeps the text
+  -> fold the new events into the state
+```
+
+On a failed save the editor stays open with the text. The text is discarded only after the write
+succeeds.
+
+#### Send
+
+```
+-> collect unsent threads from Review      (pure)     none -> SendOutcome::Nothing
+-> format prompt                           R: env (plugin root), root   (pure)
+-> resolve target (section 6.2)
+  -> candidates from env, meta             R: env, dir
+  -> herdr agent get                       R: herdr   E: mismatch or not found -> next candidate
+  -> herdr agent list                      R: herdr   E: HerdrError -> propagate
+                                                      E: NoAgent -> propagate
+                                                      E: Ambiguous -> picker (TUI) or notification (action)
+-> deliver_to_agent(Send, pane, text)      R: herdr   E: Refusal -> propagate, nothing marked
+                                                      E: HerdrError -> propagate, nothing marked
+-> store::write(sent event)                R: dir, now   E: any -> escape, Warning::SentNotRecorded
+-> save target to meta                     R: dir     E: Io -> escape, warning
+-> SendOutcome::Sent or Queued
+```
+
+Decisions that fall out of the graph:
+
+- No retry anywhere in send. A second `herdr agent prompt` after an unclear failure could deliver the
+  batch twice, so the user decides by pressing the key again.
+- Once the prompt is delivered the operation is a success. If the `sent` event cannot be written, the
+  user sees "sent, but not recorded, the next send will repeat these comments".
+- The TUI draws "sending" before the Herdr call, because the call blocks the single thread.
+- `send` as a Herdr action runs the same function. Its edge turns every `Err` and `Warning` into
+  `herdr notification show` and an exit code.
+
+### 12.5 Meta file
+
+`meta.json` is the only file that is rewritten, and three processes write it (`open`, the TUI, the
+`send` action). A save takes the same lock as the store, reads the current file, changes its own
+fields, writes a temp file and renames it. A save that fails is a warning and never blocks a review
+action.
+
+### 12.6 Where each error is handled
+
+| Error | CLI edge (`main.rs`) | TUI edge (action dispatcher) |
+|---|---|---|
+| Usage, `UnknownId`, `NotAllowed`, `InvalidBatch` | One line on stderr, exit 2. `UnknownId` also lists the open ids | Cannot occur for ids, the TUI only acts on threads it shows |
+| `StoreError::Busy` | "review is busy, try again", exit 1 | Status line, the action can be repeated |
+| `StoreError::Io` | Message with the path, exit 1 | Status line, the editor keeps its text |
+| `GitError` | Message, exit 1 | Message screen or status line, as in the graphs |
+| `TargetError`, `Refusal`, `HerdrError` | Notification and exit 1 (actions) | Status line and notification. Nothing marked sent |
+| `Warning` | Printed to stderr, exit 0 | One line under the status line until the next action |
+| Panic | Default hook, exit 101 | Terminal restored first, then the message |
+
+Exit codes for the agent: 0 done, 1 failed and can be retried later, 2 the request itself is wrong.
+
+### 12.7 Tests that the graphs give
+
+Each `E:` line above is one test, and each test swaps only the parameters listed under `R:`.
+
+| Graph | Swapped | Tests |
+|---|---|---|
+| Store write | temp `dir`, fixed `now` | Lock held by another process gives `Busy` after 2 s. A killed holder frees the lock. `build` returning an error writes nothing |
+| Agent CLI | fixture `git`, recording `herdr`, temp `dir` | Unknown id, a second `resolve` is a no-op, a line past the end of the file, an oversized body, a `herdr` failure does not fail the command |
+| `open` | recording `herdr`, `Env` literal | No context JSON, review pane already open, stale review pane, no agent |
+| Load diff | fixture `git` | Every row of section 4.2, and a failed reload keeps the old diff |
+| TUI loop | `TestBackend`, key list, temp `dir` | A write from another process appears, a failed save keeps the editor text, termination with a draft saves it |
+| Send | recording `herdr`, temp `dir` | Each `Refusal`, a stale pane id falls through to the list, `Ambiguous`, `sent` not recorded still reports success |
+
+If a test needs a real `git`, a real Herdr or a real terminal to exercise one of these graphs, the
+function has a hidden dependency and the design is wrong. The temporary-repository tests in M3 and
+the manual checks in M6 are the only places that use the real tools, and they test the tools'
+behaviour, not our graphs.
+
+### 12.8 What the pass changed in this plan
+
+- A store write is now read, validate, append under one lock, with a 2 second bounded wait
+  (section 3.3).
+- `meta.json` saves take the store lock and use temp file plus rename (12.5).
+- `git` runs with `GIT_OPTIONAL_LOCKS=0` (section 4.1).
+- The agent CLI reads the anchored line itself and needs `git` for old-side comments (section 5).
+- Agent input has size limits (12.2).
+- Repeating `resolve` or `reopen` is a no-op with exit 0.
+- A diff file that cannot be parsed is shown as unparsed and does not stop the review.
+- A failed reload keeps the previous diff.
+- A review opens without a target agent, and the target is chosen at the first send.
+- A draft is saved when the pane is closed, and kept in the editor when a save fails.
+- Exit code 1 means "try again later" and 2 means "the request is wrong".
+- `termination.rs` joins the files copied from herdr-annotate.
