@@ -5,14 +5,21 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::store::{RelPath, Side};
+use crate::store::{RelPath, Side, Spec};
 
 /// `git` could not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitError {
     NotInstalled,
     NotARepo,
-    Failed { args: String, stderr: String },
+    /// None of the refs tried resolves.
+    NoBase {
+        tried: Vec<String>,
+    },
+    Failed {
+        args: String,
+        stderr: String,
+    },
 }
 
 impl fmt::Display for GitError {
@@ -20,6 +27,7 @@ impl fmt::Display for GitError {
         match self {
             Self::NotInstalled => f.write_str("git is not installed"),
             Self::NotARepo => f.write_str("not a git repository"),
+            Self::NoBase { tried } => write!(f, "no base branch found, tried {}", tried.join(", ")),
             Self::Failed { args, stderr } => write!(f, "git {args} failed: {stderr}"),
         }
     }
@@ -29,7 +37,7 @@ impl std::error::Error for GitError {}
 
 /// Run `git` with `args` and return its stdout. It never takes `index.lock`, so the review cannot
 /// make the agent's own `git` commands fail.
-pub fn run_git(args: &[String]) -> Result<String, GitError> {
+pub fn run_git_bytes(args: &[String]) -> Result<Vec<u8>, GitError> {
     let output = Command::new("git")
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -43,7 +51,7 @@ pub fn run_git(args: &[String]) -> Result<String, GitError> {
             },
         })?;
     if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.contains("not a git repository") {
@@ -53,6 +61,11 @@ pub fn run_git(args: &[String]) -> Result<String, GitError> {
         args: args.join(" "),
         stderr,
     })
+}
+
+/// `run_git_bytes` for output that is text.
+pub fn run_git(args: &[String]) -> Result<String, GitError> {
+    run_git_bytes(args).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The canonical absolute path of a worktree root.
@@ -469,6 +482,227 @@ fn hunk<'a>(header: &[u8], lines: &mut Peekable<impl Iterator<Item = &'a [u8]>>)
     Some(Hunk { header, rows })
 }
 
+/// The most an untracked file may hold and still be rendered.
+const MAX_UNTRACKED: u64 = 1024 * 1024;
+
+/// Something the user should know about the diff on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    /// The branch spec's base does not resolve, so the working tree against `HEAD` is shown.
+    BaseMissing { base: String },
+    /// `git ls-files` failed.
+    UntrackedNotShown,
+    /// The diff is over the cap, and later files are collapsed.
+    PatchCapped,
+}
+
+impl fmt::Display for Notice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BaseMissing { base } => {
+                write!(
+                    f,
+                    "base {base} not found, showing the working tree against HEAD"
+                )
+            }
+            Self::UntrackedNotShown => f.write_str("untracked files not shown"),
+            Self::PatchCapped => f.write_str("diff is over 3 MiB, later files are collapsed"),
+        }
+    }
+}
+
+/// The diff a review shows. `spec` is the one that produced it, which differs from the one asked
+/// for when the base is missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diff {
+    pub files: Vec<DiffFile>,
+    pub spec: Spec,
+    pub notices: Vec<Notice>,
+}
+
+/// The branch the branch spec compares against when `open` got no `--base`: `origin/HEAD`, else
+/// `main`, else `master`.
+pub fn default_base(
+    root: &Path,
+    mut git: impl FnMut(&[String]) -> Result<Vec<u8>, GitError>,
+) -> Result<String, GitError> {
+    let tried = ["origin/HEAD", "main", "master"];
+    for name in tried {
+        let args = [
+            "-C",
+            &root.to_string_lossy(),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            name,
+        ]
+        .map(str::to_owned);
+        match git(&args) {
+            Ok(_) => return Ok(name.to_owned()),
+            Err(GitError::Failed { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(GitError::NoBase {
+        tried: tried.map(str::to_owned).to_vec(),
+    })
+}
+
+type Run<'a> = dyn FnMut(&[&str]) -> Result<Vec<u8>, GitError> + 'a;
+
+fn text(output: &[u8]) -> String {
+    lossy(output).trim().to_owned()
+}
+
+/// What to diff the working tree against, and the spec that gives it. With no `HEAD` it is the
+/// empty tree. With a branch spec whose base does not resolve it is `HEAD`, and a notice says so.
+fn revision(
+    run: &mut Run<'_>,
+    spec: &Spec,
+    notices: &mut Vec<Notice>,
+) -> Result<(String, Spec), GitError> {
+    let has_head = match run(&["rev-parse", "--verify", "--quiet", "HEAD"]) {
+        Ok(_) => true,
+        Err(GitError::Failed { .. }) => false,
+        Err(error) => return Err(error),
+    };
+    let merge_base = match spec {
+        Spec::Branch { base } if has_head && !base.starts_with('-') => {
+            match run(&["merge-base", base, "HEAD"]) {
+                Ok(output) => Some(text(&output)).filter(|sha| !sha.is_empty()),
+                Err(GitError::Failed { .. }) => None,
+                Err(error) => return Err(error),
+            }
+        }
+        _ => None,
+    };
+    if let Some(sha) = merge_base {
+        return Ok((sha, spec.clone()));
+    }
+    if let Spec::Branch { base } = spec {
+        notices.push(Notice::BaseMissing { base: base.clone() });
+    }
+    if has_head {
+        return Ok(("HEAD".to_owned(), Spec::WorkTree));
+    }
+    let tree = run(&["hash-object", "-t", "tree", "/dev/null"])?;
+    Ok((text(&tree), Spec::WorkTree))
+}
+
+/// The diff of the working tree for `spec`, with the untracked files as added files. `git` answers
+/// every call to it, so tests need no repository. Untracked files are read from `root`.
+pub fn load(
+    root: &Path,
+    spec: &Spec,
+    mut git: impl FnMut(&[String]) -> Result<Vec<u8>, GitError>,
+) -> Result<Diff, GitError> {
+    let root_arg = root.to_string_lossy().into_owned();
+    let mut run = |args: &[&str]| {
+        let args = ["-C", &root_arg]
+            .into_iter()
+            .chain(args.iter().copied())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        git(&args)
+    };
+    let mut notices = Vec::new();
+    let (rev, spec) = revision(&mut run, spec, &mut notices)?;
+    let patch = run(&[
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--submodule=short",
+        "-M",
+        "-U3",
+        &rev,
+        "--",
+    ])?;
+    let mut files = parse(&patch, MAX_PATCH);
+    let mut budget = MAX_PATCH.saturating_sub(patch.len());
+    let mut capped = patch.len() > MAX_PATCH;
+    match run(&["ls-files", "--others", "--exclude-standard", "-z"]) {
+        Ok(listing) => files.extend(
+            listing
+                .split(|&byte| byte == 0)
+                .filter_map(|path| RelPath::parse(&lossy(path)))
+                .map(|path| untracked(root, &path, &mut budget, &mut capped)),
+        ),
+        Err(_) => notices.push(Notice::UntrackedNotShown),
+    }
+    if capped {
+        notices.push(Notice::PatchCapped);
+    }
+    files.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
+    Ok(Diff {
+        files,
+        spec,
+        notices,
+    })
+}
+
+/// An untracked file as one hunk of added rows. A file that cannot be read, is not a plain file or
+/// link, is over 1 MiB or holds a NUL byte is listed without rows. A file that would push the
+/// total over the cap is `TooLarge`.
+fn untracked(root: &Path, path: &RelPath, budget: &mut usize, capped: &mut bool) -> DiffFile {
+    let full = root.join(path.as_str());
+    let listed = |change| DiffFile::listed(path.clone(), change);
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return listed(Change::Untracked);
+    };
+    let content = if meta.is_symlink() {
+        std::fs::read_link(&full).map(|target| target.into_os_string().into_encoded_bytes())
+    } else if meta.is_file() && meta.len() > MAX_UNTRACKED {
+        return listed(Change::TooLarge);
+    } else if meta.is_file() {
+        std::fs::read(&full)
+    } else {
+        return listed(Change::Untracked);
+    };
+    let Ok(content) = content else {
+        return listed(Change::Untracked);
+    };
+    if content.contains(&0) {
+        return listed(Change::Binary);
+    }
+    if content.len() > *budget {
+        *capped = true;
+        return listed(Change::TooLarge);
+    }
+    *budget -= content.len();
+    DiffFile {
+        hunks: all_added(&content),
+        ..listed(Change::Untracked)
+    }
+}
+
+/// The hunk `git` would print for a new file: every line added.
+fn all_added(content: &[u8]) -> Vec<Hunk> {
+    let rows = content
+        .split_inclusive(|&byte| byte == b'\n')
+        .zip(1..)
+        .map(|(line, number)| {
+            let body = line.strip_suffix(b"\n");
+            Row {
+                kind: RowKind::Added,
+                old: None,
+                new: Some(number),
+                text: row_text(body.unwrap_or(line)),
+                no_newline: body.is_none(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let header = format!("@@ -0,0 +1,{} @@", rows.len());
+    vec![Hunk { header, rows }]
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -739,5 +973,325 @@ mod tests {
             "old_name.txt"
         );
         assert_eq!(find(&files, "added.txt").change, Change::Added);
+    }
+
+    const TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+    /// A `git` that answers from fields and records each call, without `-C <root>`.
+    struct Fake {
+        error: Option<GitError>,
+        head: bool,
+        merge_base: Option<&'static str>,
+        refs: Vec<&'static str>,
+        patch: Vec<u8>,
+        others: Option<Vec<u8>>,
+        calls: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Fake {
+        fn new(patch: &[u8]) -> Self {
+            Self {
+                error: None,
+                head: true,
+                merge_base: Some("abc123"),
+                refs: vec!["main"],
+                patch: patch.to_vec(),
+                others: Some(Vec::new()),
+                calls: std::cell::RefCell::default(),
+            }
+        }
+
+        fn call(&self, args: &[String]) -> Result<Vec<u8>, GitError> {
+            let failed = || GitError::Failed {
+                args: args.join(" "),
+                stderr: String::new(),
+            };
+            let args = args.get(2..).unwrap_or_default();
+            self.calls.borrow_mut().push(args.join(" "));
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            match args.as_slice() {
+                ["rev-parse", "--verify", "--quiet", "HEAD"] if self.head => Ok(b"abc\n".to_vec()),
+                ["rev-parse", "--verify", "--quiet", name] if self.refs.contains(name) => {
+                    Ok(b"abc\n".to_vec())
+                }
+                ["merge-base", ..] => self
+                    .merge_base
+                    .map(|sha| format!("{sha}\n").into_bytes())
+                    .ok_or_else(failed),
+                ["hash-object", "-t", "tree", "/dev/null"] => Ok(format!("{TREE}\n").into_bytes()),
+                ["-c", _, "diff", ..] => Ok(self.patch.clone()),
+                ["ls-files", ..] => self.others.clone().ok_or_else(failed),
+                _ => Err(failed()),
+            }
+        }
+
+        fn load(&self, spec: &Spec) -> Result<Diff, GitError> {
+            load(Path::new("/repo"), spec, |args| self.call(args))
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    fn branch(base: &str) -> Spec {
+        Spec::Branch { base: base.into() }
+    }
+
+    fn paths(diff: &Diff) -> Vec<&str> {
+        diff.files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    const DIFF_ARGS: &str = "-c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3";
+
+    #[test]
+    fn the_working_tree_spec_diffs_against_head_with_the_fixed_flags() {
+        let fake = Fake::new(b"");
+        let diff = fake.load(&Spec::WorkTree).unwrap();
+        assert_eq!(diff.spec, Spec::WorkTree);
+        assert_eq!(
+            fake.calls(),
+            [
+                "rev-parse --verify --quiet HEAD".to_owned(),
+                format!("{DIFF_ARGS} HEAD --"),
+                "ls-files --others --exclude-standard -z".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_branch_spec_diffs_the_working_tree_against_the_merge_base() {
+        let fake = Fake::new(b"");
+        let diff = fake.load(&branch("main")).unwrap();
+        assert_eq!(diff.spec, branch("main"));
+        assert!(diff.notices.is_empty());
+        let calls = fake.calls();
+        assert!(calls.contains(&"merge-base main HEAD".to_owned()));
+        assert!(calls.contains(&format!("{DIFF_ARGS} abc123 --")));
+    }
+
+    #[test]
+    fn not_a_repository_and_no_git_are_errors() {
+        let mut fake = Fake::new(b"");
+        fake.error = Some(GitError::NotARepo);
+        assert_eq!(fake.load(&Spec::WorkTree), Err(GitError::NotARepo));
+        fake.error = Some(GitError::NotInstalled);
+        assert_eq!(fake.load(&branch("main")), Err(GitError::NotInstalled));
+    }
+
+    #[test]
+    fn a_failed_diff_is_an_error_with_the_stderr() {
+        let mut fake = Fake::new(b"");
+        fake.error = Some(GitError::Failed {
+            args: "diff".into(),
+            stderr: "fatal: bad object".into(),
+        });
+        assert!(matches!(
+            fake.load(&Spec::WorkTree),
+            Err(GitError::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn without_commits_the_diff_is_against_the_empty_tree() {
+        let mut fake = Fake::new(b"");
+        fake.head = false;
+        let diff = fake.load(&Spec::WorkTree).unwrap();
+        assert!(diff.notices.is_empty());
+        assert!(fake.calls().contains(&format!("{DIFF_ARGS} {TREE} --")));
+    }
+
+    #[test]
+    fn without_commits_a_branch_spec_falls_back_with_a_notice() {
+        let mut fake = Fake::new(b"");
+        fake.head = false;
+        let diff = fake.load(&branch("main")).unwrap();
+        assert_eq!(diff.spec, Spec::WorkTree);
+        assert_eq!(
+            diff.notices,
+            [Notice::BaseMissing {
+                base: "main".into()
+            }]
+        );
+        assert!(fake.calls().contains(&format!("{DIFF_ARGS} {TREE} --")));
+    }
+
+    #[test]
+    fn a_missing_base_falls_back_to_the_working_tree_with_a_notice() {
+        let mut fake = Fake::new(MIXED);
+        fake.merge_base = None;
+        let diff = fake.load(&branch("nope")).unwrap();
+        assert_eq!(diff.spec, Spec::WorkTree);
+        assert_eq!(
+            diff.notices,
+            [Notice::BaseMissing {
+                base: "nope".into()
+            }]
+        );
+        assert!(fake.calls().contains(&format!("{DIFF_ARGS} HEAD --")));
+        assert!(!diff.files.is_empty());
+    }
+
+    #[test]
+    fn a_base_that_looks_like_an_option_never_reaches_git() {
+        let fake = Fake::new(b"");
+        let diff = fake.load(&branch("--output=/x")).unwrap();
+        assert_eq!(diff.spec, Spec::WorkTree);
+        assert!(!fake.calls().iter().any(|call| call.contains("merge-base")));
+    }
+
+    #[test]
+    fn an_empty_diff_has_no_files_and_no_notice() {
+        let diff = Fake::new(b"").load(&Spec::WorkTree).unwrap();
+        assert!(diff.files.is_empty());
+        assert!(diff.notices.is_empty());
+    }
+
+    #[test]
+    fn a_failed_ls_files_keeps_the_diff_and_adds_a_notice() {
+        let mut fake = Fake::new(MIXED);
+        fake.others = None;
+        let diff = fake.load(&Spec::WorkTree).unwrap();
+        assert_eq!(diff.notices, [Notice::UntrackedNotShown]);
+        assert_eq!(diff.files.len(), 11);
+    }
+
+    #[test]
+    fn binary_rename_submodule_and_crlf_files_load_from_the_patch() {
+        let diff = Fake::new(MIXED).load(&Spec::WorkTree).unwrap();
+        let change = |path: &str| find(&diff.files, path).change;
+        assert_eq!(change("bin.dat"), Change::Binary);
+        assert_eq!(change("new_name.txt"), Change::Renamed);
+        assert_eq!(change("subm"), Change::Submodule);
+        assert_eq!(
+            texts(find(&diff.files, "crlf.txt"))[2],
+            (RowKind::Added, "B")
+        );
+    }
+
+    #[test]
+    fn a_patch_over_the_cap_collapses_the_files_past_it() {
+        let big = |name: &str| {
+            let line = "x".repeat(2 * 1024 * 1024);
+            format!(
+                "diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+{line}\n"
+            )
+        };
+        let patch = [big("one"), big("two"), big("three")].concat();
+        let diff = Fake::new(patch.as_bytes()).load(&Spec::WorkTree).unwrap();
+        let changes = diff
+            .files
+            .iter()
+            .map(|file| file.change)
+            .collect::<Vec<_>>();
+        assert_eq!(changes, [Change::Added, Change::TooLarge, Change::TooLarge]);
+        assert_eq!(diff.notices, [Notice::PatchCapped]);
+        assert_eq!(paths(&diff), ["one", "three", "two"]);
+    }
+
+    fn temp_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("herdr-review-diff-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn untracked_files_are_added_files_listed_with_the_tracked_ones() {
+        let root = temp_repo("untracked");
+        std::fs::write(root.join("z.txt"), b"one\r\ntwo").unwrap();
+        std::fs::write(root.join("empty"), b"").unwrap();
+        std::fs::write(root.join("data.bin"), b"a\0b").unwrap();
+        std::fs::write(root.join("big"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::os::unix::fs::symlink("target/file", root.join("link")).unwrap();
+        let mut fake = Fake::new(MIXED);
+        fake.others = Some(b"z.txt\0empty\0data.bin\0big\0nested/\0link\0gone\0".to_vec());
+        let diff = load(&root, &Spec::WorkTree, |args| fake.call(args)).unwrap();
+        let change = |path: &str| find(&diff.files, path).change;
+        assert_eq!(change("data.bin"), Change::Binary);
+        assert_eq!(change("big"), Change::TooLarge);
+        assert_eq!(change("empty"), Change::Untracked);
+        assert_eq!(change("nested/"), Change::Untracked);
+        assert_eq!(change("gone"), Change::Untracked);
+        assert!(find(&diff.files, "gone").hunks.is_empty());
+        let z = find(&diff.files, "z.txt");
+        assert_eq!(z.change, Change::Untracked);
+        assert_eq!(z.hunks[0].header, "@@ -0,0 +1,2 @@");
+        let rows = &z.hunks[0].rows;
+        assert_eq!(
+            (rows[0].new, rows[0].text.as_str(), rows[0].no_newline),
+            (Some(1), "one", false)
+        );
+        assert_eq!(
+            (rows[1].new, rows[1].text.as_str(), rows[1].no_newline),
+            (Some(2), "two", true)
+        );
+        assert_eq!(
+            texts(find(&diff.files, "link")),
+            [(RowKind::Added, "target/file")]
+        );
+        assert!(find(&diff.files, "empty").hunks.is_empty());
+        assert!(diff.notices.is_empty());
+        let order = paths(&diff);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(order, sorted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_untracked_file_past_the_total_cap_is_too_large() {
+        let root = temp_repo("budget");
+        std::fs::write(root.join("late.txt"), vec![b'y'; 1000]).unwrap();
+        let name = "first";
+        let line = "x".repeat(MAX_PATCH - 200);
+        let patch = format!(
+            "diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+{line}\n"
+        );
+        assert!(patch.len() < MAX_PATCH);
+        let mut fake = Fake::new(patch.as_bytes());
+        fake.others = Some(b"late.txt\0".to_vec());
+        let diff = load(&root, &Spec::WorkTree, |args| fake.call(args)).unwrap();
+        assert_eq!(find(&diff.files, "first").change, Change::Added);
+        assert_eq!(find(&diff.files, "late.txt").change, Change::TooLarge);
+        assert_eq!(diff.notices, [Notice::PatchCapped]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_default_base_is_the_first_ref_that_resolves() {
+        let mut fake = Fake::new(b"");
+        fake.refs = vec!["origin/HEAD", "main"];
+        let root = Path::new("/repo");
+        assert_eq!(
+            default_base(root, |args| fake.call(args)).unwrap(),
+            "origin/HEAD"
+        );
+        fake.refs = vec!["master"];
+        assert_eq!(
+            default_base(root, |args| fake.call(args)).unwrap(),
+            "master"
+        );
+        fake.refs = vec!["main", "master"];
+        assert_eq!(default_base(root, |args| fake.call(args)).unwrap(), "main");
+        fake.refs = vec![];
+        assert_eq!(
+            default_base(root, |args| fake.call(args)),
+            Err(GitError::NoBase {
+                tried: vec!["origin/HEAD".into(), "main".into(), "master".into()]
+            })
+        );
+        fake.error = Some(GitError::NotInstalled);
+        assert_eq!(
+            default_base(root, |args| fake.call(args)),
+            Err(GitError::NotInstalled)
+        );
     }
 }

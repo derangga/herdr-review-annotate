@@ -148,14 +148,17 @@ Every `git` call runs with `GIT_OPTIONAL_LOCKS=0` in its environment, so the pan
 `index.lock` while the agent runs its own `git` commands.
 
 Common flags, written as `GIT` below:
-`git -C <root> -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -M -U3`
+`git -C <root> -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3`
+and `--` after the revision. `--submodule=short` is there because `diff.submodule = log` in a user's config
+would otherwise replace the two commit ids with a log.
 
 | Spec | Command |
 |---|---|
 | Working tree | `GIT HEAD`, then `git ls-files --others --exclude-standard -z` |
 | Branch | `GIT $(git merge-base <base> HEAD)`, then the same `ls-files` |
 
-Default base: `origin/HEAD` if it resolves, else `main`, else `master`. `open --base <ref>` overrides
+Default base: `origin/HEAD` if it resolves, else `main`, else `master` (`diff::default_base`, `NoBase` when
+none does). A base that starts with `-` is treated as missing and never reaches `git`. `open --base <ref>` overrides
 it and the choice is saved in `meta.json`.
 
 ### 4.2 Cases the pipeline must handle
@@ -166,7 +169,7 @@ it and the choice is saved in `meta.json`.
 | No commits (`HEAD` missing) | Diff against the empty tree, `git hash-object -t tree /dev/null` |
 | Base missing | Message in the pane, working-tree spec offered |
 | Empty diff | Message in the pane. Comments not in the diff are still listed |
-| Untracked file | Stat first. Over 1 MiB or containing a NUL byte: listed, not rendered. Otherwise rendered as all-added lines |
+| Untracked file | Stat first. Over 1 MiB or containing a NUL byte: listed, not rendered. Otherwise rendered as all-added lines. A symlink shows its target as one line. Anything that is not a file or a link (a nested repository) and any read error: listed, not rendered. The untracked files count against the 3 MiB cap too |
 | Binary file | Listed with a "binary" row. File comments allowed |
 | Total patch over 3 MiB | Files past the cap are listed and collapsed |
 | Rename with edits | `old_path` from `rename from`. An old-side comment cites `old_path` (zeron's `cite_path`) |
