@@ -54,7 +54,6 @@ pub enum Command {
         repo: Option<PathBuf>,
         all_open: bool,
     },
-    SpikeSend,
     Comment {
         repo: Option<PathBuf>,
         action: CommentAction,
@@ -248,9 +247,6 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             no_arguments(parsed)?;
             Ok(Command::Send { repo, all_open })
         }
-        "spike-send" => split(rest, &[], &[])
-            .and_then(no_arguments)
-            .map(|()| Command::SpikeSend),
         "comment" => parse_comment(rest),
         other => Err(Usage(format!("unknown command '{other}'"))),
     }
@@ -508,7 +504,6 @@ mod tests {
             })
         );
         assert!(parse(&args("send now")).is_err());
-        assert_eq!(parse(&args("spike-send")), Ok(Command::SpikeSend));
         assert_eq!(
             comment_action("comment apply --stdin --name codex"),
             CommentAction::Apply {

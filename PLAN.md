@@ -725,6 +725,7 @@ Each milestone ends with a check that a person can run.
 Build: Cargo project, manifest, `stage-local.sh`, an `open` action that opens a pane printing its
 environment and `HERDR_PLUGIN_CONTEXT_JSON`, and a hidden `spike-send` action that sends a fixed
 two-line prompt to the agent pane through `agent_delivery.rs`.
+The `spike-send` action was removed before the first release, once `send` covered it.
 
 Checks:
 
