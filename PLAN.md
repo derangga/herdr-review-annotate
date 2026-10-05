@@ -516,7 +516,8 @@ How send behaves (built in M6):
 ### 7.1 Keymap file
 
 The user can change any key in the table. The file is `config.toml` in the plugin config directory
-(`HERDR_PLUGIN_CONFIG_DIR`, printed by `herdr plugin config-dir review`). It holds `[keys]` and `[theme]`.
+(`HERDR_PLUGIN_CONFIG_DIR`, printed by `herdr plugin config-dir review`). It holds `[keys]`, `[theme]` and
+`[sidebar]`.
 
 ```toml
 [keys]
@@ -557,6 +558,20 @@ name = "catppuccin-latte"
   mixed 15 parts in a hundred into its base, so it follows the flavor.
 - The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
   show the terminal's own background. The colours are 24-bit. A terminal without truecolor is not handled.
+
+The same file says whether the sidebar starts open:
+
+```toml
+[sidebar]
+open = false
+```
+
+- `open` is `true` or `false`. A `config.toml` with no `[sidebar]`, or a `[sidebar]` with no `open`, starts
+  with the sidebar shown.
+- An `open` that is not a boolean and a `sidebar` that is not a table are each one `Warning::Config`, and
+  the pane starts with the sidebar shown.
+- The table is read once when the pane starts, with `[keys]` and `[theme]`. `toggle_sidebar` flips the
+  state for the session and writes nothing, so the next start takes the file's value again.
 
 ### 7.2 Rules
 
@@ -881,7 +896,7 @@ boundary never sees a raw string or `serde_json::Value`.
 |---|---|---|
 | `review.jsonl` line | `Event` | `Warning::SkippedLine`, the read continues |
 | `meta.json` | `Meta` | `Warning::MetaUnreadable`, an empty `Meta` is used and rewritten on the next save |
-| `config.toml` | `Keymap`, `Theme` | `Warning::Config`, defaults are used |
+| `config.toml` | `Keymap`, `Theme`, the sidebar's starting state | `Warning::Config`, defaults are used |
 | `git` stdout | `Diff` | `Change::Unparsed` for that file |
 | `herdr` stdout and stderr | `Target`, `AgentStatus`, `HerdrError` | `Refusal::AgentGone` or the raw message |
 | Environment | `Env` | A missing value is `None`. A pane id is trusted only after `agent get` confirms it |
@@ -977,6 +992,7 @@ send. An action has no terminal, so every failure of `open` is shown with `herdr
 ```
 -> load keymap                             R: env (config dir)   E: any -> escape, defaults + warning
 -> load theme                              R: env (config dir)   E: unknown name, bad table -> escape, mocha + warning
+-> load sidebar state                      R: env (config dir)   E: not a boolean, bad table -> escape, shown + warning
 -> find root, load meta                    R: git, dir           E: NotARepo -> message screen
 -> enter raw mode and alternate screen     R: term    scope: restored by a guard on exit, panic, SIGTERM, SIGHUP
 -> store read, fold                        R: dir     E: Io -> message screen with the path

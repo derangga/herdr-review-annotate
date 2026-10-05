@@ -41,7 +41,7 @@ use crate::store::{
 use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
-use crate::view::{View, areas, draw, editor_rect, popup_block};
+use crate::view::{View, areas, draw, editor_rect, popup_block, sidebar_open};
 use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -212,16 +212,19 @@ pub struct App {
 }
 
 impl App {
-    /// Read the keymap and the theme. Nothing else is read until `load`.
+    /// Read the keymap, the theme and whether the sidebar starts open. Nothing else is read until
+    /// `load`.
     pub fn new(env: Env, repo: Option<PathBuf>) -> Self {
         let config = env
             .get("HERDR_PLUGIN_CONFIG_DIR")
             .map(|dir| Path::new(dir).join("config.toml"));
         let keymap = Keymap::load(config.as_deref());
         let (theme, theme_warnings) = Theme::load(config.as_deref());
+        let (sidebar, sidebar_warnings) = sidebar_open(config.as_deref());
         let mut warnings = keymap.warnings.clone();
         warnings.extend(theme_warnings);
-        Self {
+        warnings.extend(sidebar_warnings);
+        let mut app = Self {
             warnings,
             env,
             repo,
@@ -245,7 +248,9 @@ impl App {
             quit: false,
             compose: None,
             now: real_now,
-        }
+        };
+        app.view.sidebar = sidebar;
+        app
     }
 
     /// Say on the status line that something happened.
@@ -3303,6 +3308,67 @@ diff --git a/b.rs b/b.rs
         assert!(app.view.sidebar_drawn());
         press(&fixture, &mut app, [key('g')]);
         assert!(!app.view.sidebar_drawn());
+    }
+
+    /// A pane started with `config` as its `config.toml`.
+    fn configured(fixture: &Fixture, config: &str) -> App {
+        std::fs::write(fixture.home.join("config/config.toml"), config).unwrap();
+        opened(fixture, patch_text())
+    }
+
+    #[test]
+    fn the_config_starts_the_pane_with_the_sidebar_hidden_and_the_key_shows_it() {
+        let fixture = Fixture::new("sidebar-closed");
+        let mut app = configured(&fixture, "[sidebar]\nopen = false\n");
+        assert!(!app.view.sidebar_drawn());
+        assert!(app.warnings.is_empty(), "{:?}", app.warnings);
+        assert!(drawn(&mut app, 80).0[0].starts_with("M a.rs"));
+        press(&fixture, &mut app, [key('f')]);
+        assert!(app.view.sidebar_drawn());
+        // The key does not write the file, so the next start is hidden again.
+        assert!(!opened(&fixture, patch_text()).view.sidebar_drawn());
+    }
+
+    #[test]
+    fn the_sidebar_starts_shown_when_the_config_says_so_or_says_nothing() {
+        let fixture = Fixture::new("sidebar-open");
+        assert!(opened(&fixture, patch_text()).view.sidebar_drawn());
+        for config in ["[sidebar]\nopen = true\n", "[sidebar]\n", "[keys]\n"] {
+            let app = configured(&fixture, config);
+            assert!(app.view.sidebar_drawn(), "{config}");
+            assert!(app.warnings.is_empty(), "{config}");
+        }
+    }
+
+    #[test]
+    fn a_sidebar_table_of_the_wrong_shape_warns_and_starts_shown() {
+        let fixture = Fixture::new("sidebar-bad");
+        for (config, warning) in [
+            (
+                "[sidebar]\nopen = \"no\"\n",
+                "[sidebar] open is not true or false, showing the sidebar",
+            ),
+            (
+                "sidebar = false\n",
+                "[sidebar] is not a table, showing the sidebar",
+            ),
+        ] {
+            let app = configured(&fixture, config);
+            assert!(app.view.sidebar_drawn(), "{config}");
+            assert_eq!(app.warnings, [Warning::Config(warning.to_owned())]);
+            assert!(screen_of(&app).contains(warning), "{config}");
+        }
+    }
+
+    #[test]
+    fn a_config_that_is_missing_or_not_toml_adds_no_warning_about_the_sidebar() {
+        let fixture = Fixture::new("sidebar-no-file");
+        let app = opened(&fixture, patch_text());
+        assert!(app.view.sidebar_drawn() && app.warnings.is_empty());
+        let app = configured(&fixture, "[sidebar\nopen = ");
+        assert!(app.view.sidebar_drawn());
+        assert_eq!(app.warnings.len(), 1, "{:?}", app.warnings);
+        assert!(app.warnings[0].to_string().contains("not valid TOML"));
     }
 
     #[test]

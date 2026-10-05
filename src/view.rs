@@ -6,6 +6,7 @@
 //! is drawn and nothing is laid out for files that are off screen.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -18,7 +19,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::cards::{Card, Look, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
-use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
+use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec, Warning};
 use crate::syntax::{Cache, FileTokens, side_of};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
@@ -633,6 +634,35 @@ pub fn areas(area: Rect, sidebar: bool) -> Areas {
         stream,
         warnings,
         status,
+    }
+}
+
+/// Whether the sidebar starts open: `[sidebar] open` in the `config.toml` at `path`, and what was
+/// wrong with that table. A file that is missing, unreadable or not TOML is open with no warning
+/// here, because the keymap reads the same file and reports it.
+pub fn sidebar_open(path: Option<&Path>) -> (bool, Vec<Warning>) {
+    path.and_then(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(|| (true, Vec::new()), |text| sidebar_open_from_toml(&text))
+}
+
+/// The starting state of the sidebar for the text of a `config.toml`. Anything but a boolean is
+/// a warning and an open sidebar.
+pub fn sidebar_open_from_toml(text: &str) -> (bool, Vec<Warning>) {
+    let fallback = |what: &str| {
+        let message = format!("{what}, showing the sidebar");
+        (true, vec![Warning::Config(message)])
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return (true, Vec::new());
+    };
+    match table.get("sidebar") {
+        None => (true, Vec::new()),
+        Some(toml::Value::Table(sidebar)) => match sidebar.get("open") {
+            None => (true, Vec::new()),
+            Some(toml::Value::Boolean(open)) => (*open, Vec::new()),
+            Some(_) => fallback("[sidebar] open is not true or false"),
+        },
+        Some(_) => fallback("[sidebar] is not a table"),
     }
 }
 
