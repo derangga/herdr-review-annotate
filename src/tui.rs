@@ -902,12 +902,14 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize) {
     let (title, lines) = match prompt {
         Prompt::Quit => (
-            " unsent comments ".to_owned(),
+            format!(
+                " {unsent} unsent comment{} ",
+                if unsent == 1 { "" } else { "s" }
+            ),
             vec![
-                Line::from(format!("{unsent} unsent")),
-                Line::from("s  send, then quit"),
-                Line::from("k  quit and keep them unsent"),
-                Line::from("esc  stay"),
+                Line::from("[s] send, then quit"),
+                Line::from("[k] quit and keep them unsent"),
+                Line::from("[esc] stay"),
             ],
         ),
         Prompt::Pick {
@@ -2558,7 +2560,7 @@ diff --git a/b.rs b/b.rs
         assert!(!app.quit);
         let screen = screen_of(&app);
         assert!(
-            screen.contains("2 unsent") && screen.contains("send, then quit"),
+            screen.contains("2 unsent comments") && screen.contains("[s] send, then quit"),
             "{screen}"
         );
         press(&fixture, &mut app, [key('x')]);
