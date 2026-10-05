@@ -41,7 +41,7 @@ use crate::store::{
 use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
-use crate::view::{View, areas, draw, editor_rect, key_style, popup_block, sidebar_open};
+use crate::view::{View, areas, draw, editor_rect, key_style, note_box, popup_block, sidebar_open};
 use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -153,7 +153,8 @@ pub enum Tone {
 
 /// The keys the status line names, in the order they are drawn. They drop off from the left when
 /// the line is narrow.
-const FOOTER: [(Action, &str); 5] = [
+const FOOTER: [(Action, &str); 6] = [
+    (Action::ToggleSidebar, "sidebar"),
     (Action::Send, "send"),
     (Action::SwitchSpec, "spec"),
     (Action::Reload, "reload"),
@@ -1099,18 +1100,33 @@ pub fn render(frame: &mut Frame, app: &App) {
     app.theme.paint(frame.buffer_mut());
 }
 
-/// The editor, as wide as the stream, under the cursor or under the last of `rows`, the rows a new
-/// comment points at, whichever is lower.
+/// The editor, where `note_box` puts a note on its side of the diff, under the cursor or under the
+/// last of `rows`, the rows a new comment points at, whichever is lower.
 fn draw_compose(frame: &mut Frame, app: &App, compose: &Compose, rows: Option<(usize, usize)>) {
     let stream = areas(frame.area(), app.view.sidebar).stream;
+    // The box goes where the card of the saved comment will be.
+    let anchor = match &compose.draft {
+        Draft::Comment(anchor) => Some(anchor),
+        Draft::Reply(id) | Draft::Edit(id) => {
+            let holds = |thread: &&Thread| thread.comments().any(|comment| comment.id == *id);
+            app.review.threads.iter().find(holds).map(|t| &t.anchor)
+        }
+    };
+    let side = anchor.and_then(Anchor::side);
+    let (left, wide) = note_box(usize::from(stream.width), app.view.layout(), side);
+    let slot = Rect {
+        x: stream.x + u16::try_from(left).unwrap_or(0),
+        width: u16::try_from(wide).unwrap_or(stream.width),
+        ..stream
+    };
     let under = rows.map_or(app.view.cursor, |(_, high)| high.max(app.view.cursor));
     let at = under.saturating_sub(app.view.scroll);
     let height = compose
         .editor
-        .height(stream.width, (stream.height * 2 / 3).max(3));
+        .height(slot.width, (stream.height * 2 / 3).max(4));
     compose.editor.draw(
         frame,
-        editor_rect(stream, at, height),
+        editor_rect(slot, at, height),
         &compose.title,
         &compose.place,
         &app.theme,
@@ -1784,6 +1800,14 @@ mod tests {
             line.0
         );
         assert!(!line.0.contains("panel"));
+        // The sidebar key comes first, so it is the first to drop.
+        assert!(line.0.contains("  f sidebar  S send"), "{}", line.0);
+        assert_eq!(cells_of(&line, "f ")[0].fg, theme.accent);
+        let narrow = status_row(&mut app, 77).0;
+        assert!(
+            narrow.contains("   S send") && !narrow.contains("sidebar"),
+            "{narrow}"
+        );
         for key in ["S", "b", "R", "?", "q"] {
             let what = format!("{key} ");
             let cell = &cells_of(&line, &what)[0];
@@ -1983,8 +2007,9 @@ mod tests {
         std::fs::write(fixture.dir().join("review.jsonl"), log_line(&event)).unwrap();
         let mut app = fixture.started();
         drive(&fixture, &mut app, vec![None], |_| {});
-        // The file header, the hunk and two lines, and a box of two borders and two body rows.
-        assert_eq!(app.view.stream.len(), 8);
+        // The file header, the hunk and two lines, and a box of two borders, an empty row and two
+        // body rows.
+        assert_eq!(app.view.stream.len(), 9);
         assert!(screen_of(&app).contains("● Your note"));
         // A narrower pane wraps the body into more rows, and the loop lays the stream out again.
         let mut git = |args: &[String]| fixture.git(args);
@@ -2000,8 +2025,8 @@ mod tests {
             },
             || polls.get() >= 1,
         );
-        // Five words fit a row of the 30 column box, so the body is four rows between the borders.
-        assert_eq!(app.view.stream.len(), 10);
+        // Five words fit a row of the 28 column box, so the body is four rows under the empty one.
+        assert_eq!(app.view.stream.len(), 11);
     }
 
     #[test]
@@ -2459,8 +2484,16 @@ diff --git a/b.rs b/b.rs
 
     /// The pane drawn at `width` by 12, as the rows of the screen and the buffer behind them.
     fn drawn(app: &mut App, width: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
-        app.resize(Rect::new(0, 0, width, 12));
-        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        drawn_tall(app, width, 12)
+    }
+
+    fn drawn_tall(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> (Vec<String>, ratatui::buffer::Buffer) {
+        app.resize(Rect::new(0, 0, width, height));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let rows = buffer
@@ -2476,43 +2509,47 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
-    fn the_editor_is_a_rounded_box_as_wide_as_the_stream_under_the_marked_row() {
+    fn the_editor_is_a_rounded_box_where_a_note_goes_under_the_marked_row() {
         let fixture = Fixture::new("editor-box");
         let mut app = opened(&fixture, patch_text());
-        // Unified: the stream is columns 20..80, and row 3 is `+new`.
+        // Unified: the stream is columns 20..80, the box is four cells in, and row 3 is `+new`.
         press(&fixture, &mut app, [key('j'), key('j'), key('j'), key('c')]);
         let (rows, buffer) = drawn(&mut app, 80);
         let stream = |row: &str| row.chars().skip(20).collect::<String>();
         assert!(
-            stream(&rows[4]).starts_with("╭ Draft note - a.rs R1 ─"),
+            stream(&rows[4]).starts_with("    ╭ Draft note - a.rs R1 ─"),
             "{}",
             rows[4]
         );
         assert!(rows[4].ends_with("─╮"), "{}", rows[4]);
+        // An empty row, then the text a cell clear of the side.
+        assert_eq!(stream(&rows[5]), format!("    │{}│", " ".repeat(54)));
         assert!(
-            stream(&rows[5]).starts_with("│Write a note…"),
+            stream(&rows[6]).starts_with("    │ Write a note…"),
             "{}",
-            rows[5]
+            rows[6]
         );
-        assert!(rows[5].ends_with('│'), "{}", rows[5]);
-        assert!(stream(&rows[6]).starts_with("╰─"), "{}", rows[6]);
-        assert!(rows[6].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[6]);
-        assert_eq!(buffer[(20, 4)].fg, app.theme.warning);
+        assert!(rows[6].ends_with('│'), "{}", rows[6]);
+        assert!(stream(&rows[7]).starts_with("    ╰─"), "{}", rows[7]);
+        assert!(rows[7].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[7]);
+        assert_eq!(buffer[(24, 4)].fg, app.theme.warning);
         // The commented row keeps a bar and a tint while the editor is open.
         assert_eq!(buffer[(20, 3)].symbol(), "▌");
         assert_eq!(buffer[(20, 3)].fg, app.theme.warning);
         assert_eq!(buffer[(60, 3)].bg, app.theme.selection);
         assert_ne!(buffer[(60, 2)].bg, app.theme.selection);
-        // Side by side: the sidebar is 32 columns, and `-old` and `+new` share row 2.
+        // Side by side: the sidebar is 32 columns, and `-old` and `+new` share row 2. The comment
+        // is on the new side, so the box is the new half, which starts 49 cells into the stream.
         let (rows, buffer) = drawn(&mut app, 130);
-        let stream = |row: &str| row.chars().skip(32).collect::<String>();
+        let half = |row: &str| row.chars().skip(32 + 49).collect::<String>();
         assert!(
-            stream(&rows[3]).starts_with("╭ Draft note - a.rs R1 ─"),
+            half(&rows[3]).starts_with("╭ Draft note - a.rs R1 ─"),
             "{}",
             rows[3]
         );
         assert!(rows[3].ends_with("─╮"), "{}", rows[3]);
-        assert!(rows[5].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[5]);
+        assert_eq!(buffer[(32 + 48, 3)].symbol(), " ");
+        assert!(rows[6].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[6]);
         assert_eq!(buffer[(100, 2)].bg, app.theme.selection);
         press(&fixture, &mut app, [esc()]);
         let (rows, buffer) = drawn(&mut app, 130);
@@ -2723,14 +2760,14 @@ diff --git a/b.rs b/b.rs
         press(&fixture, &mut app, chars("a reply"));
         press(&fixture, &mut app, [ctrl_s()]);
         // On the reply's line, d removes only the reply.
-        let reply_row = app.view.cursor + 2;
-        press(&fixture, &mut app, [key('j'), key('j')]);
+        let reply_row = app.view.cursor + 3;
+        press(&fixture, &mut app, chars("jjj"));
         assert_eq!(app.view.cursor, reply_row);
         press(&fixture, &mut app, [key('d')]);
         assert!(screen_of(&app).contains("deleted u2"));
         assert!(app.review.threads[0].replies.is_empty());
         // On the root's line, d removes the thread.
-        press(&fixture, &mut app, [key('k'), key('k')]);
+        press(&fixture, &mut app, chars("kkk"));
         press(&fixture, &mut app, [key('d')]);
         assert_eq!(app.review.threads.len(), 1);
         assert_eq!(app.review.threads[0].root.id.as_str(), "a1");
@@ -3235,40 +3272,43 @@ diff --git a/b.rs b/b.rs
 
     #[test]
     fn the_sidebar_key_hides_and_shows_it_and_the_cards_follow_the_stream_s_width() {
-        // The sidebar is 20 columns of an 80 column pane and 32 of a 130 column one.
-        for (width, sidebar) in [(80, 20), (130, 32)] {
+        // The sidebar is 20 columns of an 80 column pane, where a box is four cells into the
+        // stream. It is 32 of a 130 column one, where the box is the new half of the stream:
+        // 49 cells into a stream of 98, and 65 into one of 130.
+        for (width, shown, hidden) in [(80, 24, 4), (130, 81, 65)] {
             let fixture = Fixture::new(&format!("sidebar-toggle-{width}"));
             write_log(&fixture, &[thread_event("u1", Author::User, "fix")]);
             let mut app = opened(&fixture, patch_text());
             let last = usize::from(width) - 1;
-            assert_eq!(card_span(&mut app, width), (sidebar, last));
+            assert_eq!(card_span(&mut app, width), (shown, last));
             assert!(drawn(&mut app, width).0.join("\n").contains("•M a.rs"));
             act(&fixture, &mut app, Action::ToggleSidebar);
             assert!(!app.view.sidebar_drawn());
-            assert_eq!(card_span(&mut app, width), (0, last));
+            assert_eq!(card_span(&mut app, width), (hidden, last));
             let (rows, _) = drawn(&mut app, width);
             assert!(rows[0].starts_with("M a.rs"), "{}", rows[0]);
             assert!(!rows.join("\n").contains("•M a.rs"));
             act(&fixture, &mut app, Action::ToggleSidebar);
             assert!(app.view.sidebar_drawn());
-            assert_eq!(card_span(&mut app, width), (sidebar, last));
+            assert_eq!(card_span(&mut app, width), (shown, last));
             assert_eq!(app.message(), None);
         }
     }
 
     #[test]
-    fn the_editor_box_is_as_wide_as_the_pane_while_the_sidebar_is_hidden() {
+    fn the_editor_box_follows_the_stream_while_the_sidebar_is_hidden() {
         let fixture = Fixture::new("sidebar-editor");
         let mut app = opened(&fixture, patch_text());
         press(&fixture, &mut app, chars("fjjjc"));
         let (rows, buffer) = drawn(&mut app, 80);
+        // Four cells into a stream that starts at the pane's first column.
         assert!(
-            rows[4].starts_with("╭ Draft note - a.rs R1 ─"),
+            rows[4].starts_with("    ╭ Draft note - a.rs R1 ─"),
             "{}",
             rows[4]
         );
         assert!(rows[4].ends_with("─╮"), "{}", rows[4]);
-        assert!(rows[6].starts_with("╰─"), "{}", rows[6]);
+        assert!(rows[7].starts_with("    ╰─"), "{}", rows[7]);
         // The mark of the commented row is in the pane's first column.
         assert_eq!(buffer[(0, 3)].symbol(), "▌");
     }
@@ -3737,7 +3777,8 @@ diff --git a/b.rs b/b.rs
             ],
         );
         let mut app = opened(&fixture, patch_text());
-        let (rows, _) = drawn(&mut app, 80);
+        // Four rows of the diff and two boxes of four rows each.
+        let (rows, _) = drawn_tall(&mut app, 80, 16);
         let footers = rows
             .iter()
             .filter(|row| row.contains('╰'))

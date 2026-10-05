@@ -35,6 +35,17 @@ impl Card {
         self.lines.push(line);
         self.owners.push(owner);
     }
+
+    /// The card moved `left` cells to the right.
+    #[must_use]
+    pub fn indented(mut self, left: usize) -> Self {
+        if left > 0 {
+            for line in &mut self.lines {
+                line.spans.insert(0, Span::raw(" ".repeat(left)));
+            }
+        }
+        self
+    }
 }
 
 /// How long before `now` the time `at` was: `now` under a minute, then `2m`, `3h`, `2d`. Empty
@@ -225,8 +236,9 @@ fn top(thread: &Thread, outdated: bool, width: usize, look: &Look, border: Style
 }
 
 /// The lines of one thread at `width` cells. A resolved thread is one line. An open thread is a
-/// rounded box as wide as the stream: the top border says who wrote it, when and where, the body
-/// and each reply are wrapped inside, and the bottom border names the keys that act on it. The
+/// rounded box `width` cells wide: the top border says who wrote it, when and where, then comes an
+/// empty row, the body and each reply are wrapped inside with a space at each side, and the
+/// bottom border names the keys that act on it. The
 /// `outdated` tag is on open threads only, and an outdated thread, or one that is not in the diff,
 /// says what its line was.
 pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) -> Card {
@@ -250,6 +262,8 @@ pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) ->
     };
     let mut card = Card::default();
     card.push(top(thread, outdated, width, look, border), 0);
+    // An empty row under the top border, as the editor has.
+    card.push(row(String::new(), Style::new()), 0);
     if let Some(text) = was(&thread.anchor)
         && (in_block || outdated)
     {
@@ -393,6 +407,7 @@ mod tests {
             boxed(&thread, MATCHED, 50),
             [
                 "╭ ● Your note · 10m · src/a.rs R7 [unsent] ──────╮",
+                "│                                                │",
                 "│ first                                          │",
                 "│ second                                         │",
                 "│   ↳ agent:claude: done, one two three four     │",
@@ -403,15 +418,24 @@ mod tests {
     }
 
     #[test]
-    fn a_card_is_as_wide_as_the_stream_in_both_layouts_with_no_indent() {
-        // 60 cells is the stream of an 80 column pane, 98 that of a 130 column one.
-        for width in [60, 98] {
+    fn a_card_fills_the_width_it_is_given_with_an_empty_row_under_its_top_border() {
+        // 56 cells is the box in the stream of an 80 column pane, 48 a half of a 130 column one.
+        for width in [56, 48] {
             let lines = boxed(&thread("x"), MATCHED, width);
             assert!(lines[0].starts_with("╭ ● Your note"), "{}", lines[0]);
-            assert!(lines[1].starts_with("│ x  "), "{}", lines[1]);
-            assert!(lines[1].ends_with(" │"), "{}", lines[1]);
-            assert!(lines[2].starts_with("╰──"), "{}", lines[2]);
+            assert_eq!(lines[1], format!("│{}│", " ".repeat(width - 2)));
+            assert!(lines[2].starts_with("│ x  "), "{}", lines[2]);
+            assert!(lines[2].ends_with(" │"), "{}", lines[2]);
+            assert!(lines[3].starts_with("╰──"), "{}", lines[3]);
         }
+        // A card moved to the right keeps its width and its owners.
+        let moved = card(&thread("x"), MATCHED, 48, &Look::test()).indented(4);
+        assert!(
+            text(&moved)
+                .iter()
+                .all(|line| line.starts_with("    ") && string_width(line) == 52)
+        );
+        assert_eq!(moved.owners.len(), 4);
     }
 
     #[test]
@@ -444,7 +468,7 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert!(lines[2].ends_with("── r reply ╯"), "{}", lines[2]);
+        assert!(lines[3].ends_with("── r reply ╯"), "{}", lines[3]);
         thread.root.author = Author::Agent(None);
         let lines = boxed(&thread, MATCHED, 50);
         assert!(lines[0].starts_with("╭ ● agent · 10m · "), "{}", lines[0]);
@@ -464,9 +488,9 @@ mod tests {
         let lines = text(&card(&thread("x"), MATCHED, 60, &look));
         // `edit` has no key, so it is left out. `delete` shows the first of its two.
         assert!(
-            lines[2].ends_with("── ctrl+r reply  D delete ╯"),
+            lines[3].ends_with("── ctrl+r reply  D delete ╯"),
             "{}",
-            lines[2]
+            lines[3]
         );
         let none = Keymap::from_toml("[keys]\nreply = \"\"\nedit = \"\"\ndelete = \"\"\n");
         let look = Look {
@@ -474,7 +498,7 @@ mod tests {
             ..look
         };
         let lines = text(&card(&thread("x"), MATCHED, 20, &look));
-        assert_eq!(lines[2], format!("╰{}╯", "─".repeat(18)));
+        assert_eq!(lines[3], format!("╰{}╯", "─".repeat(18)));
     }
 
     #[test]
@@ -564,7 +588,7 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert!(lines[1].starts_with("│ was: let x = 1;  "), "{}", lines[1]);
+        assert!(lines[2].starts_with("│ was: let x = 1;  "), "{}", lines[2]);
         open.status = Status::Resolved {
             by: Author::Agent(Some("claude".into())),
         };
@@ -616,9 +640,9 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert!(lines[1].starts_with("│ was: let x = 1;  "), "{}", lines[1]);
-        assert!(lines[2].starts_with("│ fix  "), "{}", lines[2]);
-        assert_eq!(lines.len(), 4);
+        assert!(lines[2].starts_with("│ was: let x = 1;  "), "{}", lines[2]);
+        assert!(lines[3].starts_with("│ fix  "), "{}", lines[3]);
+        assert_eq!(lines.len(), 5);
         let mut range = thread("fix");
         range.anchor.target = AnchorTarget::Range {
             side: Side::Old,
@@ -632,7 +656,7 @@ mod tests {
         file.anchor.target = AnchorTarget::File;
         let lines = boxed(&file, Placement::NotInDiff, 50);
         assert!(lines[0].contains(" · src/a.rs [unsent] "), "{}", lines[0]);
-        assert_eq!(lines.len(), 3, "a file comment has no line text to show");
+        assert_eq!(lines.len(), 4, "a file comment has no line text to show");
         file.status = Status::Resolved { by: Author::User };
         assert_eq!(
             text(&card(&file, Placement::NotInDiff, 60, &Look::test())),
@@ -674,11 +698,11 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert!(lines[1].contains("a[2Jb"));
+        assert!(lines[2].contains("a[2Jb"));
         assert!(
-            lines[2].contains("agent:evil (edited since sent): xy"),
+            lines[3].contains("agent:evil (edited since sent): xy"),
             "{}",
-            lines[2]
+            lines[3]
         );
         assert!(!lines.iter().any(|line| line.chars().any(char::is_control)));
         // The name on the border of an agent's own box is cleaned too.
@@ -706,12 +730,13 @@ mod tests {
             .push(comment("a1", Author::Agent(None), "one"));
         thread.replies.push(comment("u2", Author::User, "two"));
         let placement = Placement::Outdated { near: Some(1) };
-        // The top border, the old text, two body lines, a line per reply, the bottom border. The
-        // borders belong to the root, which is what the keys on the bottom border act on.
+        // The top border, the empty row, the old text, two body lines, a line per reply, the
+        // bottom border. The borders belong to the root, which is what the keys on the bottom
+        // border act on.
         let look = Look::test();
         assert_eq!(
             card(&thread, placement, 40, &look).owners,
-            [0, 0, 0, 0, 1, 2, 0]
+            [0, 0, 0, 0, 0, 1, 2, 0]
         );
         // A resolved thread is one line, which shows its last comment.
         thread.status = Status::Resolved { by: Author::User };

@@ -6,7 +6,7 @@
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
@@ -64,11 +64,12 @@ impl Editor {
 
     /// Rows the widget wants at `width` cells wide, borders included, at most `max`.
     pub fn height(&self, width: u16, max: u16) -> u16 {
-        let inner = usize::from(width.saturating_sub(2)).max(1);
+        let inner = usize::from(width.saturating_sub(4)).max(1);
         let lines = layout_comment(&self.comment, self.cursor, inner)
             .lines
             .len();
-        u16::try_from(lines + 2).unwrap_or(u16::MAX).min(max)
+        // The two borders and the empty row under the top one.
+        u16::try_from(lines + 3).unwrap_or(u16::MAX).min(max)
     }
 
     /// Draw the editor in `area` as a rounded box. The top border reads `title` and then `place`,
@@ -96,7 +97,13 @@ impl Editor {
                 border.add_modifier(Modifier::BOLD),
             ))
             .title_bottom(footer.right_aligned());
-        let inner = block.inner(area);
+        // The text keeps a cell clear of each side and a row clear of the top border.
+        let inner = block.inner(area).inner(Margin::new(1, 0));
+        let inner = Rect {
+            y: inner.y + 1,
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
         if inner.is_empty() {
@@ -447,30 +454,32 @@ mod tests {
             .draw(|frame| {
                 let fill = vec![Line::from("x".repeat(40)); 10];
                 frame.render_widget(Paragraph::new(fill), frame.area());
-                let area = Rect::new(2, 3, 30, 4);
+                let area = Rect::new(2, 3, 30, 5);
                 editor.draw(frame, area, "Draft note - ", "a.rs R1", &Theme::default());
             })
             .unwrap();
         let rows = rows(&terminal);
         assert_eq!(rows[2], "x".repeat(40));
-        assert_eq!(rows[7], "x".repeat(40));
+        assert_eq!(rows[8], "x".repeat(40));
         assert!(
             rows[3].starts_with("xx╭ Draft note - a.rs R1 ─"),
             "{}",
             rows[3]
         );
         assert!(rows[3].ends_with("╮xxxxxxxx"), "{}", rows[3]);
-        assert!(rows[4].starts_with("xx│first"), "{}", rows[4]);
-        assert!(rows[5].contains("second"));
-        assert!(rows[6].starts_with("xx╰─"), "{}", rows[6]);
+        // An empty row under the top border, and a cell between each side and the text.
+        assert_eq!(rows[4], format!("xx│{}│xxxxxxxx", " ".repeat(28)));
+        assert!(rows[5].starts_with("xx│ first "), "{}", rows[5]);
+        assert!(rows[6].starts_with("xx│ second "), "{}", rows[6]);
+        assert!(rows[7].starts_with("xx╰─"), "{}", rows[7]);
         assert!(
-            rows[6].ends_with(" ^S save  Esc cancel ╯xxxxxxxx"),
+            rows[7].ends_with(" ^S save  Esc cancel ╯xxxxxxxx"),
             "{}",
-            rows[6]
+            rows[7]
         );
         terminal
             .backend_mut()
-            .assert_cursor_position(Position::new(9, 5));
+            .assert_cursor_position(Position::new(10, 6));
         // The border is the theme's warning colour.
         let theme = Theme::default();
         let buffer = terminal.backend().buffer();
@@ -484,17 +493,17 @@ mod tests {
         let mut terminal = drawn(&editor, 40, "Reply to u1", "");
         let shown = rows(&terminal);
         assert!(shown[0].starts_with("╭ Reply to u1 ─"), "{}", shown[0]);
-        assert!(shown[1].starts_with("│Write a note…  "), "{}", shown[1]);
+        assert!(shown[2].starts_with("│ Write a note…  "), "{}", shown[2]);
         assert_eq!(
-            terminal.backend().buffer()[(1, 1)].fg,
+            terminal.backend().buffer()[(2, 2)].fg,
             Theme::default().subtle
         );
         terminal
             .backend_mut()
-            .assert_cursor_position(Position::new(1, 1));
+            .assert_cursor_position(Position::new(2, 2));
         type_text(&mut editor, "x");
         let shown = rows(&drawn(&editor, 40, "Reply to u1", ""));
-        assert!(shown[1].starts_with("│x  "), "{}", shown[1]);
+        assert!(shown[2].starts_with("│ x  "), "{}", shown[2]);
     }
 
     #[test]
@@ -530,14 +539,14 @@ mod tests {
         editor.handle_key(KeyEvent::from(KeyCode::Right));
         let shown = rows(&drawn(&editor, 50, "Edit u1", ""));
         assert!(shown[3].ends_with(" ^S save  Esc cancel ╯"), "{}", shown[3]);
-        assert!(shown[1].contains("keep me"));
+        assert!(shown[2].contains("keep me"));
     }
 
     #[test]
     fn a_long_comment_scrolls_to_keep_the_cursor_visible() {
         let mut editor = Editor::default();
         type_text(&mut editor, "l1\nl2\nl3\nl4\nl5");
-        let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
         terminal
             .draw(|frame| editor.draw(frame, frame.area(), "c", "", &Theme::default()))
             .unwrap();
@@ -547,9 +556,9 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol().to_owned())
                 .collect::<String>()
         };
-        assert!(text(1).contains("l4") && text(2).contains("l5"));
+        assert!(text(2).contains("l4") && text(3).contains("l5"));
         assert_eq!(editor.height(20, 6), 6);
         assert_eq!(editor.height(20, 4), 4);
-        assert_eq!(Editor::default().height(20, 6), 3);
+        assert_eq!(Editor::default().height(20, 6), 4);
     }
 }

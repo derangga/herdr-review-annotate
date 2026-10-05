@@ -369,6 +369,16 @@ pub struct Anchor {
     pub spec: Spec,
 }
 
+impl Anchor {
+    /// The side of the diff the comment is on. A file comment is on neither.
+    pub const fn side(&self) -> Option<Side> {
+        match &self.target {
+            AnchorTarget::Line { side, .. } | AnchorTarget::Range { side, .. } => Some(*side),
+            AnchorTarget::File => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {

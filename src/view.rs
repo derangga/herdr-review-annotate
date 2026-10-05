@@ -89,6 +89,30 @@ fn split_widths(width: usize) -> (usize, usize) {
     (left, width.saturating_sub(1 + left))
 }
 
+/// A stream narrower than this does not dock a note to one half of a split row.
+const NOTE_DOCK_MIN: usize = 84;
+
+/// Cells to the left of a note that is not docked.
+const NOTE_INDENT: usize = 4;
+
+/// A note that is not docked is never narrower than this, unless the stream is.
+const NOTE_MIN: usize = 28;
+
+/// Where the box of a note goes in a stream `width` cells wide: the cells to its left and its
+/// width. Side by side, it is the half its line is on. Otherwise, and for a file comment, it is
+/// indented and runs to the right edge.
+pub fn note_box(width: usize, layout: DiffLayout, side: Option<Side>) -> (usize, usize) {
+    let (old, new) = split_widths(width);
+    match (layout, side) {
+        (DiffLayout::Split, Some(Side::New)) if width >= NOTE_DOCK_MIN => (width - new, new),
+        (DiffLayout::Split, Some(Side::Old)) if width >= NOTE_DOCK_MIN => (0, old),
+        _ => {
+            let wide = width.saturating_sub(NOTE_INDENT).max(NOTE_MIN).min(width);
+            (width - wide, wide)
+        }
+    }
+}
+
 /// What one row inside a file is. Indices point into the file's hunks and their rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileRow {
@@ -349,7 +373,18 @@ impl Stream {
             .threads
             .iter()
             .zip(&placements)
-            .map(|(thread, placement)| card(thread, *placement, width, look))
+            .map(|(thread, placement)| {
+                // A resolved thread is one line across the stream. An open one is a docked box.
+                if !thread.is_open() {
+                    return card(thread, *placement, width, look);
+                }
+                let side = thread
+                    .anchor
+                    .side()
+                    .filter(|_| *placement != Placement::NotInDiff);
+                let (left, wide) = note_box(width, layout, side);
+                card(thread, *placement, wide, look).indented(left)
+            })
             .collect::<Vec<_>>();
         let mut stream = Self {
             card_rows: vec![0; cards.len()],
@@ -1533,7 +1568,8 @@ fn draw_mark(frame: &mut Frame, view: &View, (low, high): (usize, usize), theme:
 }
 
 /// Where an editor `height` rows tall goes in `stream` when the row it belongs to is row `at` of
-/// it: under that row, else above it, else at the bottom. It is as wide as the stream.
+/// it: under that row, else above it, else at the bottom. It is as wide as `stream`, which the
+/// caller narrows to where a note goes.
 pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
     let height = height.min(stream.height);
     let at = u16::try_from(at)
@@ -1897,21 +1933,21 @@ Binary files a/img.png and b/img.png differ
     }
 
     // With `review()` at 80 columns the stream is 60 wide. A card is a box: two borders around
-    // its body, and the old line text when it is outdated or not in the diff.
-    // The block of threads not in the diff is rows 0..=4: the heading, and u4's four rows.
-    // a.rs starts at 5: header 5, hunk 6, a1 7, a2 8, A2 9, then u3 (rows 10-12), a3 13, then
-    // u1 (14-17), hunk 18, a10 19, a11 20, a12 21. b.rs starts at 22, and u2 is rows 23-25.
-    // Its hunk is 26, b1 27, b2 28, img.png 29, and its note 30.
+    // an empty row and its body, and the old line text when it is outdated or not in the diff.
+    // The block of threads not in the diff is rows 0..=5: the heading, and u4's five rows.
+    // a.rs starts at 6: header 6, hunk 7, a1 8, a2 9, A2 10, then u3 (rows 11-14), a3 15, then
+    // u1 (16-20), hunk 21, a10 22, a11 23, a12 24. b.rs starts at 25, and u2 is rows 26-29.
+    // Its hunk is 30, b1 31, b2 32, img.png 33, and its note 34.
 
     #[test]
     fn cards_take_rows_under_the_lines_they_are_placed_at() {
         let diff = diff_of(PATCH);
         let review = review();
         let view = view(&diff, &review, 80, 12);
-        assert_eq!(view.stream.len(), 31);
-        assert_eq!(view.stream.hunk_rows, [6, 18, 26]);
-        assert_eq!(view.stream.thread_rows, [1, 10, 14, 23]);
-        assert_eq!(view.stream.file_start(1), Some(22));
+        assert_eq!(view.stream.len(), 35);
+        assert_eq!(view.stream.hunk_rows, [7, 21, 30]);
+        assert_eq!(view.stream.thread_rows, [1, 11, 16, 26]);
+        assert_eq!(view.stream.file_start(1), Some(25));
         assert_eq!(
             view.stream.placements,
             [
@@ -1921,7 +1957,7 @@ Binary files a/img.png and b/img.png differ
                 Placement::NotInDiff,
             ]
         );
-        let kinds = (0..31)
+        let kinds = (0..35)
             .map(|row| match view.stream.locate(&diff, row).unwrap() {
                 RowRef::BlockHeader(_) => "block".to_owned(),
                 RowRef::Card { thread, line } => format!("t{thread}.{line}"),
@@ -1935,10 +1971,10 @@ Binary files a/img.png and b/img.png differ
             .collect::<Vec<_>>();
         assert_eq!(
             kinds.join(" "),
-            "block t3.0 t3.1 t3.2 t3.3 file hunk a1 a2 A2 t2.0 t2.1 t2.2 a3 t0.0 t0.1 t0.2 t0.3 \
-             hunk a10 a11 a12 file t1.0 t1.1 t1.2 hunk b1 b2 file note"
+            "block t3.0 t3.1 t3.2 t3.3 t3.4 file hunk a1 a2 A2 t2.0 t2.1 t2.2 t2.3 a3 t0.0 t0.1 \
+             t0.2 t0.3 t0.4 hunk a10 a11 a12 file t1.0 t1.1 t1.2 t1.3 hunk b1 b2 file note"
         );
-        assert!(view.stream.locate(&diff, 31).is_none());
+        assert!(view.stream.locate(&diff, 35).is_none());
     }
 
     #[test]
@@ -1951,13 +1987,13 @@ Binary files a/img.png and b/img.png differ
             view.apply(Action::NextThread);
             seen.push(view.cursor);
         }
-        assert_eq!(seen, [1, 10, 14, 23, 23]);
+        assert_eq!(seen, [1, 11, 16, 26, 26]);
         let mut back = Vec::new();
         for _ in 0..5 {
             view.apply(Action::PrevThread);
             back.push(view.cursor);
         }
-        assert_eq!(back, [14, 10, 1, 1, 1]);
+        assert_eq!(back, [16, 11, 1, 1, 1]);
     }
 
     #[test]
@@ -1970,16 +2006,16 @@ Binary files a/img.png and b/img.png differ
             view.focused()
         };
         // u3's card, and the A2 line it hangs under.
-        assert_eq!(focused(&mut view, 11), Some(2));
-        assert_eq!(focused(&mut view, 9), Some(2));
+        assert_eq!(focused(&mut view, 12), Some(2));
+        assert_eq!(focused(&mut view, 10), Some(2));
         // The file header with a file comment, and the line u1 hangs under.
-        assert_eq!(focused(&mut view, 22), Some(1));
-        assert_eq!(focused(&mut view, 13), Some(0));
+        assert_eq!(focused(&mut view, 25), Some(1));
+        assert_eq!(focused(&mut view, 15), Some(0));
         // The block, its heading, a line with no card, and a hunk header.
         assert_eq!(focused(&mut view, 3), Some(3));
         assert_eq!(focused(&mut view, 0), None);
-        assert_eq!(focused(&mut view, 7), None);
-        assert_eq!(focused(&mut view, 18), None);
+        assert_eq!(focused(&mut view, 8), None);
+        assert_eq!(focused(&mut view, 21), None);
     }
 
     #[test]
@@ -2006,9 +2042,12 @@ Binary files a/img.png and b/img.png differ
         // A file comment: under the file header, with the bare path.
         assert_eq!(at("· b.rs [unsent]"), at("A b.rs") + 1);
         // Every box closes with the keys that act on it, against the stream's right edge.
-        assert!(rows[at("· a.rs R3 ") + 2].ends_with(" r reply  e edit  d delete ╯"));
+        assert!(rows[at("· a.rs R3 ") + 3].ends_with(" r reply  e edit  d delete ╯"));
+        // In the unified layout a box is indented four cells and runs to the right edge.
+        assert!(rows[at("· a.rs R3 ")].starts_with("    ╭ ● Your note"));
+        assert!(rows[at("· a.rs R3 ") + 2].starts_with("    │ "));
         // The cursor row is highlighted whether it is a card or a diff row.
-        view.move_to(10);
+        view.move_to(11);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal
             .draw(|frame| {
@@ -2024,29 +2063,52 @@ Binary files a/img.png and b/img.png differ
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(30, 10)].bg, Theme::default().cursor);
-        assert_ne!(buffer[(30, 9)].bg, Theme::default().cursor);
+        assert_eq!(buffer[(30, 11)].bg, Theme::default().cursor);
+        assert_ne!(buffer[(30, 10)].bg, Theme::default().cursor);
     }
 
     #[test]
-    fn a_card_is_a_box_across_the_whole_stream_in_the_side_by_side_layout() {
+    fn a_note_docks_to_its_half_side_by_side_and_is_indented_otherwise() {
+        let (split, unified) = (DiffLayout::Split, DiffLayout::Unified);
+        // The halves of a 98 cell stream are 48 and 49 with a cell between them.
+        assert_eq!(note_box(98, split, Some(Side::New)), (49, 49));
+        assert_eq!(note_box(98, split, Some(Side::Old)), (0, 48));
+        // A file comment has no half, and the unified layout has none either.
+        assert_eq!(note_box(98, split, None), (4, 94));
+        assert_eq!(note_box(60, unified, Some(Side::New)), (4, 56));
+        // A split stream too narrow to dock in indents, and a narrow stream gives the box all of it.
+        assert_eq!(note_box(80, split, Some(Side::New)), (4, 76));
+        assert_eq!(note_box(30, unified, None), (2, 28));
+        assert_eq!(note_box(20, unified, None), (0, 20));
+    }
+
+    #[test]
+    fn a_card_is_docked_to_the_half_its_line_is_on_in_the_side_by_side_layout() {
         let diff = diff_of(PATCH);
         let review = review();
         let view = view(&diff, &review, 130, 40);
         assert_eq!(view.stream.layout, DiffLayout::Split);
         let screen = fresh(&view, &diff);
         // The sidebar is 32 columns and the stream is the other 98.
-        let boxes = screen
+        let tops = screen
             .lines()
             .map(|row| row.chars().skip(32).collect::<String>())
-            .filter(|row| row.starts_with('╭'))
+            .filter(|row| row.trim_start().starts_with("╭ ● Your note · "))
             .collect::<Vec<_>>();
-        assert_eq!(boxes.len(), 4, "{screen}");
-        for top in &boxes {
-            assert!(top.starts_with("╭ ● Your note · "), "{top}");
+        assert_eq!(tops.len(), 4, "{screen}");
+        // The cells to the left of a box, and its width.
+        let shape = |needle: &str| {
+            let top = tops.iter().find(|top| top.contains(needle)).unwrap();
             assert!(top.ends_with("─╮"), "{top}");
-            assert_eq!(string_width(top), 98, "{top}");
-        }
+            let left = top.chars().take_while(|c| *c == ' ').count();
+            (left, string_width(top.trim_start()))
+        };
+        // u3 and u1 are on lines of the new side, so their boxes are the right half.
+        assert_eq!(shape("· a.rs R3 "), (49, 49));
+        assert_eq!(shape("· a.rs R4 "), (49, 49));
+        // A file comment and a thread that is not in the diff have no half.
+        assert_eq!(shape("· b.rs "), (4, 94));
+        assert_eq!(shape("· gone.rs R1 "), (4, 94));
         assert_eq!(
             screen
                 .lines()
@@ -2079,7 +2141,7 @@ Binary files a/img.png and b/img.png differ
             view.stream.placements[0],
             Placement::Outdated { near: Some(3) }
         );
-        assert_eq!(view.stream.len(), 28);
+        assert_eq!(view.stream.len(), 31);
         let screen = fresh(&view, &diff);
         assert!(
             screen.contains("✓ u1 resolved by agent:claude: Added with_capacity"),
@@ -2108,7 +2170,7 @@ Binary files a/img.png and b/img.png differ
             screen.contains("No changes in the working tree."),
             "{screen}"
         );
-        assert_eq!(view.stream.thread_rows, [1, 5]);
+        assert_eq!(view.stream.thread_rows, [1, 6]);
         // With no threads either, the message is the only row.
         let bare = fresh(&view_of(&diff), &diff);
         assert!(!bare.contains("not in this diff"));
@@ -2124,7 +2186,7 @@ Binary files a/img.png and b/img.png differ
         };
         review.threads[0].root.author = Author::Agent(None);
         let view = view(&diff, &review, 80, 12);
-        assert_eq!(view.stream.len(), 7);
+        assert_eq!(view.stream.len(), 8);
         assert_eq!(view.stream.thread_rows, [1]);
     }
 
@@ -2347,8 +2409,8 @@ Binary files a/img.png and b/img.png differ
         let diff = diff_of(PATCH);
         let mut review = review();
         let mut view = view(&diff, &review, 80, 12);
-        // Line 1 of u3's card, which is row 11.
-        view.move_to(11);
+        // Line 1 of u3's card, which is row 12.
+        view.move_to(12);
         // A new thread above it pushes everything down by its rows.
         review.threads.push(thread("u5", "a.rs", line(1, "a1")));
         let spot = view.spot(&diff);
@@ -2357,7 +2419,7 @@ Binary files a/img.png and b/img.png differ
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Card { thread: 2, line: 1 })
         ));
-        assert_eq!(view.cursor, 11 + 3);
+        assert_eq!(view.cursor, 12 + 4);
         // The thread is deleted: the cursor goes to the line it hung under.
         review.threads.remove(2);
         let spot = view.spot(&diff);
@@ -2484,8 +2546,8 @@ Binary files a/img.png and b/img.png differ
         let review = review();
         let mut view = view(&diff, &review, 80, 12);
         // u3's card hangs under A2, and u2's under the b.rs header.
-        assert_eq!(target_at(&mut view, &diff, 11), Ok(line(2, "A2")));
-        assert_eq!(target_at(&mut view, &diff, 22), Ok(AnchorTarget::File));
+        assert_eq!(target_at(&mut view, &diff, 12), Ok(line(2, "A2")));
+        assert_eq!(target_at(&mut view, &diff, 26), Ok(AnchorTarget::File));
         // A thread in the block has no file in the diff to point into.
         let block = anchor_at(&mut view, &diff, 3).unwrap_err();
         assert!(block.contains("reply"), "{block}");
@@ -2524,17 +2586,19 @@ Binary files a/img.png and b/img.png differ
             view.move_to(row);
             view.focused_comment()
         };
-        // u3's card is rows 10 to 13 now: the top border, the body, the reply, the bottom border.
-        assert_eq!(at(&mut view, 10), Some((2, 0)));
+        // u3's card is rows 11 to 15 now: the top border, the empty row, the body, the reply, the
+        // bottom border.
         assert_eq!(at(&mut view, 11), Some((2, 0)));
-        assert_eq!(at(&mut view, 12), Some((2, 1)));
-        // The bottom border names the keys that act on the root, so it is the root.
+        assert_eq!(at(&mut view, 12), Some((2, 0)));
         assert_eq!(at(&mut view, 13), Some((2, 0)));
+        assert_eq!(at(&mut view, 14), Some((2, 1)));
+        // The bottom border names the keys that act on the root, so it is the root.
+        assert_eq!(at(&mut view, 15), Some((2, 0)));
         // Past the box is a3, the line u1 hangs under.
-        assert_eq!(at(&mut view, 14), Some((0, 0)));
+        assert_eq!(at(&mut view, 16), Some((0, 0)));
         // The line the card hangs under counts as the root.
-        assert_eq!(at(&mut view, 9), Some((2, 0)));
-        assert_eq!(at(&mut view, 7), None);
+        assert_eq!(at(&mut view, 10), Some((2, 0)));
+        assert_eq!(at(&mut view, 8), None);
         assert_eq!(at(&mut view, 0), None);
         assert_eq!(view.thread_id(2).unwrap().as_str(), "u3");
     }
@@ -2545,15 +2609,15 @@ Binary files a/img.png and b/img.png differ
         let review = review();
         let mut view = view(&diff, &review, 80, 12);
         view.focus_thread(&CommentId::parse("u2").unwrap());
-        assert_eq!(view.cursor, 23);
+        assert_eq!(view.cursor, 26);
         view.focus_thread(&CommentId::parse("u9").unwrap());
-        assert_eq!(view.cursor, 23);
+        assert_eq!(view.cursor, 26);
     }
 
     #[test]
     fn the_editor_goes_under_the_cursor_then_above_it_then_to_the_bottom() {
         let stream = Rect::new(20, 0, 60, 20);
-        // It is as wide as the stream, with no indent under the code.
+        // It is as wide as the rectangle it is given.
         assert_eq!(editor_rect(stream, 5, 4), Rect::new(20, 6, 60, 4));
         assert_eq!(editor_rect(stream, 17, 4), Rect::new(20, 13, 60, 4));
         assert_eq!(editor_rect(stream, 2, 19), Rect::new(20, 1, 60, 19));

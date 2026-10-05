@@ -408,8 +408,10 @@ How the body behaves (built in M4):
   colour), then `→ claude w8G:p1` in the text colour or `→ no agent` in the removed colour, then a chip
   ` 3 unsent ` on the warning colour when a thread is unsent. A chip is coloured cells with one space of
   padding on each side and no border glyphs.
-- Against the right edge the line names the keys of `send`, `switch_spec`, `reload`, `help` and `quit` as
-  the keymap has them: `S send  b spec  R reload  ? help  q quit`. A key is bold in the accent colour and
+- Against the right edge the line names the keys of `toggle_sidebar`, `send`, `switch_spec`, `reload`,
+  `help` and `quit` as the keymap has them: `f sidebar  S send  b spec  R reload  ? help  q quit`. The six
+  need 51 cells. `sidebar` comes first, so it is the first to drop: an 80 column pane with an agent
+  named on the left shows the keys from `send` on. A key is bold in the accent colour and
   its label is in the subtle colour. The keys keep two cells clear of the left part. When they do not fit,
   they drop off from the left, so `help` and `quit` go last.
 - A message takes the place of the state and the keys stay. It is a notice in the warning colour for
@@ -435,7 +437,11 @@ How the layout behaves (built after M6):
 - A row of a split diff has two halves. `comment` and `select_range` use the new half, or the old half of a
   row with no new line. A click on a half chooses it for that row until the cursor moves. A range takes the
   side of its first row and ends at the last line on that side.
-- Cards hang under their row at the width of the whole stream, in both layouts.
+- A card and the editor box hang under their row where `note_box` in `view.rs` puts a note, as hunk does.
+  Side by side, in a stream of 84 cells or more, the box is the half its line is on: the old half for a
+  comment on the old side and the new half for one on the new side. In the unified layout, in a narrower
+  split stream, for a file comment and in the block of threads not in the diff, the box starts four cells
+  into the stream and runs to its right edge. It is never narrower than 28 cells unless the stream is.
 - A code row under the mouse shows `[+]` in its gutter, in both layouts. In a split row it is on the half under
   the mouse, where the sign is, so the line number stays visible. A click on it opens the comment editor on that
   line and half, as `comment` does. Until the mouse has moved once, which tells the pane that Herdr delivers
@@ -469,16 +475,17 @@ How the cards behave (built in M5):
 
 - A card is drawn under the line its thread is placed at, or under the file header for a file comment. An
   outdated thread is drawn under the nearest row, or under the file header when the file has no row on that
-  side. Several threads on one line stack in the review's order. A card is as wide as the stream, with no
-  indent, in both layouts.
+  side. Several threads on one line stack in the review's order. Where the box goes and how wide it is
+  are under "How the layout behaves".
 - An open card is a rounded box, in the theme's warning colour for the user's thread and its agent colour for
   an agent's. The top border reads `● <author> · <age> · <path> R<line>`: the author is `Your note` for the
   user and the agent's name otherwise (`agent` when it has none), the side letter is `L` or `R`, a range is
   `R101-110`, and a file comment has the bare path. Then come the badges `[outdated]` (on an open thread
   only), `[new]`, `(edited since sent)` and `[unsent]`. A path that does not fit is cut from the left with `…`,
   and is left out when there is no room for it. The id is not on an open card.
-- Inside the box are the line text as it was when the comment was written, for a thread that is outdated or
-  not in the diff, then the body wrapped to the box, then each reply indented under it.
+- Inside the box are an empty row, then the line text as it was when the comment was written, for a thread
+  that is outdated or not in the diff, then the body wrapped to the box, then each reply indented under it.
+  The text keeps a cell clear of each side.
 - The bottom border holds the keys on the right, read from the effective keymap: `reply`, `edit` and `delete`
   for the user's thread, and only `reply` for an agent's. Each is the action's first key as the keymap prints
   it, so the defaults read `r reply  e edit  d delete`, and an action with no key is left out.
@@ -505,8 +512,9 @@ How comments are written (built in M5):
 - `select_range` starts a range at the cursor and a second press drops it. The range runs to the cursor, stays
   inside one file, takes the side of its first line, ends at the last line on that side, and keeps the text of
   its first line. A reload drops it. `comment` uses it and ends it.
-- The editor is a rounded box in the theme's warning colour, as wide as the stream in both layouts. It is
-  drawn under the cursor row, or under the last row of the range a new comment points at when that is lower,
+- The editor is a rounded box in the theme's warning colour, placed and sized as the card of the saved
+  comment will be. Its text has an empty row above it and a cell clear of each side. It is drawn under the
+  cursor row, or under the last row of the range a new comment points at when that is lower,
   and above that row when there is no room below. It grows with its text up to two thirds of the stream's
   height. `Ctrl+S` saves and `Esc` cancels.
 - The top border reads `Draft note - <path> R<line>` for a new comment: `L` for the old side, `R101-110` for a
