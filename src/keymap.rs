@@ -20,6 +20,9 @@ pub enum Action {
     NextHunk,
     PrevThread,
     NextThread,
+    ScrollLeft,
+    ScrollRight,
+    ScrollReset,
     SwitchPanel,
     ToggleSidebar,
     Comment,
@@ -40,7 +43,7 @@ pub enum Action {
 
 impl Action {
     /// In the order of the table in PLAN.md section 7, which is the order of the help overlay.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 27] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -49,6 +52,9 @@ impl Action {
         Self::NextHunk,
         Self::PrevThread,
         Self::NextThread,
+        Self::ScrollLeft,
+        Self::ScrollRight,
+        Self::ScrollReset,
         Self::SwitchPanel,
         Self::ToggleSidebar,
         Self::Comment,
@@ -78,6 +84,9 @@ impl Action {
             Self::NextHunk => "next_hunk",
             Self::PrevThread => "prev_thread",
             Self::NextThread => "next_thread",
+            Self::ScrollLeft => "scroll_left",
+            Self::ScrollRight => "scroll_right",
+            Self::ScrollReset => "scroll_reset",
             Self::SwitchPanel => "switch_panel",
             Self::ToggleSidebar => "toggle_sidebar",
             Self::Comment => "comment",
@@ -108,6 +117,9 @@ impl Action {
             Self::NextHunk => "next hunk",
             Self::PrevThread => "previous thread",
             Self::NextThread => "next thread",
+            Self::ScrollLeft => "scroll the code left",
+            Self::ScrollRight => "scroll the code right",
+            Self::ScrollReset => "scroll back to the start of the lines",
             Self::SwitchPanel => "switch between sidebar and stream",
             Self::ToggleSidebar => "show or hide the sidebar",
             Self::Comment => "comment on the line, range or file",
@@ -141,6 +153,9 @@ impl Action {
             Self::NextHunk => &["]"],
             Self::PrevThread => &["shift+n"],
             Self::NextThread => &["n"],
+            Self::ScrollLeft => &["h", "left"],
+            Self::ScrollRight => &["l", "right"],
+            Self::ScrollReset => &["0"],
             Self::SwitchPanel => &["tab"],
             Self::ToggleSidebar => &["f"],
             Self::Comment => &["c"],
@@ -480,6 +495,9 @@ mod tests {
             (KeyCode::Char(']'), KeyModifiers::NONE, Action::NextHunk),
             (KeyCode::Char('n'), KeyModifiers::NONE, Action::NextThread),
             (KeyCode::Char('N'), KeyModifiers::SHIFT, Action::PrevThread),
+            (KeyCode::Char('h'), KeyModifiers::NONE, Action::ScrollLeft),
+            (KeyCode::Right, KeyModifiers::NONE, Action::ScrollRight),
+            (KeyCode::Char('0'), KeyModifiers::NONE, Action::ScrollReset),
             (KeyCode::Tab, KeyModifiers::NONE, Action::SwitchPanel),
             (
                 KeyCode::Char('f'),

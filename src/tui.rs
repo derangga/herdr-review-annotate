@@ -156,7 +156,7 @@ pub enum Tone {
 const FOOTER: [(Action, &str); 6] = [
     (Action::ToggleSidebar, "sidebar"),
     (Action::Send, "send"),
-    (Action::SwitchSpec, "spec"),
+    (Action::Resolve, "resolve"),
     (Action::Reload, "reload"),
     (Action::Help, "help"),
     (Action::Quit, "quit"),
@@ -1791,10 +1791,10 @@ mod tests {
         let fixture = Fixture::new("footer-keys");
         let mut app = fixture.started();
         let theme = app.theme;
-        let line = status_row(&mut app, 80);
+        let line = status_row(&mut app, 84);
         assert!(
             line.0
-                .ends_with("  S send  b spec  R reload  ? help  q quit"),
+                .ends_with("  S send  x resolve  R reload  ? help  q quit"),
             "{}",
             line.0
         );
@@ -1802,18 +1802,18 @@ mod tests {
         // The sidebar key comes first, so it is the first to drop.
         assert!(line.0.contains("  f sidebar  S send"), "{}", line.0);
         assert_eq!(cells_of(&line, "f ")[0].fg, theme.accent);
-        let narrow = status_row(&mut app, 77).0;
+        let narrow = status_row(&mut app, 80).0;
         assert!(
             narrow.contains("   S send") && !narrow.contains("sidebar"),
             "{narrow}"
         );
-        for key in ["S", "b", "R", "?", "q"] {
+        for key in ["S", "x", "R", "?", "q"] {
             let what = format!("{key} ");
             let cell = &cells_of(&line, &what)[0];
             assert_eq!(cell.fg, theme.accent, "{key}");
             assert!(cell.modifier.contains(Modifier::BOLD), "{key}");
         }
-        for label in [" send", " spec", " reload", " help", " quit"] {
+        for label in [" send", " resolve", " reload", " help", " quit"] {
             for cell in cells_of(&line, label) {
                 assert_eq!(cell.fg, theme.subtle, "{label}");
                 assert!(!cell.modifier.contains(Modifier::BOLD), "{label}");
@@ -1835,7 +1835,7 @@ mod tests {
         // The state is 41 cells with the unsent chip, so the five keys do not fit in 80.
         let line = status_row(&mut app, 80).0;
         assert!(
-            line.ends_with(" 1 unsent        b spec  R reload  ? help  q quit"),
+            line.ends_with(" 1 unsent     x resolve  R reload  ? help  q quit"),
             "{line}"
         );
         assert!(!line.contains("send"), "{line}");
@@ -1862,14 +1862,20 @@ mod tests {
         app.notice("deleted u2");
         let line = status_row(&mut app, 80);
         assert!(line.0.starts_with(" deleted u2  "), "{}", line.0);
-        assert!(line.0.ends_with("S send  b spec  R reload  ? help  q quit"));
+        assert!(
+            line.0
+                .ends_with("S send  x resolve  R reload  ? help  q quit")
+        );
         assert!(!line.0.contains("WORKING TREE"));
         for cell in cells_of(&line, "deleted u2") {
             assert_eq!((cell.fg, cell.bg), (theme.warning, theme.header));
         }
         app.fail("review is busy, press again");
         let line = status_row(&mut app, 80);
-        assert!(line.0.ends_with("S send  b spec  R reload  ? help  q quit"));
+        assert!(
+            line.0
+                .ends_with("S send  x resolve  R reload  ? help  q quit")
+        );
         for cell in cells_of(&line, "review is busy, press again") {
             assert_eq!((cell.fg, cell.bg), (theme.removed, theme.header));
         }

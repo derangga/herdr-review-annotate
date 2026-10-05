@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -23,10 +23,19 @@ use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec,
 use crate::syntax::{Cache, FileTokens, side_of};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
-use crate::width::{string_width, tail_to_width, truncate_to_width};
+use crate::width::{char_width, string_width, tail_to_width, truncate_to_width};
 
 /// Rows the mouse wheel moves per notch.
 const WHEEL_ROWS: usize = 3;
+
+/// Cells of code one press of a scroll key, or one notch of the sideways wheel, moves.
+const HSCROLL_COLS: usize = 8;
+
+/// Cells a unified row spends before its code: two line numbers, the sign, and the spaces.
+const UNIFIED_GUTTER: usize = 12;
+
+/// Cells one half of a split row spends before its code: a line number, the sign, and the spaces.
+const SPLIT_GUTTER: usize = 7;
 
 /// Which half of the body takes the navigation keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +240,18 @@ fn glyph(change: Change) -> char {
     }
 }
 
+/// The colour of a file's status letter.
+const fn glyph_color(change: Change, theme: &Theme) -> Color {
+    match change {
+        Change::Modified => theme.warning,
+        Change::Added => theme.added,
+        Change::Deleted | Change::Unparsed => theme.removed,
+        Change::Renamed => theme.accent,
+        Change::Untracked => theme.agent,
+        Change::Binary | Change::Submodule | Change::TooLarge => theme.subtle,
+    }
+}
+
 /// A card hung under base row `at` of a file, counting the file's own rows from its header at 0.
 /// In the not-in-diff block `at` is unused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,6 +316,8 @@ pub struct Stream {
     hunk_rows: Vec<usize>,
     /// The first row of each card, in row order.
     thread_rows: Vec<usize>,
+    /// Cells in the widest line of code of the diff.
+    widest: usize,
     /// One per thread of the review, in the review's order.
     pub placements: Vec<Placement>,
     /// The rows of the block of threads not in the diff. Zero when there are none.
@@ -481,6 +504,14 @@ impl Stream {
             stream.slots.push(slots);
         }
         stream.total = total;
+        stream.widest = diff
+            .files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .flat_map(|hunk| &hunk.rows)
+            .map(|row| string_width(&row.text))
+            .max()
+            .unwrap_or(0);
         stream.thread_rows.clone_from(&stream.card_rows);
         stream.thread_rows.sort_unstable();
         stream.cards = cards;
@@ -731,6 +762,9 @@ pub struct View {
     pub select: Option<usize>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
     forced: Option<DiffLayout>,
+    /// Cells of code hidden on the left of every row, and the file they were set for.
+    pub hscroll: usize,
+    hfile: usize,
     /// The half of a split row the mouse last clicked, until the cursor moves another way.
     half: Option<Side>,
     /// Where the mouse last moved, as a column and a row of the screen. `None` until Herdr
@@ -761,6 +795,8 @@ impl Default for View {
             sidebar: true,
             select: None,
             forced: None,
+            hscroll: 0,
+            hfile: 0,
             half: None,
             pointer: None,
         }
@@ -1096,7 +1132,38 @@ impl View {
         self.stream.width != self.stream_width() || self.stream.layout != self.layout()
     }
 
+    /// Cells of code a row can show, the narrower half in a split row.
+    fn code_room(&self) -> usize {
+        let width = self.stream_width();
+        match self.layout() {
+            DiffLayout::Unified => width.saturating_sub(UNIFIED_GUTTER),
+            DiffLayout::Split => split_widths(width).0.saturating_sub(SPLIT_GUTTER),
+        }
+    }
+
+    fn scroll_x(&mut self, right: bool) {
+        self.hscroll = if right {
+            self.hscroll + HSCROLL_COLS
+        } else {
+            self.hscroll.saturating_sub(HSCROLL_COLS)
+        };
+        self.sync_hscroll();
+    }
+
+    /// The offset starts over in another file, and never runs past the widest line.
+    fn sync_hscroll(&mut self) {
+        let file = self.stream.file_at(self.cursor);
+        if file != self.hfile {
+            self.hfile = file;
+            self.hscroll = 0;
+        }
+        self.hscroll = self
+            .hscroll
+            .min(self.stream.widest.saturating_sub(self.code_room()));
+    }
+
     fn ensure_visible(&mut self) {
+        self.sync_hscroll();
         let height = self.height();
         let last = self.stream.len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
@@ -1181,9 +1248,13 @@ impl View {
                     Panel::Stream => Panel::Sidebar,
                 };
             }
+            Action::ScrollLeft if !files => self.scroll_x(false),
+            Action::ScrollRight if !files => self.scroll_x(true),
+            Action::ScrollReset if !files => self.hscroll = 0,
             Action::Help => self.help = !self.help,
             _ => return false,
         }
+        self.sync_hscroll();
         true
     }
 
@@ -1210,6 +1281,9 @@ impl View {
                 };
                 let last = (self.scroll + height - 1).min(self.stream.len().saturating_sub(1));
                 self.cursor = self.cursor.clamp(self.scroll, last);
+            }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                self.scroll_x(event.kind == MouseEventKind::ScrollRight);
             }
             MouseEventKind::Down(MouseButton::Left) if at(areas.stream) => {
                 let row = self.scroll + usize::from(event.row - areas.stream.y);
@@ -1294,12 +1368,15 @@ fn fitted(text: &str, width: usize) -> String {
     text
 }
 
-/// The text of a code row in exactly `room` cells, over the row's tint. A row that was highlighted
-/// is drawn token by token, in the theme's colour for each, and what lies between tokens is plain
-/// text. A row that was not is drawn whole in `plain`, the colour of its kind.
+/// The text of a code row in exactly `room` cells, over the row's tint, starting `skip` cells in.
+/// A row that was highlighted is drawn token by token, in the theme's colour for each, and what
+/// lies between tokens is plain text. A row that was not is drawn whole in `plain`, the colour of
+/// its kind. A `‹` takes the first cell when the row is cut off on the left, and a `›` the last
+/// when it is cut off on the right.
 fn code_text(
     row: &Row,
     room: usize,
+    skip: usize,
     plain: Style,
     tint: Style,
     tokens: Option<&FileTokens>,
@@ -1307,14 +1384,9 @@ fn code_text(
 ) -> Vec<Span<'static>> {
     let side = side_of(row);
     let spans = tokens.and_then(|tokens| tokens.line(side, row.line(side)?));
-    let mut out = Vec::new();
-    let mut used = 0;
+    let mut pieces = Vec::new();
     let mut push = |piece: &str, style: Style| {
-        let piece = truncate_to_width(&sanitize_terminal_text(piece), room - used);
-        used += string_width(&piece);
-        if !piece.is_empty() {
-            out.push(Span::styled(piece, style.patch(tint)));
-        }
+        pieces.push((sanitize_terminal_text(piece), style));
     };
     let mut at = 0;
     for (range, token) in spans.unwrap_or_default() {
@@ -1333,7 +1405,40 @@ fn code_text(
     if row.no_newline {
         push("  [no newline at end of file]", rest);
     }
-    out.push(Span::styled(" ".repeat(room - used), tint));
+    let total: usize = pieces.iter().map(|(text, _)| string_width(text)).sum();
+    let left = skip > 0 && total > skip;
+    let right = total > skip + room;
+    let (start, end) = (
+        skip + usize::from(left),
+        (skip + room).saturating_sub(usize::from(right)),
+    );
+    let marker = |text: &'static str| Span::styled(text, theme.dim().patch(tint));
+    let mut out = Vec::new();
+    let mut used = 0;
+    if left && room > 0 {
+        out.push(marker("‹"));
+        used += 1;
+    }
+    let mut pos = 0;
+    for (text, style) in pieces {
+        let kept: String = text
+            .chars()
+            .filter(|character| {
+                let width = char_width(*character);
+                pos += width;
+                pos - width >= start && pos <= end
+            })
+            .collect();
+        used += string_width(&kept);
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, style.patch(tint)));
+        }
+    }
+    if right && room > 0 {
+        out.push(marker("›"));
+        used += 1;
+    }
+    out.push(Span::styled(" ".repeat(room.saturating_sub(used)), tint));
     out
 }
 
@@ -1343,6 +1448,7 @@ fn half_spans(
     row: Option<&Row>,
     side: Side,
     width: usize,
+    skip: usize,
     theme: &Theme,
     tokens: Option<&FileTokens>,
 ) -> Vec<Span<'static>> {
@@ -1362,17 +1468,13 @@ fn half_spans(
         truncate_to_width(&gutter, width),
         theme.dim().patch(tint),
     )];
-    spans.extend(code_text(row, room, text_style, tint, tokens, theme));
+    spans.extend(code_text(row, room, skip, text_style, tint, tokens, theme));
     spans
 }
 
 /// A file's header: its name on the left, the added and removed counts on the right.
 fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
-    let mut text = format!(
-        "{} {}",
-        glyph(file.change),
-        sanitize_terminal_text(file.path.as_str())
-    );
+    let mut text = sanitize_terminal_text(file.path.as_str());
     if let Some(old) = &file.old_path {
         let _ = write!(text, " <- {}", sanitize_terminal_text(old.as_str()));
     }
@@ -1387,9 +1489,16 @@ fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
         (a, r) => format!("+{a} -{r}"),
     };
     let room = width.saturating_sub(string_width(&counts) + 1);
-    let head = fitted(&text, room);
+    let head = fitted(&text, room.saturating_sub(2));
     let bold = Style::new().bg(theme.header).add_modifier(Modifier::BOLD);
-    let mut spans = vec![Span::styled(head, bold)];
+    let mut spans = vec![
+        Span::styled(
+            glyph(file.change).to_string(),
+            bold.fg(glyph_color(file.change, theme)),
+        ),
+        Span::styled(" ", bold),
+        Span::styled(head, bold),
+    ];
     let counts_width = string_width(&counts);
     spans.push(Span::styled(
         " ".repeat(width.saturating_sub(room + counts_width)),
@@ -1411,6 +1520,7 @@ fn row_line(
     stream: &Stream,
     row: RowRef,
     width: usize,
+    skip: usize,
     theme: &Theme,
     tokens: Option<&FileTokens>,
 ) -> Line<'static> {
@@ -1439,9 +1549,9 @@ fn row_line(
         }
         RowRef::Pair { old, new } => {
             let (left, right) = split_widths(width);
-            let mut spans = half_spans(old, Side::Old, left, theme, tokens);
+            let mut spans = half_spans(old, Side::Old, left, skip, theme, tokens);
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
-            spans.extend(half_spans(new, Side::New, right, theme, tokens));
+            spans.extend(half_spans(new, Side::New, right, skip, theme, tokens));
             Line::from(spans)
         }
         RowRef::Line(row) => {
@@ -1454,7 +1564,7 @@ fn row_line(
                 Span::styled(gutter, theme.dim().patch(tint)),
                 Span::styled(sign.to_string(), style.patch(tint)),
             ];
-            spans.extend(code_text(row, room, style, tint, tokens, theme));
+            spans.extend(code_text(row, room, skip, style, tint, tokens, theme));
             Line::from(spans)
         }
     }
@@ -1494,7 +1604,7 @@ pub fn draw(
         .map(|(at, row)| {
             let file = diff.files.get(view.stream.file_at(at));
             let tokens = file.and_then(|file| syntax.file(file.path.as_str()));
-            row_line(&view.stream, row, width, theme, tokens)
+            row_line(&view.stream, row, width, view.hscroll, theme, tokens)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
@@ -1620,7 +1730,18 @@ fn side_file_line(file: &DiffFile, unsent: bool, width: usize, theme: &Theme) ->
     let room = width.saturating_sub(counts_width + usize::from(counts_width > 0));
     let head = head_to_width(&head, room);
     let pad = width.saturating_sub(string_width(&head) + counts_width);
-    let mut spans = vec![Span::raw(head), Span::raw(" ".repeat(pad))];
+    // The mark and the letter are one character each, so they are the first two of `head`.
+    let letter_at = head.chars().next().map_or(0, char::len_utf8);
+    let letter_end = letter_at + head[letter_at..].chars().next().map_or(0, char::len_utf8);
+    let mut spans = vec![
+        Span::raw(head[..letter_at].to_owned()),
+        Span::styled(
+            head[letter_at..letter_end].to_owned(),
+            Style::new().fg(glyph_color(file.change, theme)),
+        ),
+        Span::raw(head[letter_end..].to_owned()),
+        Span::raw(" ".repeat(pad)),
+    ];
     spans.extend(counts);
     Line::from(spans)
 }
@@ -2371,8 +2492,8 @@ Binary files a/img.png and b/img.png differ
     fn the_help_overlay_lists_every_action_with_its_current_keys() {
         let (diff, mut view) = plain();
         view.help = true;
-        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
-        view.resize(Rect::new(0, 0, 80, 30));
+        let mut terminal = Terminal::new(TestBackend::new(80, 34)).unwrap();
+        view.resize(Rect::new(0, 0, 80, 34));
         let defaults = render(&mut terminal, &view, &diff, &Keymap::default());
         assert!(
             defaults.contains("R                reload the diff"),
@@ -3227,5 +3348,56 @@ diff --git a/top.md b/top.md
         // Over the empty right half of old5, the marker falls to the half that has the line.
         motion(&mut view, stream.x + right, stream.y + 5);
         assert_eq!(view.plus(), Some(Plus { row: 5, col: 4 }));
+    }
+
+    #[test]
+    fn the_status_letter_has_the_colour_of_its_change() {
+        let diff = diff_of(PATCH);
+        let theme = Theme::default();
+        let letter_color = |file: usize, letter: &str| {
+            side_file_line(&diff.files[file], false, 24, &theme)
+                .spans
+                .iter()
+                .find(|span| span.content == letter)
+                .and_then(|span| span.style.fg)
+        };
+        assert_eq!(letter_color(0, "M"), Some(theme.warning));
+        assert_eq!(letter_color(1, "A"), Some(theme.added));
+        assert_eq!(letter_color(2, "B"), Some(theme.subtle));
+        let header = file_header(&diff.files[0], 30, &theme);
+        assert_eq!(header.spans[0].content, "M");
+        assert_eq!(header.spans[0].style.fg, Some(theme.warning));
+    }
+
+    #[test]
+    fn scrolling_sideways_moves_the_code_and_leaves_the_gutter() {
+        let long = "0123456789".repeat(10);
+        let patch = format!(
+            "diff --git a/l.rs b/l.rs\nnew file mode 100644\n--- /dev/null\n+++ b/l.rs\n@@ -0,0 +1,1 @@\n+{long}\ndiff --git a/s.rs b/s.rs\nnew file mode 100644\n--- /dev/null\n+++ b/s.rs\n@@ -0,0 +1,1 @@\n+short\n"
+        );
+        let diff = diff_of(&patch);
+        let mut view = view(&diff, &Review::default(), 49, 12);
+        let start = fresh(&view, &diff);
+        assert!(start.contains("    1 +0123456789"), "{start}");
+        assert!(start.contains('›') && !start.contains('‹'), "{start}");
+        view.apply(Action::ScrollRight);
+        assert_eq!(view.hscroll, HSCROLL_COLS);
+        let moved = fresh(&view, &diff);
+        assert!(moved.contains("    1 +‹9012345678"), "{moved}");
+        view.apply(Action::ScrollLeft);
+        view.apply(Action::ScrollLeft);
+        assert_eq!(view.hscroll, 0);
+        // It stops where the widest line ends.
+        for _ in 0..20 {
+            view.apply(Action::ScrollRight);
+        }
+        assert_eq!(view.hscroll, 100 - view.code_room());
+        assert!(!fresh(&view, &diff).contains('›'));
+        // Another file starts over, and so does the reset key.
+        view.move_to_file(1);
+        assert_eq!(view.hscroll, 0);
+        view.hscroll = 8;
+        view.apply(Action::ScrollReset);
+        assert_eq!(view.hscroll, 0);
     }
 }

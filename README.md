@@ -82,6 +82,9 @@ effect.
 | `next_hunk` | `]` | next hunk |
 | `prev_thread` | `N` | previous thread |
 | `next_thread` | `n` | next thread |
+| `scroll_left` | `h`, `left` | scroll the code left |
+| `scroll_right` | `l`, `right` | scroll the code right |
+| `scroll_reset` | `0` | scroll back to the start of the lines |
 | `switch_panel` | `tab` | switch between sidebar and stream |
 | `toggle_sidebar` | `f` | show or hide the sidebar |
 | `comment` | `c` | comment on the line, range or file |
