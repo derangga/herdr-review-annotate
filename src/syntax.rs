@@ -157,15 +157,27 @@ fn side_tokens(
 ) -> HashMap<u32, Vec<Span>> {
     let mut tokens = HashMap::new();
     if let Some(text) = text {
-        let lines = highlight(text, language);
-        let source = text.split('\n').collect::<Vec<_>>();
+        let rows = file.hunks.iter().flat_map(|hunk| &hunk.rows);
+        let needed = rows.filter_map(|row| row.line(side).filter(|_| side_of(row) == side));
+        let last = needed.max().unwrap_or(0) as usize;
+        // The parse has to start at line 1, but it can stop after the last line a hunk shows.
+        // ponytail: a hunk at the end of a 1 MiB file still parses the whole file on the UI
+        // thread. Move the parse to a worker thread if that stall shows up.
+        let end = text
+            .match_indices('\n')
+            .nth(last.saturating_sub(1))
+            .map_or(text.len(), |(at, _)| at + 1);
+        let prefix = text.get(..end).unwrap_or(text);
+        let mut lines = highlight(prefix, language);
+        let source = prefix.split('\n').collect::<Vec<_>>();
         for row in file.hunks.iter().flat_map(|hunk| &hunk.rows) {
             let Some(line) = row.line(side).filter(|_| side_of(row) == side) else {
                 continue;
             };
             let index = (line as usize).saturating_sub(1);
             if source.get(index) == Some(&row.text.as_str()) {
-                tokens.insert(line, lines.get(index).cloned().unwrap_or_default());
+                let spans = lines.get_mut(index).map(std::mem::take);
+                tokens.insert(line, spans.unwrap_or_default());
             }
         }
         return tokens;
@@ -238,9 +250,15 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Forget everything. The diff was loaded again, so the files may read differently.
+    /// Forget everything. The diff was loaded against another revision, so every file may read
+    /// differently.
     pub fn clear(&mut self) {
         self.files.clear();
+    }
+
+    /// Keep the tokens of the files whose path `keep` accepts, and forget the rest.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.files.retain(|path, _| keep(path));
     }
 
     /// The tokens of the file at `path`, when it has been highlighted.
@@ -463,6 +481,90 @@ mod engine_tests {
             tokens_of(tokens.line(Side::New, 2).unwrap()),
             [Token::Comment]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 200 lines of JavaScript that open with a block comment, with line `n` read as `edit` when
+    /// given, and a newline after the last line unless `open_end`.
+    fn long(edit: Option<(u32, &str)>, open_end: bool) -> String {
+        let lines = (1..=200u32).map(|n| match (n, edit) {
+            (n, Some((at, text))) if n == at => text.to_owned(),
+            (1, _) => "/* start".to_owned(),
+            (2, _) => " inside".to_owned(),
+            (3, _) => " end */".to_owned(),
+            (n, _) => format!("let v{n} = {n};"),
+        });
+        let text = lines.collect::<Vec<_>>().join("\n");
+        if open_end { text } else { text + "\n" }
+    }
+
+    /// A one-row change of line `n` per hunk, from `old` to `new`, with `tail` after each row.
+    fn patch(hunks: &[(u32, &str, &str)], tail: &str) -> DiffFile {
+        let head = "diff --git a/app.js b/app.js\n--- a/app.js\n+++ b/app.js\n";
+        let body = hunks
+            .iter()
+            .map(|(n, old, new)| format!("@@ -{n} +{n} @@\n-{old}\n{tail}+{new}\n{tail}"));
+        let patch = std::iter::once(head.to_owned())
+            .chain(body)
+            .collect::<String>();
+        parse(patch.as_bytes(), MAX_PATCH).remove(0)
+    }
+
+    /// The tokens `highlight` gives line `n` of the whole of `text`.
+    fn whole(text: &str, n: u32) -> Vec<Span> {
+        highlight(text, language("app.js").unwrap()).remove(n as usize - 1)
+    }
+
+    #[test]
+    fn a_hunk_near_the_top_gets_the_tokens_of_the_whole_file() {
+        let (old, new) = (long(None, false), long(Some((2, " inside now")), false));
+        let root = root("top", Some(&new));
+        let mut cache = Cache::default();
+        let file = patch(&[(2, " inside", " inside now")], "");
+        cache.ensure(&root, "HEAD", &file, &mut |_| Ok(old.as_bytes().to_vec()));
+        let tokens = cache.file("app.js").unwrap();
+        assert_eq!(tokens.line(Side::New, 2).unwrap(), whole(&new, 2));
+        assert_eq!(tokens.line(Side::Old, 2).unwrap(), whole(&old, 2));
+        assert_eq!(tokens_of(&whole(&new, 2)), [Token::Comment]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_last_hunk_of_a_file_gets_its_tokens() {
+        let old = long(None, false);
+        let new = long(Some((190, "let changed = 190;")), false);
+        let new = new.replace(" inside\n", " inside now\n");
+        let root = root("bottom", Some(&new));
+        let mut cache = Cache::default();
+        let hunks = [
+            (2, " inside", " inside now"),
+            (190, "let v190 = 190;", "let changed = 190;"),
+        ];
+        cache.ensure(&root, "HEAD", &patch(&hunks, ""), &mut |_| {
+            Ok(old.as_bytes().to_vec())
+        });
+        let tokens = cache.file("app.js").unwrap();
+        assert_eq!(tokens.line(Side::New, 190).unwrap(), whole(&new, 190));
+        assert_eq!(tokens.line(Side::Old, 190).unwrap(), whole(&old, 190));
+        assert!(tokens_of(&whole(&new, 190)).contains(&Token::Keyword));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_last_line_with_no_newline_gets_its_tokens() {
+        let old = long(None, true);
+        let new = long(Some((200, "let last = 200;")), true);
+        let root = root("open-end", Some(&new));
+        let mut cache = Cache::default();
+        let file = patch(
+            &[(200, "let v200 = 200;", "let last = 200;")],
+            "\\ No newline at end of file\n",
+        );
+        cache.ensure(&root, "HEAD", &file, &mut |_| Ok(old.as_bytes().to_vec()));
+        let tokens = cache.file("app.js").unwrap();
+        assert_eq!(tokens.line(Side::New, 200).unwrap(), whole(&new, 200));
+        assert_eq!(tokens.line(Side::Old, 200).unwrap(), whole(&old, 200));
+        assert!(tokens_of(&whole(&new, 200)).contains(&Token::Keyword));
         let _ = std::fs::remove_dir_all(root);
     }
 

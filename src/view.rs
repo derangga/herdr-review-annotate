@@ -488,16 +488,16 @@ impl Stream {
                 stream.set_card_row(slot.thread, start + slot.at + 1 + above);
                 above += slot.height;
             }
-            let shift = |offset: usize| {
-                slots
-                    .iter()
-                    .filter(|slot| slot.at < offset)
-                    .map(|slot| slot.height)
-                    .sum::<usize>()
-            };
+            // The cards hung above a row push it down. `slots` is sorted by `at`, so one walk
+            // keeps the sum of the heights above each row.
+            let mut hung_above = slots.iter().peekable();
+            let mut shift = 0;
             for (offset, row) in rows.iter().enumerate() {
+                while let Some(slot) = hung_above.next_if(|slot| slot.at < offset) {
+                    shift += slot.height;
+                }
                 if matches!(row, FileRow::Hunk(_)) {
-                    stream.hunk_rows.push(start + offset + shift(offset));
+                    stream.hunk_rows.push(start + offset + shift);
                 }
             }
             total = start + rows.len() + above;
@@ -2112,6 +2112,27 @@ Binary files a/img.png and b/img.png differ
     // a.rs starts at 6: header 6, hunk 7, a1 8, a2 9, A2 10, then u3 (rows 11-14), a3 15, then
     // u1 (16-20), hunk 21, a10 22, a11 23, a12 24. b.rs starts at 25, and u2 is rows 26-29.
     // Its hunk is 30, b1 31, b2 32, img.png 33, and its note 34.
+
+    #[test]
+    fn hunk_headers_move_down_by_the_cards_above_them_and_no_more() {
+        let patch = "diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1,2 +1,2 @@\n-c1\n+C1\n c2\n@@ -10,2 +10,2 @@\n-c10\n+C10\n c11\n@@ -20,2 +20,2 @@\n-c20\n+C20\n c21\n";
+        // Rows: header 0, hunk 1, c1 2, C1 3, c2 4, hunk 5, c10 6, C10 7, c11 8, hunk 9, c20 10,
+        // C20 11, c21 12. Each card is four rows: a file card under the header, one under c2,
+        // one under C10, and one under c21, below the last hunk.
+        let diff = diff_of(patch);
+        let review = Review {
+            threads: vec![
+                thread("u1", "c.rs", AnchorTarget::File),
+                thread("u2", "c.rs", line(2, "c2")),
+                thread("u3", "c.rs", line(10, "C10")),
+                thread("u4", "c.rs", line(21, "c21")),
+            ],
+            ..Review::default()
+        };
+        let view = view(&diff, &review, 80, 12);
+        assert_eq!(view.stream.thread_rows, [1, 9, 16, 25]);
+        assert_eq!(view.stream.hunk_rows, [5, 13, 21]);
+    }
 
     #[test]
     fn cards_take_rows_under_the_lines_they_are_placed_at() {

@@ -486,8 +486,9 @@ How syntax colours behave (built after M6, behind the `syntax` feature):
   edited after the diff was loaded draws the rows that moved plain until the next reload.
 - A side that cannot be read, is not UTF-8, or is over 1 MiB is highlighted hunk by hunk instead, each hunk
   as a snippet of its rows on that side. A snippet cannot know it starts inside a comment or a string.
-- A file is highlighted when one of its rows first comes into the window, before the frame is drawn, and its
-  tokens are kept until the diff is loaded again. Only the tokens of the lines the diff shows are kept.
+- A file is highlighted when one of its rows first comes into the window, before the frame is drawn. A reload
+  against the same `rev` keeps the tokens of each file whose `DiffFile` did not change, and forgets the rest.
+  A reload against another `rev` forgets them all. Only the tokens of the lines the diff shows are kept.
 - A build without the feature knows no language, reads nothing, and draws every row as before.
 
 How the cards behave (built in M5):
@@ -1164,12 +1165,14 @@ This is the only stream in the program. It merges two sources.
     -> apply Action to the app state       R: per action, see the next graphs
   -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
     -> read from offset, fold, reload diff
+  -> anything changed?                     (pure)     no event, same size, log not read, no send -> skip both below
   -> highlight the files on screen         R: git, repo dir   E: unreadable, not UTF-8, over 1 MiB -> escape, hunk snippets
                                                               E: unknown language -> escape, plain rows
   -> draw                                  R: term
 ```
 
-The loop holds no lock between ticks. A panic hook restores the terminal before the message prints.
+An idle tick builds no frame. The loop holds no lock between ticks. A panic hook restores the terminal
+before the message prints.
 
 If the pane is closed while the editor holds text, the draft is saved as a comment at the anchor that
 was captured when `comment` was pressed. Losing typed text is the one data-loss path in the pane.

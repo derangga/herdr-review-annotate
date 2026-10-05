@@ -3,6 +3,7 @@
 //! Everything below `run` takes its terminal, its input, its `git` and its clock as parameters, so
 //! tests drive it with a `TestBackend` and a list of events.
 
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -53,21 +54,19 @@ pub type Git<'a> = dyn FnMut(&[String]) -> Result<Vec<u8>, GitError> + 'a;
 /// Remove terminal control characters while retaining useful whitespace. A tab becomes four
 /// spaces. ESC and the C1 controls go, so a file name cannot drive the terminal.
 pub fn sanitize_terminal_text(text: &str) -> String {
-    text.chars()
-        .flat_map(|character| {
-            if character == '\t' {
-                "    ".chars().collect::<Vec<_>>()
-            } else if (character <= '\u{0008}')
-                || matches!(character, '\u{000b}' | '\u{000c}')
-                || ('\u{000e}'..='\u{001f}').contains(&character)
-                || ('\u{007f}'..='\u{009f}').contains(&character)
-            {
-                Vec::new()
-            } else {
-                vec![character]
-            }
-        })
-        .collect()
+    let mut clean = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character == '\t' {
+            clean.push_str("    ");
+        } else if !((character <= '\u{0008}')
+            || matches!(character, '\u{000b}' | '\u{000c}')
+            || ('\u{000e}'..='\u{001f}').contains(&character)
+            || ('\u{007f}'..='\u{009f}').contains(&character))
+        {
+            clean.push(character);
+        }
+    }
+    clean
 }
 
 /// What fills the pane.
@@ -186,7 +185,8 @@ pub struct App {
     repo: Option<PathBuf>,
     pub keymap: Keymap,
     pub theme: Theme,
-    /// The syntax tokens of the files that have been on screen since the diff was loaded.
+    /// The syntax tokens of the files that have been on screen. A reload against the same
+    /// revision keeps the tokens of the files whose hunks did not change.
     pub syntax: Cache,
     pub root: Option<RepoRoot>,
     dir: Option<PathBuf>,
@@ -326,8 +326,24 @@ impl App {
             now: &now,
         };
         self.view.rebuild(&diff, &self.review, spot, &look);
+        match &self.diff {
+            Some(old) if old.rev == diff.rev => {
+                let new = diff
+                    .files
+                    .iter()
+                    .map(|file| (file.path.as_str(), file))
+                    .collect::<HashMap<_, _>>();
+                let unchanged = old
+                    .files
+                    .iter()
+                    .filter(|file| new.get(file.path.as_str()) == Some(file))
+                    .map(|file| file.path.as_str())
+                    .collect::<HashSet<_>>();
+                self.syntax.retain(|path| unchanged.contains(path));
+            }
+            _ => self.syntax.clear(),
+        }
         self.diff = Some(diff);
-        self.syntax.clear();
         Ok(())
     }
 
@@ -429,10 +445,11 @@ impl App {
 
     /// Once per tick: when the log changed, read it and reload the diff, since an agent replying
     /// is the moment its fix landed. It waits while the editor is open or a range is being
-    /// selected. A failed read is a warning and the next tick tries again.
-    pub fn check_store(&mut self, git: &mut Git) {
+    /// selected. A failed read is a warning and the next tick tries again. True when it read the
+    /// log or warned, whether or not the diff reload worked, since the screen may differ.
+    pub fn check_store(&mut self, git: &mut Git) -> bool {
         if self.view.select.is_some() {
-            return;
+            return false;
         }
         let (Screen::Review, Some(dir), Some(root), None) = (
             &self.screen,
@@ -440,12 +457,15 @@ impl App {
             self.root.clone(),
             &self.compose,
         ) else {
-            return;
+            return false;
         };
         match log_len(&dir) {
-            Ok(len) if len == self.seen_len => return,
+            Ok(len) if len == self.seen_len => return false,
             Ok(_) => {}
-            Err(error) => return self.warn(Warning::Config(error.to_string())),
+            Err(error) => {
+                self.warn(Warning::Config(error.to_string()));
+                return true;
+            }
         }
         match self.read_store(&dir) {
             Ok(()) => {
@@ -456,6 +476,7 @@ impl App {
             }
             Err(message) => self.warn(Warning::Config(message)),
         }
+        true
     }
 
     /// Apply a key's action. Any action clears the warning line and the last reload error.
@@ -1291,20 +1312,29 @@ pub fn run_loop<B: Backend>(
     mut poll: impl FnMut(Duration) -> io::Result<Option<Event>>,
     terminated: impl Fn() -> bool,
 ) -> Exit {
+    // A frame is drawn only after something that can change it: an event, a new terminal size,
+    // a read of the log, or a send.
+    let mut dirty = true;
+    let mut drawn_size = None;
     loop {
         if terminated() {
             app.save_draft();
             return Exit::Terminated;
         }
-        if let Ok(size) = terminal.size() {
+        let size = terminal.size().ok();
+        if let Some(size) = size {
             app.resize(Rect::new(0, 0, size.width, size.height));
         }
-        app.highlight(git);
-        if terminal.draw(|frame| render(frame, app)).is_err() {
-            app.save_draft();
-            return Exit::Io;
+        if dirty || size != drawn_size {
+            app.highlight(git);
+            if terminal.draw(|frame| render(frame, app)).is_err() {
+                app.save_draft();
+                return Exit::Io;
+            }
+            (dirty, drawn_size) = (false, size);
         }
         let polled = poll(TICK);
+        dirty |= matches!(polled, Ok(Some(_)));
         let input = matches!(polled, Ok(Some(Event::Key(_) | Event::Mouse(_))));
         match polled {
             Err(_) => {
@@ -1329,12 +1359,13 @@ pub fn run_loop<B: Backend>(
             app.mark_seen();
         }
         app.run_pending(|app| {
+            dirty = true;
             let _ = terminal.draw(|frame| render(frame, app));
         });
         if app.quit {
             return Exit::Quit;
         }
-        app.check_store(git);
+        dirty |= app.check_store(git);
     }
 }
 
@@ -1492,6 +1523,8 @@ mod tests {
         no_refs: Cell<bool>,
         patch: RefCell<Vec<u8>>,
         diffs: Cell<usize>,
+        /// How many `git show` calls highlighting made.
+        shows: Cell<usize>,
         herdr: Rc<RefCell<FakeHerdr>>,
     }
 
@@ -1532,6 +1565,7 @@ mod tests {
                 no_refs: Cell::new(false),
                 patch: RefCell::new(PATCH.to_vec()),
                 diffs: Cell::new(0),
+                shows: Cell::new(0),
             }
         }
 
@@ -1587,6 +1621,10 @@ mod tests {
                     }
                 }
                 ["ls-files", ..] => Ok(Vec::new()),
+                ["show", ..] => {
+                    self.shows.set(self.shows.get() + 1);
+                    Err(failed())
+                }
                 _ => Err(failed()),
             }
         }
@@ -1995,6 +2033,14 @@ mod tests {
     }
 
     #[test]
+    fn every_control_range_is_dropped_and_a_newline_is_kept() {
+        assert_eq!(
+            sanitize_terminal_text("\u{0}\u{8}\n\u{b}\u{c}\u{e}\u{1f}\u{7f}\u{9f}x"),
+            "\nx"
+        );
+    }
+
+    #[test]
     fn a_termination_signal_ends_the_loop_before_anything_is_read() {
         let fixture = Fixture::new("terminated");
         let mut app = fixture.started();
@@ -2096,6 +2142,144 @@ mod tests {
         );
         // Five words fit a row of the 28 column box, so the body is four rows under the empty one.
         assert_eq!(app.view.stream.len(), 11);
+    }
+
+    /// A test terminal whose size the test changes while the loop runs, with no event to say so.
+    /// It draws into a backend big enough for any size it reports.
+    struct Resizing {
+        inner: TestBackend,
+        size: Rc<Cell<ratatui::layout::Size>>,
+    }
+
+    impl Backend for Resizing {
+        type Error = std::convert::Infallible;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.inner.draw(content)
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+            self.inner.get_cursor_position()
+        }
+
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.inner.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.inner.clear()
+        }
+
+        fn clear_region(
+            &mut self,
+            clear_type: ratatui::backend::ClearType,
+        ) -> Result<(), Self::Error> {
+            self.inner.clear_region(clear_type)
+        }
+
+        fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+            Ok(self.size.get())
+        }
+
+        fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+            self.inner.window_size()
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.inner.flush()
+        }
+    }
+
+    /// How many frames `run_loop` draws on `terminal` while it polls `events`, with `before` run
+    /// ahead of each poll.
+    fn frames<B: Backend>(
+        fixture: &Fixture,
+        app: &mut App,
+        terminal: &mut Terminal<B>,
+        events: Vec<Option<Event>>,
+        mut before: impl FnMut(usize),
+    ) -> usize {
+        let count = events.len();
+        let mut events = events.into_iter();
+        let polls = Cell::new(0);
+        let poll = |_| {
+            before(polls.get());
+            polls.set(polls.get() + 1);
+            Ok(events.next().flatten())
+        };
+        fixture.with_git(|git| run_loop(app, terminal, git, poll, || polls.get() >= count));
+        // A frame's count is the number drawn before it.
+        terminal.draw(|_| {}).unwrap().count
+    }
+
+    #[test]
+    fn idle_ticks_draw_one_frame() {
+        let fixture = Fixture::new("idle");
+        let mut app = fixture.started();
+        let drawn = frames(&fixture, &mut app, &mut terminal(), vec![None; 10], |_| {});
+        assert_eq!(drawn, 1);
+    }
+
+    #[test]
+    fn a_key_between_idle_ticks_draws_one_more_frame() {
+        let fixture = Fixture::new("idle-key");
+        let mut app = fixture.started();
+        let events = vec![None, None, Some(key('j')), None, None];
+        let drawn = frames(&fixture, &mut app, &mut terminal(), events, |_| {});
+        assert_eq!(drawn, 2);
+    }
+
+    #[test]
+    fn a_write_to_the_log_from_outside_draws_one_more_frame() {
+        let fixture = Fixture::new("idle-log");
+        let mut app = fixture.started();
+        let path = fixture.dir().join("review.jsonl");
+        let line = log_line(&add_event("u1"));
+        let drawn = frames(
+            &fixture,
+            &mut app,
+            &mut terminal(),
+            vec![None; 10],
+            |tick| {
+                if tick == 3 {
+                    std::fs::write(&path, &line).unwrap();
+                }
+            },
+        );
+        assert_eq!(app.review.threads.len(), 1);
+        assert_eq!(drawn, 2);
+    }
+
+    #[test]
+    fn a_new_terminal_size_draws_one_more_frame() {
+        let fixture = Fixture::new("idle-resize");
+        let mut app = fixture.started();
+        let size = Rc::new(Cell::new(ratatui::layout::Size::new(80, 12)));
+        let backend = Resizing {
+            inner: TestBackend::new(200, 60),
+            size: Rc::clone(&size),
+        };
+        let mut terminal = Terminal::new(backend).unwrap();
+        let drawn = frames(&fixture, &mut app, &mut terminal, vec![None; 10], |tick| {
+            if tick == 3 {
+                size.set(ratatui::layout::Size::new(100, 20));
+            }
+        });
+        assert_eq!(drawn, 2);
     }
 
     #[test]
@@ -3918,9 +4102,56 @@ diff --git a/b.rs b/b.rs
         assert_eq!(buffer[at].symbol(), "l");
         assert_eq!(buffer[at].fg, expect(app.theme.keyword, app.theme.added));
         assert_eq!(buffer[at].bg, app.theme.added_bg);
-        // A reload forgets the tokens, since the files may read differently.
+        // A reload that finds the file as it was keeps its tokens.
         press(&fixture, &mut app, [key('R')]);
-        assert!(app.syntax.file("a.rs").is_none());
+        assert!(app.syntax.file("a.rs").is_some());
+    }
+
+    #[cfg(feature = "syntax")]
+    const A_RS: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-let n = 41;\n+let n = 42;\n";
+
+    #[cfg(feature = "syntax")]
+    /// A pane on `A_RS` with `a.rs` highlighted once, which asks `git show` for its old side.
+    fn highlighted(fixture: &Fixture) -> App {
+        std::fs::write(fixture.root.join("a.rs"), "let n = 42;\n").unwrap();
+        let mut app = opened(fixture, A_RS);
+        fixture.with_git(|git| app.highlight(git));
+        assert_eq!(fixture.shows.get(), 1);
+        app
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_reload_with_the_file_unchanged_reads_it_no_more() {
+        let fixture = Fixture::new("syntax-kept");
+        let mut app = highlighted(&fixture);
+        press(&fixture, &mut app, [key('R')]);
+        fixture.with_git(|git| app.highlight(git));
+        assert_eq!(fixture.shows.get(), 1);
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_reload_after_the_file_changed_highlights_it_again() {
+        let fixture = Fixture::new("syntax-changed");
+        let mut app = highlighted(&fixture);
+        std::fs::write(fixture.root.join("a.rs"), "let n = 43;\n").unwrap();
+        *fixture.patch.borrow_mut() = A_RS.replace("42", "43").into_bytes();
+        press(&fixture, &mut app, [key('R')]);
+        fixture.with_git(|git| app.highlight(git));
+        assert_eq!(fixture.shows.get(), 2);
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_reload_against_another_revision_highlights_every_file_again() {
+        let fixture = Fixture::new("syntax-spec");
+        let mut app = highlighted(&fixture);
+        let rev = app.diff.as_ref().unwrap().rev.clone();
+        press(&fixture, &mut app, [key('b')]);
+        assert_ne!(app.diff.as_ref().unwrap().rev, rev);
+        fixture.with_git(|git| app.highlight(git));
+        assert_eq!(fixture.shows.get(), 2);
     }
 
     #[test]
