@@ -776,6 +776,16 @@ fn fold_chunk(chunk: &Chunk) -> Review {
     review
 }
 
+/// The byte length of `review.jsonl`, which changes whenever a writer appends. A missing file is 0.
+pub fn log_len(dir: &Path) -> Result<u64, StoreError> {
+    let path = dir.join(REVIEW_FILE);
+    match std::fs::metadata(&path) {
+        Ok(meta) => Ok(meta.len()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(io_error(&path)(error)),
+    }
+}
+
 /// Read the whole log and fold it. Readers take no lock.
 pub fn read(dir: &Path) -> Result<Review, StoreError> {
     read_events(dir, 0).map(|chunk| fold_chunk(&chunk))

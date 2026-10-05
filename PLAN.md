@@ -136,9 +136,9 @@ plus one. Section 12.4 has the graph.
 ### 3.4 Reading
 
 Read the whole file and fold. Ignore a final line with no newline. Skip a line that does not parse and
-count it, so the TUI can show "1 unreadable event". The TUI keeps the byte offset it has read to and
-checks the file length every 250 ms on its input poll timeout. A shorter file means it was rewritten,
-so it reads from the start.
+count it, so the TUI can show "1 unreadable event". The TUI keeps the file length it last saw and
+checks it every 250 ms on its input poll timeout. When the length differs, in either direction, it reads
+and folds the whole file again. A review log is small, and this keeps a rewrite and an append the same case.
 
 ## 4. Diff
 

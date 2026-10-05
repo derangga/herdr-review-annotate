@@ -29,7 +29,7 @@ fn main() -> ExitCode {
     match parse(&args) {
         Err(usage) => finish(&Failure::Usage(usage).output()),
         Ok(Command::Open { .. }) => open::run(&env),
-        Ok(Command::Tui { .. }) => tui::run(&env),
+        Ok(Command::Tui { repo }) => tui::run(&env, repo.as_deref()),
         Ok(Command::SpikeSend) => spike::send(&env),
         Ok(Command::Comment { repo, action }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

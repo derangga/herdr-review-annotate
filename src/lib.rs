@@ -17,6 +17,4 @@ pub mod store;
 pub mod tui;
 pub mod width;
 
-// Waits for the TUI loop, which checks its flag on every tick.
-#[allow(dead_code, reason = "used once the TUI loop exists")]
 mod termination;
