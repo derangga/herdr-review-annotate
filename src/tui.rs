@@ -25,7 +25,7 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::actions;
-use crate::cards::location;
+use crate::cards::place;
 use crate::comment::CommandError;
 use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
 use crate::editor::{Editor, Outcome};
@@ -93,7 +93,10 @@ pub enum Draft {
 pub struct Compose {
     pub draft: Draft,
     pub editor: Editor,
+    /// What the top border of the editor says first: `Draft note - `, `Reply to u3`, `Edit u3`.
     title: String,
+    /// Where a new comment points, after the title. It is cut from the left when it is long.
+    place: String,
 }
 
 /// How the pane calls the Herdr CLI: the arguments in, stdout or stderr out. Tests replace it.
@@ -582,12 +585,12 @@ impl App {
         let Some(diff) = &self.diff else { return };
         match self.view.capture(diff) {
             Ok(anchor) => {
-                let title = format!("Comment on {}", location(&anchor));
                 self.view.select = None;
                 self.compose = Some(Compose {
+                    title: "Draft note - ".to_owned(),
+                    place: place(&anchor),
                     draft: Draft::Comment(anchor),
                     editor: Editor::default(),
-                    title,
                 });
             }
             Err(why) => self.status = Some(why.to_owned()),
@@ -608,6 +611,7 @@ impl App {
                     draft: Draft::Reply(root),
                     editor: Editor::default(),
                     title,
+                    place: String::new(),
                 });
             }
             None => self.status = Some("no thread here to reply to".to_owned()),
@@ -638,6 +642,7 @@ impl App {
                     draft: Draft::Edit(id),
                     editor: Editor::with_text(&body),
                     title,
+                    place: String::new(),
                 });
             }
             Err(why) => self.status = Some(why),
@@ -872,20 +877,20 @@ pub fn render(frame: &mut Frame, app: &App) {
             frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
         }
         Screen::Review => {
+            // The rows a new comment points at, marked while its editor is open.
+            let mark = match (&app.compose, &app.diff) {
+                (Some(compose), Some(diff)) => Some(match &compose.draft {
+                    Draft::Comment(anchor) => app.view.rows_of(diff, anchor),
+                    Draft::Reply(_) | Draft::Edit(_) => None,
+                }),
+                _ => None,
+            };
             if let Some(diff) = &app.diff {
-                draw(frame, &app.view, diff, &app.keymap, &app.theme);
+                let rows = mark.flatten();
+                draw(frame, &app.view, diff, &app.keymap, &app.theme, rows);
             }
-            if let Some(compose) = &app.compose {
-                let stream = areas(frame.area()).stream;
-                let at = app.view.cursor.saturating_sub(app.view.scroll);
-                let room = editor_rect(stream, at, 1).width;
-                let height = compose.editor.height(room, (stream.height * 2 / 3).max(3));
-                compose.editor.draw(
-                    frame,
-                    editor_rect(stream, at, height),
-                    &compose.title,
-                    &app.theme,
-                );
+            if let (Some(compose), Some(rows)) = (&app.compose, mark) {
+                draw_compose(frame, app, compose, rows);
             }
         }
     }
@@ -920,6 +925,24 @@ pub fn render(frame: &mut Frame, app: &App) {
         status,
     );
     app.theme.paint(frame.buffer_mut());
+}
+
+/// The editor, as wide as the stream, under the cursor or under the last of `rows`, the rows a new
+/// comment points at, whichever is lower.
+fn draw_compose(frame: &mut Frame, app: &App, compose: &Compose, rows: Option<(usize, usize)>) {
+    let stream = areas(frame.area()).stream;
+    let under = rows.map_or(app.view.cursor, |(_, high)| high.max(app.view.cursor));
+    let at = under.saturating_sub(app.view.scroll);
+    let height = compose
+        .editor
+        .height(stream.width, (stream.height * 2 / 3).max(3));
+    compose.editor.draw(
+        frame,
+        editor_rect(stream, at, height),
+        &compose.title,
+        &compose.place,
+        &app.theme,
+    );
 }
 
 /// The question the pane is waiting on, in a box over the middle of the pane.
@@ -1958,7 +1981,7 @@ diff --git a/b.rs b/b.rs
         let fixture = Fixture::new("comment-line");
         let mut app = opened(&fixture, patch_text());
         press(&fixture, &mut app, [key('j'), key('j'), key('c')]);
-        assert!(screen_of(&app).contains("Comment on a.rs:1 (L)"));
+        assert!(screen_of(&app).contains("╭ Draft note - a.rs L1 ─"));
         press(&fixture, &mut app, chars("fix this"));
         press(&fixture, &mut app, [ctrl_s()]);
         assert!(app.compose.is_none());
@@ -2041,6 +2064,115 @@ diff --git a/b.rs b/b.rs
         assert!(app.compose.is_none());
         assert!(!fixture.dir().join("review.jsonl").exists());
         assert!(app.review.threads.is_empty());
+    }
+
+    /// The pane drawn at `width` by 12, as the rows of the screen and the buffer behind them.
+    fn drawn(app: &mut App, width: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
+        app.resize(Rect::new(0, 0, width, 12));
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows = buffer
+            .content
+            .chunks(usize::from(width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect();
+        (rows, buffer)
+    }
+
+    #[test]
+    fn the_editor_is_a_rounded_box_as_wide_as_the_stream_under_the_marked_row() {
+        let fixture = Fixture::new("editor-box");
+        let mut app = opened(&fixture, patch_text());
+        // Unified: the stream is columns 20..80, and row 3 is `+new`.
+        press(&fixture, &mut app, [key('j'), key('j'), key('j'), key('c')]);
+        let (rows, buffer) = drawn(&mut app, 80);
+        let stream = |row: &str| row.chars().skip(20).collect::<String>();
+        assert!(
+            stream(&rows[4]).starts_with("╭ Draft note - a.rs R1 ─"),
+            "{}",
+            rows[4]
+        );
+        assert!(rows[4].ends_with("─╮"), "{}", rows[4]);
+        assert!(
+            stream(&rows[5]).starts_with("│Write a note…"),
+            "{}",
+            rows[5]
+        );
+        assert!(rows[5].ends_with('│'), "{}", rows[5]);
+        assert!(stream(&rows[6]).starts_with("╰─"), "{}", rows[6]);
+        assert!(rows[6].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[6]);
+        assert_eq!(buffer[(20, 4)].fg, app.theme.warning);
+        // The commented row keeps a bar and a tint while the editor is open.
+        assert_eq!(buffer[(20, 3)].symbol(), "▌");
+        assert_eq!(buffer[(20, 3)].fg, app.theme.warning);
+        assert_eq!(buffer[(60, 3)].bg, app.theme.selection);
+        assert_ne!(buffer[(60, 2)].bg, app.theme.selection);
+        // Side by side: the sidebar is 32 columns, and `-old` and `+new` share row 2.
+        let (rows, buffer) = drawn(&mut app, 130);
+        let stream = |row: &str| row.chars().skip(32).collect::<String>();
+        assert!(
+            stream(&rows[3]).starts_with("╭ Draft note - a.rs R1 ─"),
+            "{}",
+            rows[3]
+        );
+        assert!(rows[3].ends_with("─╮"), "{}", rows[3]);
+        assert!(rows[5].ends_with(" ^S save  Esc cancel ╯"), "{}", rows[5]);
+        assert_eq!(buffer[(100, 2)].bg, app.theme.selection);
+        press(&fixture, &mut app, [esc()]);
+        let (rows, buffer) = drawn(&mut app, 130);
+        assert!(!rows.join("\n").contains("Draft note"));
+        assert_ne!(buffer[(100, 2)].bg, app.theme.selection);
+    }
+
+    #[test]
+    fn the_editor_title_names_a_range_and_a_file_and_the_box_sits_under_the_range() {
+        let fixture = Fixture::new("editor-titles");
+        let patch =
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,4 @@\n a\n+b\n+c\n d\n";
+        let mut app = opened(&fixture, patch);
+        // Rows: the header, the hunk, ` a`, `+b`, `+c`, ` d`. The range is selected upwards.
+        press(&fixture, &mut app, chars("jjjjvkc"));
+        assert_eq!(app.view.cursor, 3);
+        let (rows, buffer) = drawn(&mut app, 80);
+        assert!(
+            rows[5].contains("╭ Draft note - a.rs R2-3 ─"),
+            "{}",
+            rows[5]
+        );
+        for y in [3, 4] {
+            assert_eq!(buffer[(20, y)].symbol(), "▌", "row {y}");
+            assert_eq!(buffer[(60, y)].bg, app.theme.selection, "row {y}");
+        }
+        press(&fixture, &mut app, [esc()]);
+        press(&fixture, &mut app, chars("kkkc"));
+        let (rows, buffer) = drawn(&mut app, 80);
+        assert!(rows[1].contains("╭ Draft note - a.rs ─"), "{}", rows[1]);
+        assert_eq!(buffer[(60, 0)].bg, app.theme.selection);
+    }
+
+    #[test]
+    fn a_long_draft_stops_growing_at_two_thirds_of_the_stream() {
+        let fixture = Fixture::new("editor-cap");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('c')]);
+        for _ in 0..9 {
+            press(&fixture, &mut app, chars("line"));
+            press(
+                &fixture,
+                &mut app,
+                [Event::Key(KeyEvent::from(KeyCode::Enter))],
+            );
+        }
+        // The stream is 10 rows tall, so the box is 6: two borders and the last four lines.
+        let (rows, _) = drawn(&mut app, 80);
+        let top = rows.iter().position(|row| row.contains('╭')).unwrap();
+        let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
+        assert_eq!(bottom - top, 5, "{}", rows.join("\n"));
     }
 
     #[test]
@@ -2724,7 +2856,10 @@ diff --git a/b.rs b/b.rs
         let compose = app.compose.as_ref().unwrap();
         assert!(matches!(&compose.draft, Draft::Comment(anchor)
             if anchor.target == AnchorTarget::Line { side: Side::New, line: 1, text: "new".into() }));
-        assert_eq!(compose.title, "Comment on a.rs:1 (R)");
+        assert_eq!(
+            (compose.title.as_str(), compose.place.as_str()),
+            ("Draft note - ", "a.rs R1")
+        );
     }
 
     #[test]

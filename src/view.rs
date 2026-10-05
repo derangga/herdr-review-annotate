@@ -15,13 +15,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::cards::{Card, card, indent};
+use crate::cards::{Card, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
 use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
-use crate::width::{char_width, string_width, truncate_to_width};
+use crate::width::{string_width, tail_to_width, truncate_to_width};
 
 /// Rows the mouse wheel moves per notch.
 const WHEEL_ROWS: usize = 3;
@@ -894,6 +894,25 @@ impl View {
         })
     }
 
+    /// The stream rows a comment at `anchor` points at: its line, the ends of its range, or the
+    /// header of its file. It is looked up when drawn, so it is right after the stream is laid out
+    /// again.
+    pub fn rows_of(&self, diff: &Diff, anchor: &Anchor) -> Option<(usize, usize)> {
+        let index = diff.file_index(&anchor.path)?;
+        let (file, rows) = (diff.files.get(index)?, self.stream.files.get(index)?);
+        let row = |side, line| {
+            self.stream
+                .row_of(index, offset_of(file, rows, side, line)?)
+        };
+        match anchor.target {
+            AnchorTarget::File => self.stream.row_of(index, 0).map(|row| (row, row)),
+            AnchorTarget::Line { side, line, .. } => row(side, line).map(|row| (row, row)),
+            AnchorTarget::Range {
+                side, start, end, ..
+            } => row(side, start).zip(row(side, end)),
+        }
+    }
+
     /// The thread and the comment of it the cursor is on: the comment whose line of the card it is
     /// on, or the root when it is on the line the card hangs under.
     pub fn focused_comment(&self) -> Option<(usize, usize)> {
@@ -1145,24 +1164,6 @@ fn head_to_width(text: &str, width: usize) -> String {
     kept
 }
 
-/// The last `width` cells of `text`, with a leading `…` when something was cut.
-fn tail_to_width(text: &str, width: usize) -> String {
-    if string_width(text) <= width {
-        return text.to_owned();
-    }
-    let mut used = 1;
-    let mut kept = Vec::new();
-    for character in text.chars().rev() {
-        used += char_width(character);
-        if used > width {
-            break;
-        }
-        kept.push(character);
-    }
-    kept.push('…');
-    kept.into_iter().rev().collect()
-}
-
 /// The sign of a code row, the colour of its text, and the tint behind it.
 fn code_style(kind: RowKind, theme: &Theme) -> (char, Style, Style) {
     match kind {
@@ -1315,8 +1316,16 @@ fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
 }
 
 /// Draw the sidebar and the stream, and the help overlay when it is open. Only the rows in the
-/// window are built.
-pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap, theme: &Theme) {
+/// window are built. `mark` is the rows the open editor comments on. While it is set they are
+/// marked and no `[+]` is offered, since the mouse does nothing until the editor closes.
+pub fn draw(
+    frame: &mut Frame,
+    view: &View,
+    diff: &Diff,
+    keymap: &Keymap,
+    theme: &Theme,
+    mark: Option<(usize, usize)>,
+) {
     let areas = areas(frame.area());
     let cursor_style = Style::new().bg(theme.cursor);
     let height = usize::from(areas.stream.height);
@@ -1351,7 +1360,9 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap, theme:
             style,
         );
     }
-    if let Some(plus) = view.plus() {
+    if let Some(rows) = mark {
+        draw_mark(frame, view, rows, theme);
+    } else if let Some(plus) = view.plus() {
         let shown = plus.row >= view.scroll && plus.row < view.scroll + height;
         if shown && plus.col + PLUS_WIDTH <= width {
             let x = areas.stream.x + u16::try_from(plus.col).unwrap_or(0);
@@ -1371,10 +1382,31 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap, theme:
     }
 }
 
-/// Where an editor `height` rows tall goes in `stream` when the cursor is on row `at` of it: under
-/// the cursor, else above it, else at the bottom. It lines up with the cards.
+/// Mark rows `low..=high` of the stream as what the open editor comments on: a tint across the
+/// row and a bar in its first cell. A cell that holds a digit of a line number keeps it.
+fn draw_mark(frame: &mut Frame, view: &View, (low, high): (usize, usize), theme: &Theme) {
+    let area = areas(frame.area()).stream;
+    let last = view.scroll + usize::from(area.height).saturating_sub(1);
+    for row in low.max(view.scroll)..=high.min(last) {
+        let at = row - view.scroll;
+        highlight(
+            frame.buffer_mut(),
+            area,
+            at,
+            Style::new().bg(theme.selection),
+        );
+        let y = area.y + u16::try_from(at).unwrap_or(0);
+        if let Some(cell) = frame.buffer_mut().cell_mut((area.x, y))
+            && cell.symbol() == " "
+        {
+            cell.set_symbol("▌").set_fg(theme.warning);
+        }
+    }
+}
+
+/// Where an editor `height` rows tall goes in `stream` when the row it belongs to is row `at` of
+/// it: under that row, else above it, else at the bottom. It is as wide as the stream.
 pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
-    let left = u16::try_from(indent(usize::from(stream.width))).unwrap_or(0);
     let height = height.min(stream.height);
     let at = u16::try_from(at)
         .unwrap_or(0)
@@ -1386,12 +1418,7 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
     } else {
         stream.height - height
     };
-    Rect::new(
-        stream.x + left,
-        stream.y + y,
-        stream.width.saturating_sub(left),
-        height,
-    )
+    Rect::new(stream.x, stream.y + y, stream.width, height)
 }
 
 /// One file of the sidebar: a mark for unsent comments, the letter, the name, and the counts
@@ -1629,7 +1656,7 @@ Binary files a/img.png and b/img.png differ
         keymap: &Keymap,
     ) -> String {
         terminal
-            .draw(|frame| draw(frame, view, diff, keymap, &Theme::default()))
+            .draw(|frame| draw(frame, view, diff, keymap, &Theme::default(), None))
             .unwrap();
         screen(terminal)
     }
@@ -1833,7 +1860,16 @@ Binary files a/img.png and b/img.png differ
         view.move_to(10);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &view, &diff, &Keymap::default(), &Theme::default()))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    &diff,
+                    &Keymap::default(),
+                    &Theme::default(),
+                    None,
+                );
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(30, 10)].bg, Theme::default().cursor);
@@ -2330,14 +2366,93 @@ Binary files a/img.png and b/img.png differ
     #[test]
     fn the_editor_goes_under_the_cursor_then_above_it_then_to_the_bottom() {
         let stream = Rect::new(20, 0, 60, 20);
-        // Wide streams line it up with the code.
-        assert_eq!(editor_rect(stream, 5, 4), Rect::new(31, 6, 49, 4));
-        assert_eq!(editor_rect(stream, 17, 4), Rect::new(31, 13, 49, 4));
-        assert_eq!(editor_rect(stream, 2, 19), Rect::new(31, 1, 49, 19));
+        // It is as wide as the stream, with no indent under the code.
+        assert_eq!(editor_rect(stream, 5, 4), Rect::new(20, 6, 60, 4));
+        assert_eq!(editor_rect(stream, 17, 4), Rect::new(20, 13, 60, 4));
+        assert_eq!(editor_rect(stream, 2, 19), Rect::new(20, 1, 60, 19));
         assert_eq!(
             editor_rect(Rect::new(0, 3, 30, 8), 1, 20),
-            Rect::new(2, 3, 28, 8)
+            Rect::new(0, 3, 30, 8)
         );
+    }
+
+    #[test]
+    fn a_comment_s_rows_are_its_line_its_range_or_its_file_header_in_both_layouts() {
+        let diff = diff_of(PATCH);
+        let anchor = |path: &str, target| Anchor {
+            path: RelPath::parse(path).unwrap(),
+            old_path: None,
+            target,
+            spec: Spec::WorkTree,
+        };
+        let range = |side, start, end| AnchorTarget::Range {
+            side,
+            start,
+            end,
+            text: String::new(),
+        };
+        let old = AnchorTarget::Line {
+            side: Side::Old,
+            line: 2,
+            text: "a2".into(),
+        };
+        // Unified: a.rs is rows 0..=9, with `-a2` on row 3 and `+A2` on row 4.
+        let unified = view(&diff, &Review::default(), 80, 12);
+        assert_eq!(
+            unified.rows_of(&diff, &anchor("a.rs", line(2, "A2"))),
+            Some((4, 4))
+        );
+        assert_eq!(
+            unified.rows_of(&diff, &anchor("a.rs", old.clone())),
+            Some((3, 3))
+        );
+        assert_eq!(
+            unified.rows_of(&diff, &anchor("a.rs", range(Side::New, 2, 11))),
+            Some((4, 8))
+        );
+        assert_eq!(
+            unified.rows_of(&diff, &anchor("b.rs", AnchorTarget::File)),
+            Some((10, 10))
+        );
+        assert_eq!(
+            unified.rows_of(&diff, &anchor("gone.rs", line(1, "x"))),
+            None
+        );
+        assert_eq!(unified.rows_of(&diff, &anchor("a.rs", line(99, "x"))), None);
+        // Side by side pairs `-a2` with `+A2`, so both sides of line 2 are one row.
+        let split = view(&diff, &Review::default(), 130, 12);
+        let new = split.rows_of(&diff, &anchor("a.rs", line(2, "A2")));
+        assert!(new.is_some());
+        assert_eq!(new, split.rows_of(&diff, &anchor("a.rs", old)));
+    }
+
+    #[test]
+    fn the_mark_tints_its_rows_and_puts_a_bar_where_no_digit_is() {
+        let (diff, view) = plain();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    &diff,
+                    &Keymap::default(),
+                    &theme,
+                    Some((3, 4)),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // The stream starts at column 20.
+        for y in [3, 4] {
+            assert_eq!(buffer[(20, y)].symbol(), "▌", "row {y}");
+            assert_eq!(buffer[(20, y)].fg, theme.warning, "row {y}");
+            assert_eq!(buffer[(60, y)].bg, theme.selection, "row {y}");
+        }
+        assert_ne!(buffer[(20, 2)].symbol(), "▌");
+        assert_ne!(buffer[(60, 5)].bg, theme.selection);
+        assert!(!screen(&terminal).contains("[+]"));
     }
 
     #[test]
@@ -2348,7 +2463,16 @@ Binary files a/img.png and b/img.png differ
         view.move_to(4);
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &view, &diff, &Keymap::default(), &Theme::default()))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    &diff,
+                    &Keymap::default(),
+                    &Theme::default(),
+                    None,
+                );
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         // The stream starts at column 20. Rows 2 and 3 are selected, and row 4 is the cursor.

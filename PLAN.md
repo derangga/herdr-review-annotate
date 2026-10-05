@@ -410,9 +410,18 @@ How comments are written (built in M5):
 - `select_range` starts a range at the cursor and a second press drops it. The range runs to the cursor, stays
   inside one file, takes the side of its first line, ends at the last line on that side, and keeps the text of
   its first line. A reload drops it. `comment` uses it and ends it.
-- The editor is drawn under the cursor row, or above it when there is no room, lined up with the cards. `Ctrl+S`
-  saves and `Esc` cancels. A failed save keeps the editor open with its text, and the reason is on its footer
-  and on the status line. The diff is not reloaded while the editor is open: a store change, `reload` and
+- The editor is a rounded box in the theme's warning colour, as wide as the stream in both layouts. It is
+  drawn under the cursor row, or under the last row of the range a new comment points at when that is lower,
+  and above that row when there is no room below. It grows with its text up to two thirds of the stream's
+  height. `Ctrl+S` saves and `Esc` cancels.
+- The top border reads `Draft note - <path> R<line>` for a new comment: `L` for the old side, `R101-110` for a
+  range, and the bare path for a file comment. A path that does not fit is cut from the left with `…`. A reply
+  reads `Reply to <id>` and an edit reads `Edit <id>`. The bottom border holds `^S save  Esc cancel` on the
+  right. An empty editor shows a dim `Write a note…`.
+- While the editor of a new comment is open, the row or range it points at has the selection tint and a bar in
+  its first cell, and no `[+]` is drawn. The bar gives way to a digit of a line number.
+- A failed save keeps the editor open with its text, and the reason replaces the keys on the bottom border and
+  is on the status line. The diff is not reloaded while the editor is open: a store change, `reload` and
   regaining focus wait until it closes.
 - A saved comment, reply, edit, delete, resolve or reopen is written with `actions.rs`, then the pane reads the
   log again and lays the stream out. It does not reload the diff. A new comment or reply moves the cursor to

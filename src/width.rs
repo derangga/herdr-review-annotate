@@ -66,6 +66,24 @@ pub fn truncate_to_width(text: &str, width: usize) -> String {
         .collect()
 }
 
+/// The last `width` cells of `text`, with a leading `…` when something was cut.
+pub fn tail_to_width(text: &str, width: usize) -> String {
+    if string_width(text) <= width {
+        return text.to_owned();
+    }
+    let mut used = 1;
+    let mut kept = Vec::new();
+    for character in text.chars().rev() {
+        used += char_width(character);
+        if used > width {
+            break;
+        }
+        kept.push(character);
+    }
+    kept.push('…');
+    kept.into_iter().rev().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +110,12 @@ mod tests {
         assert_eq!(truncate_to_width("한글", 3), "한");
         assert_eq!(truncate_to_width("한글", 4), "한글");
         assert_eq!(truncate_to_width("한", 0), "");
+    }
+
+    #[test]
+    fn a_long_text_is_cut_from_the_left_with_an_ellipsis() {
+        assert_eq!(tail_to_width("src/a.rs", 8), "src/a.rs");
+        assert_eq!(tail_to_width("src/a.rs", 5), "…a.rs");
+        assert_eq!(tail_to_width("한글한", 4), "…한");
     }
 }

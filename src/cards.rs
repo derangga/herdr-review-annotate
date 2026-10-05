@@ -99,6 +99,19 @@ pub fn location(anchor: &Anchor) -> String {
     }
 }
 
+/// Where a comment points, as the title of a box writes it: `src/lib.rs R42`, `src/lib.rs L3-5`,
+/// or the bare path for a file comment.
+pub fn place(anchor: &Anchor) -> String {
+    let path = sanitize_terminal_text(anchor.path.as_str());
+    match &anchor.target {
+        AnchorTarget::File => path,
+        AnchorTarget::Line { side, line, .. } => format!("{path} {}{line}", side_letter(*side)),
+        AnchorTarget::Range {
+            side, start, end, ..
+        } => format!("{path} {}{start}-{end}", side_letter(*side)),
+    }
+}
+
 /// The text of the commented line as it was when the comment was written.
 fn was(anchor: &Anchor) -> Option<&str> {
     match &anchor.target {
@@ -395,6 +408,27 @@ mod tests {
                 " ".repeat(GUTTER)
             )
         );
+    }
+
+    #[test]
+    fn a_box_title_names_the_path_the_side_letter_and_the_line_or_range() {
+        let mut anchor = thread("x").anchor;
+        assert_eq!(place(&anchor), "src/a.rs R7");
+        anchor.target = AnchorTarget::Line {
+            side: Side::Old,
+            line: 3,
+            text: String::new(),
+        };
+        assert_eq!(place(&anchor), "src/a.rs L3");
+        anchor.target = AnchorTarget::Range {
+            side: Side::New,
+            start: 101,
+            end: 110,
+            text: String::new(),
+        };
+        assert_eq!(place(&anchor), "src/a.rs R101-110");
+        anchor.target = AnchorTarget::File;
+        assert_eq!(place(&anchor), "src/a.rs");
     }
 
     #[test]

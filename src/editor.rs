@@ -7,13 +7,20 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use crate::edit_keys::{EditAction, line_end, line_start, resolve_edit_key, word_end, word_start};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
-use crate::width::{char_width, string_width};
+use crate::width::{char_width, string_width, tail_to_width};
+
+/// The keys on the bottom border. They are fixed, as `edit_keys.rs` defines them.
+const KEYS: &str = "^S save  Esc cancel";
+
+/// What an empty editor shows where the text will go.
+const PLACEHOLDER: &str = "Write a note…";
 
 /// What a key press did to the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,16 +71,31 @@ impl Editor {
         u16::try_from(lines + 2).unwrap_or(u16::MAX).min(max)
     }
 
-    /// Draw the editor in `area` under `title`. The terminal cursor goes where the text cursor is.
-    pub fn draw(&self, frame: &mut Frame, area: Rect, title: &str, theme: &Theme) {
+    /// Draw the editor in `area` as a rounded box. The top border reads `title` and then `place`,
+    /// which is cut from the left when the two do not fit. The bottom border holds the keys, or
+    /// why the last save failed. The terminal cursor goes where the text cursor is.
+    pub fn draw(&self, frame: &mut Frame, area: Rect, title: &str, place: &str, theme: &Theme) {
+        let border = Style::new().fg(theme.warning);
+        let title = sanitize_terminal_text(title);
+        // Two corners and a space on each side of the text.
+        let room = usize::from(area.width).saturating_sub(4 + string_width(&title));
+        let place = tail_to_width(&sanitize_terminal_text(place), room);
         let footer = if self.status.is_empty() {
-            "Ctrl+S save  ·  Esc cancel  ·  Enter new line"
+            Line::styled(format!(" {KEYS} "), theme.dim())
         } else {
-            &self.status
+            Line::styled(
+                format!(" {} ", sanitize_terminal_text(&self.status)),
+                Style::new().fg(theme.removed),
+            )
         };
         let block = Block::bordered()
-            .title(sanitize_terminal_text(title))
-            .title_bottom(Line::styled(sanitize_terminal_text(footer), theme.dim()));
+            .border_type(BorderType::Rounded)
+            .border_style(border)
+            .title(Line::styled(
+                format!(" {title}{place} "),
+                border.add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(footer.right_aligned());
         let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
@@ -90,7 +112,11 @@ impl Editor {
             .take(rows)
             .map(Line::from)
             .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(lines), inner);
+        if self.comment.is_empty() {
+            frame.render_widget(Line::styled(PLACEHOLDER, theme.dim()), inner);
+        } else {
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
         let x = u16::try_from(layout.cursor_col).ok().map(|x| inner.x + x);
         let y = u16::try_from(layout.cursor_row - start)
             .ok()
@@ -392,41 +418,119 @@ mod tests {
         assert_eq!(typed(&editor), "a[2Jb    c");
     }
 
+    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The editor drawn alone in a pane `width` cells wide and four rows tall.
+    fn drawn(editor: &Editor, width: u16, title: &str, place: &str) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
+        terminal
+            .draw(|frame| editor.draw(frame, frame.area(), title, place, &Theme::default()))
+            .unwrap();
+        terminal
+    }
+
     #[test]
     fn the_widget_draws_inside_its_rect_and_nowhere_else() {
         let mut editor = Editor::default();
         type_text(&mut editor, "first\nsecond");
-        let mut terminal = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
             .draw(|frame| {
-                let fill = vec![Line::from("x".repeat(30)); 10];
+                let fill = vec![Line::from("x".repeat(40)); 10];
                 frame.render_widget(Paragraph::new(fill), frame.area());
-                editor.draw(
-                    frame,
-                    Rect::new(2, 3, 20, 4),
-                    " Comment ",
-                    &Theme::default(),
-                );
+                let area = Rect::new(2, 3, 30, 4);
+                editor.draw(frame, area, "Draft note - ", "a.rs R1", &Theme::default());
             })
             .unwrap();
-        let rows = (0..10)
-            .map(|y| {
-                (0..30)
-                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_owned())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(rows[2], "x".repeat(30));
-        assert_eq!(rows[7], "x".repeat(30));
-        assert!(rows[3].starts_with("xx┌ Comment "), "{}", rows[3]);
-        assert!(rows[3].ends_with("┐xxxxxxxx"), "{}", rows[3]);
+        let rows = rows(&terminal);
+        assert_eq!(rows[2], "x".repeat(40));
+        assert_eq!(rows[7], "x".repeat(40));
+        assert!(
+            rows[3].starts_with("xx╭ Draft note - a.rs R1 ─"),
+            "{}",
+            rows[3]
+        );
+        assert!(rows[3].ends_with("╮xxxxxxxx"), "{}", rows[3]);
         assert!(rows[4].starts_with("xx│first"), "{}", rows[4]);
         assert!(rows[5].contains("second"));
-        assert!(rows[6].contains("Ctrl+S save"), "{}", rows[6]);
-        assert!(rows[6].ends_with("┘xxxxxxxx"), "{}", rows[6]);
+        assert!(rows[6].starts_with("xx╰─"), "{}", rows[6]);
+        assert!(
+            rows[6].ends_with(" ^S save  Esc cancel ╯xxxxxxxx"),
+            "{}",
+            rows[6]
+        );
         terminal
             .backend_mut()
             .assert_cursor_position(Position::new(9, 5));
+        // The border is the theme's warning colour.
+        let theme = Theme::default();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 3)].fg, theme.warning);
+        assert_eq!(buffer[(2, 6)].fg, theme.warning);
+    }
+
+    #[test]
+    fn an_empty_editor_shows_a_dim_placeholder_with_the_cursor_on_its_first_letter() {
+        let mut editor = Editor::default();
+        let mut terminal = drawn(&editor, 40, "Reply to u1", "");
+        let shown = rows(&terminal);
+        assert!(shown[0].starts_with("╭ Reply to u1 ─"), "{}", shown[0]);
+        assert!(shown[1].starts_with("│Write a note…  "), "{}", shown[1]);
+        assert_eq!(
+            terminal.backend().buffer()[(1, 1)].fg,
+            Theme::default().subtle
+        );
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(1, 1));
+        type_text(&mut editor, "x");
+        let shown = rows(&drawn(&editor, 40, "Reply to u1", ""));
+        assert!(shown[1].starts_with("│x  "), "{}", shown[1]);
+    }
+
+    #[test]
+    fn a_long_place_is_cut_from_the_left_and_the_title_stays() {
+        let editor = Editor::default();
+        let place = "src/routes/newsletter_subscription.js R10";
+        let shown = rows(&drawn(&editor, 40, "Draft note - ", place));
+        assert_eq!(shown[0], "╭ Draft note - …er_subscription.js R10 ╮");
+        let shown = rows(&drawn(&editor, 60, "Draft note - ", place));
+        assert!(
+            shown[0].starts_with(&format!("╭ Draft note - {place} ─")),
+            "{}",
+            shown[0]
+        );
+    }
+
+    #[test]
+    fn a_failed_save_replaces_the_keys_on_the_bottom_border_until_the_next_key() {
+        let mut editor = Editor::with_text("keep me");
+        editor.fail("review is busy, press again");
+        let terminal = drawn(&editor, 50, "Edit u1", "");
+        let shown = rows(&terminal);
+        assert!(
+            shown[3].ends_with(" review is busy, press again ╯"),
+            "{}",
+            shown[3]
+        );
+        assert!(!shown[3].contains("^S save"), "{}", shown[3]);
+        assert_eq!(
+            terminal.backend().buffer()[(30, 3)].fg,
+            Theme::default().removed
+        );
+        editor.handle_key(KeyEvent::from(KeyCode::Right));
+        let shown = rows(&drawn(&editor, 50, "Edit u1", ""));
+        assert!(shown[3].ends_with(" ^S save  Esc cancel ╯"), "{}", shown[3]);
+        assert!(shown[1].contains("keep me"));
     }
 
     #[test]
@@ -435,7 +539,7 @@ mod tests {
         type_text(&mut editor, "l1\nl2\nl3\nl4\nl5");
         let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
         terminal
-            .draw(|frame| editor.draw(frame, frame.area(), "c", &Theme::default()))
+            .draw(|frame| editor.draw(frame, frame.area(), "c", "", &Theme::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let text = |y| {
