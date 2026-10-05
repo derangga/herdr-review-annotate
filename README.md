@@ -77,8 +77,8 @@ effect.
 |---|---|---|
 | `up` | `k`, `up` | move up one row |
 | `down` | `j`, `down` | move down one row |
-| `page_up` | `pageup` | scroll up one page |
-| `page_down` | `pagedown` | scroll down one page |
+| `page_up` | `ctrl+u`, `pageup` | scroll up one page |
+| `page_down` | `ctrl+d`, `pagedown` | scroll down one page |
 | `prev_hunk` | `[` | previous hunk |
 | `next_hunk` | `]` | next hunk |
 | `prev_thread` | `N` | previous thread |

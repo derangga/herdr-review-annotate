@@ -361,7 +361,7 @@ only in v1.
 | Action name | Default keys | What it does |
 |---|---|---|
 | `up`, `down` | `k` `up`, `j` `down` | Move the cursor one row |
-| `page_up`, `page_down` | `pageup`, `pagedown` | Scroll one page |
+| `page_up`, `page_down` | `ctrl+u`/`pageup`, `ctrl+d`/`pagedown` | Scroll one page |
 | `prev_hunk`, `next_hunk` | `[`, `]` | Previous or next hunk |
 | `prev_thread`, `next_thread` | `shift+n`, `n` | Previous or next thread |
 | `scroll_left`, `scroll_right` | `h` `left`, `l` `right` | Scroll the code of the diff 8 cells sideways |
