@@ -1,9 +1,14 @@
-//! Send: the prompt the agent receives.
+//! Send: the prompt the agent receives, and which agent receives it.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 
-use crate::store::{Anchor, AnchorTarget, Comment, Side, Thread};
+use serde_json::Value;
+
+use crate::agent_delivery::agent_ready;
+use crate::env::Env;
+use crate::meta::{self, Meta, Target};
+use crate::store::{Anchor, AnchorTarget, Comment, PaneId, Side, StoreError, TerminalId, Thread};
 
 /// `text` as one POSIX shell word. A single quote ends the quoting, is escaped, and starts it again.
 fn quote(text: &str) -> String {
@@ -94,6 +99,164 @@ pub fn format(threads: &[&Thread], bin: &Path, root: &Path) -> String {
         text.push('\n');
     }
     text
+}
+
+/// Resolution found no agent, or could not choose between several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetError {
+    NoAgent,
+    Ambiguous(Vec<Target>),
+    /// `herdr agent list` failed, so the search could not run.
+    Herdr(String),
+}
+
+impl fmt::Display for TargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAgent => f.write_str("No agent found for this review."),
+            Self::Ambiguous(found) => write!(
+                f,
+                "{} agents match, pick one in the review pane.",
+                found.len()
+            ),
+            Self::Herdr(message) => write!(f, "Cannot list agents: {message}"),
+        }
+    }
+}
+
+/// An agent as `herdr agent get` and `herdr agent list` describe it.
+struct Seen {
+    target: Target,
+    cwd: std::path::PathBuf,
+    workspace: Option<String>,
+}
+
+fn seen(agent: &Value) -> Option<Seen> {
+    let text = |name| agent.get(name)?.as_str().filter(|text| !text.is_empty());
+    Some(Seen {
+        target: Target {
+            pane: PaneId::parse(text("pane_id")?)?,
+            terminal: TerminalId::parse(text("terminal_id")?)?,
+            agent: text("agent")?.to_owned(),
+        },
+        cwd: text("cwd")?.into(),
+        workspace: text("workspace_id").map(str::to_owned),
+    })
+}
+
+/// The root, inside it, or above it: the places an agent for this review may be working.
+fn belongs(cwd: &Path, root: &Path) -> bool {
+    cwd.starts_with(root) || root.starts_with(cwd)
+}
+
+fn arguments(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+/// A stored pane is valid when it is ready, still holds the stored terminal and works in this
+/// review's tree (ADR 0006).
+fn valid(
+    pane: &PaneId,
+    terminal: &TerminalId,
+    root: &Path,
+    herdr: &mut impl FnMut(&[String]) -> Result<String, String>,
+) -> Option<Target> {
+    let got = herdr(&arguments(&["agent", "get", pane.as_str()]));
+    agent_ready(&got).ok()?;
+    let value = serde_json::from_str::<Value>(&got.ok()?).ok()?;
+    let found = seen(value.pointer("/result/agent")?)?;
+    (found.target.terminal == *terminal && belongs(&found.cwd, root)).then_some(Target {
+        pane: pane.clone(),
+        ..found.target
+    })
+}
+
+/// The agents `herdr agent list` reports.
+fn listed(list: &str) -> Vec<Seen> {
+    let value = serde_json::from_str::<Value>(list).ok();
+    let agents = value
+        .as_ref()
+        .and_then(|value| value.pointer("/result/agents")?.as_array());
+    agents.into_iter().flatten().filter_map(seen).collect()
+}
+
+/// One match is the answer, none falls to the next rule, several are a choice for the user.
+fn one_of(found: &[&Seen]) -> Option<Result<Target, TargetError>> {
+    match found {
+        [] => None,
+        [one] => Some(Ok(one.target.clone())),
+        _ => Some(Err(TargetError::Ambiguous(
+            found.iter().map(|seen| seen.target.clone()).collect(),
+        ))),
+    }
+}
+
+/// The agent a send goes to (PLAN.md section 6.2, ADR 0006): the pane the review was opened beside,
+/// the one saved in `meta`, then a search by terminal id and by working directory.
+pub fn resolve_target(
+    env: &Env,
+    meta: &Meta,
+    mut herdr: impl FnMut(&[String]) -> Result<String, String>,
+    root: &Path,
+) -> Result<Target, TargetError> {
+    let from_env = env
+        .get("REVIEW_DELIVER_TO")
+        .and_then(PaneId::parse)
+        .zip(env.get("REVIEW_DELIVER_TERM").and_then(TerminalId::parse));
+    let stored = meta
+        .target
+        .as_ref()
+        .map(|target| (target.pane.clone(), target.terminal.clone()));
+    let mut tried = Vec::new();
+    for (pane, terminal) in from_env.iter().chain(&stored) {
+        if tried.contains(&(pane, terminal)) {
+            continue;
+        }
+        tried.push((pane, terminal));
+        if let Some(target) = valid(pane, terminal, root, &mut herdr) {
+            return Ok(target);
+        }
+    }
+    let agents = listed(&herdr(&arguments(&["agent", "list"])).map_err(TargetError::Herdr)?);
+    let terminals = tried
+        .iter()
+        .map(|(_, terminal)| *terminal)
+        .collect::<Vec<_>>();
+    let by_terminal = agents
+        .iter()
+        .filter(|seen| terminals.contains(&&seen.target.terminal))
+        .collect::<Vec<_>>();
+    let inside = agents
+        .iter()
+        .filter(|seen| seen.cwd.starts_with(root))
+        .collect::<Vec<_>>();
+    let workspace = env
+        .get("HERDR_PANE_ID")
+        .and_then(|pane| pane.split_once(':'))
+        .map(|(workspace, _)| workspace);
+    let above = agents
+        .iter()
+        .filter(|seen| root.starts_with(&seen.cwd))
+        .filter(|seen| workspace.is_none_or(|ws| seen.workspace.as_deref() == Some(ws)))
+        .collect::<Vec<_>>();
+    [by_terminal, inside, above]
+        .into_iter()
+        .find_map(|found| one_of(&found))
+        .unwrap_or(Err(TargetError::NoAgent))
+}
+
+/// Remember the target for the next send, which may come from the `send` action that never has
+/// the pane's environment. Writes nothing when `meta.json` already holds it.
+pub fn save_target(
+    dir: &Path,
+    root: &Path,
+    meta: &Meta,
+    target: &Target,
+) -> Result<(), StoreError> {
+    if meta.target.as_ref() == Some(target) {
+        return Ok(());
+    }
+    meta::save(dir, root, |meta| meta.target = Some(target.clone()))
 }
 
 #[cfg(test)]
@@ -321,5 +484,226 @@ Comments on the diff (L = line in the original file, R = in the changed file):
             let want = want.join("\n") + "\n";
             assert_eq!(got, want);
         }
+    }
+
+    fn agent_json(pane: &str, term: &str, cwd: &str, status: &str, workspace: &str) -> String {
+        format!(
+            r#"{{"agent":"claude","agent_status":"{status}","cwd":"{cwd}","pane_id":"{pane}","terminal_id":"{term}","workspace_id":"{workspace}"}}"#
+        )
+    }
+
+    /// A herdr that answers `agent get <pane>` from `panes` and `agent list` with `list`, and
+    /// records every call.
+    struct Herdr {
+        panes: Vec<(&'static str, String)>,
+        list: Vec<String>,
+        calls: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Herdr {
+        fn new(panes: &[(&'static str, String)], list: &[String]) -> Self {
+            Self {
+                panes: panes.to_vec(),
+                list: list.to_vec(),
+                calls: std::cell::RefCell::default(),
+            }
+        }
+
+        fn ask(&self, args: &[String]) -> Result<String, String> {
+            let call = args.join(" ");
+            self.calls.borrow_mut().push(call.clone());
+            if call == "agent list" {
+                return Ok(format!(
+                    r#"{{"result":{{"agents":[{}]}}}}"#,
+                    self.list.join(",")
+                ));
+            }
+            let pane = call.strip_prefix("agent get ").unwrap_or_default();
+            let found = self.panes.iter().find(|(name, _)| *name == pane);
+            found.map_or(Err("pane_not_found".into()), |(_, agent)| {
+                Ok(format!(r#"{{"result":{{"agent":{agent}}}}}"#))
+            })
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    fn env(vars: &[(&str, &str)]) -> Env {
+        Env::new(
+            vars.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+            "/cwd".into(),
+        )
+    }
+
+    fn target(pane: &str, term: &str) -> Target {
+        Target {
+            pane: PaneId::parse(pane).unwrap(),
+            terminal: TerminalId::parse(term).unwrap(),
+            agent: "claude".into(),
+        }
+    }
+
+    fn meta_with(pane: &str, term: &str) -> Meta {
+        Meta {
+            target: Some(target(pane, term)),
+            ..Meta::default()
+        }
+    }
+
+    const ROOT: &str = "/work/repo";
+    const PANE_ENV: [(&str, &str); 2] = [
+        ("REVIEW_DELIVER_TO", "w1:p1"),
+        ("REVIEW_DELIVER_TERM", "term_1"),
+    ];
+
+    fn resolve(env: &Env, meta: &Meta, herdr: &Herdr) -> Result<Target, TargetError> {
+        resolve_target(env, meta, |args| herdr.ask(args), Path::new(ROOT))
+    }
+
+    #[test]
+    fn the_pane_the_review_was_opened_beside_is_the_target() {
+        let herdr = Herdr::new(
+            &[("w1:p1", agent_json("w1:p1", "term_1", ROOT, "idle", "w1"))],
+            &[],
+        );
+        let got = resolve(&env(&PANE_ENV), &Meta::default(), &herdr);
+        assert_eq!(got, Ok(target("w1:p1", "term_1")));
+        assert_eq!(herdr.calls(), ["agent get w1:p1"]);
+    }
+
+    #[test]
+    fn an_env_pane_with_another_terminal_id_falls_through_to_the_search() {
+        let herdr = Herdr::new(
+            &[(
+                "w1:p1",
+                agent_json("w1:p1", "term_other", ROOT, "idle", "w1"),
+            )],
+            &[agent_json("w1:p4", "term_1", ROOT, "idle", "w1")],
+        );
+        let got = resolve(&env(&PANE_ENV), &Meta::default(), &herdr);
+        assert_eq!(got, Ok(target("w1:p4", "term_1")));
+        assert_eq!(herdr.calls(), ["agent get w1:p1", "agent list"]);
+    }
+
+    #[test]
+    fn the_target_in_meta_is_used_when_the_env_has_none() {
+        let herdr = Herdr::new(
+            &[(
+                "w1:p2",
+                agent_json("w1:p2", "term_2", "/work", "working", "w1"),
+            )],
+            &[],
+        );
+        let got = resolve(&env(&[]), &meta_with("w1:p2", "term_2"), &herdr);
+        assert_eq!(got, Ok(target("w1:p2", "term_2")));
+        assert_eq!(herdr.calls(), ["agent get w1:p2"]);
+    }
+
+    #[test]
+    fn a_pane_that_meta_and_env_both_name_is_asked_once() {
+        let herdr = Herdr::new(&[], &[]);
+        let _ = resolve(&env(&PANE_ENV), &meta_with("w1:p1", "term_1"), &herdr);
+        assert_eq!(herdr.calls(), ["agent get w1:p1", "agent list"]);
+    }
+
+    #[test]
+    fn a_stored_pane_that_is_gone_or_moved_away_falls_to_the_list() {
+        let outside = agent_json("w1:p2", "term_2", "/elsewhere", "idle", "w1");
+        let herdr = Herdr::new(
+            &[("w1:p2", outside)],
+            &[agent_json("w1:p9", "term_2", ROOT, "idle", "w1")],
+        );
+        let got = resolve(&env(&[]), &meta_with("w1:p2", "term_2"), &herdr);
+        assert_eq!(got, Ok(target("w1:p9", "term_2")));
+    }
+
+    #[test]
+    fn a_blocked_agent_is_still_found_so_the_send_can_say_why_it_refused() {
+        let blocked = agent_json("w1:p1", "term_1", ROOT, "blocked", "w1");
+        let herdr = Herdr::new(&[("w1:p1", blocked.clone())], &[blocked]);
+        let got = resolve(&env(&PANE_ENV), &Meta::default(), &herdr);
+        assert_eq!(got, Ok(target("w1:p1", "term_1")));
+    }
+
+    #[test]
+    fn a_single_agent_working_in_the_root_is_found_by_cwd() {
+        let list = [
+            agent_json("w1:p1", "term_1", "/work/other", "idle", "w1"),
+            agent_json("w1:p2", "term_2", "/work/repo/crates/a", "idle", "w1"),
+        ];
+        let got = resolve(&env(&[]), &Meta::default(), &Herdr::new(&[], &list));
+        assert_eq!(got, Ok(target("w1:p2", "term_2")));
+    }
+
+    #[test]
+    fn an_agent_in_an_ancestor_of_the_root_counts_when_nothing_is_closer() {
+        let list = [
+            agent_json("w1:p1", "term_1", "/work", "idle", "w1"),
+            agent_json("w2:p1", "term_9", "/work", "idle", "w2"),
+        ];
+        let herdr = Herdr::new(&[], &list);
+        let got = resolve(
+            &env(&[("HERDR_PANE_ID", "w1:p5")]),
+            &Meta::default(),
+            &herdr,
+        );
+        assert_eq!(got, Ok(target("w1:p1", "term_1")));
+        let nearer = [
+            agent_json("w1:p1", "term_1", "/work", "idle", "w1"),
+            agent_json("w1:p2", "term_2", ROOT, "idle", "w1"),
+        ];
+        let got = resolve(&env(&[]), &Meta::default(), &Herdr::new(&[], &nearer));
+        assert_eq!(got, Ok(target("w1:p2", "term_2")));
+    }
+
+    #[test]
+    fn no_agent_for_this_tree_is_an_error() {
+        let list = [agent_json("w1:p1", "term_1", "/work/other", "idle", "w1")];
+        let got = resolve(&env(&[]), &Meta::default(), &Herdr::new(&[], &list));
+        assert_eq!(got, Err(TargetError::NoAgent));
+        let got = resolve(&env(&[]), &Meta::default(), &Herdr::new(&[], &[]));
+        assert_eq!(got, Err(TargetError::NoAgent));
+    }
+
+    #[test]
+    fn several_agents_are_a_choice_for_the_user() {
+        let list = [
+            agent_json("w1:p1", "term_1", ROOT, "idle", "w1"),
+            agent_json("w1:p2", "term_2", ROOT, "idle", "w1"),
+        ];
+        let got = resolve(&env(&[]), &Meta::default(), &Herdr::new(&[], &list));
+        assert_eq!(
+            got,
+            Err(TargetError::Ambiguous(vec![
+                target("w1:p1", "term_1"),
+                target("w1:p2", "term_2")
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_failing_agent_list_is_reported_and_not_taken_for_no_agent() {
+        let got = resolve_target(
+            &env(&[]),
+            &Meta::default(),
+            |_| Err("socket gone".into()),
+            Path::new(ROOT),
+        );
+        assert_eq!(got, Err(TargetError::Herdr("socket gone".into())));
+    }
+
+    #[test]
+    fn the_chosen_target_is_saved_and_not_rewritten_when_it_is_already_there() {
+        let dir = std::env::temp_dir().join(format!("herdr-review-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let chosen = target("w1:p2", "term_2");
+        save_target(&dir, Path::new(ROOT), &Meta::default(), &chosen).unwrap();
+        let saved = meta::load(&dir).0;
+        assert_eq!(saved.target, Some(chosen.clone()));
+        std::fs::remove_file(dir.join("meta.json")).unwrap();
+        save_target(&dir, Path::new(ROOT), &saved, &chosen).unwrap();
+        assert!(!dir.join("meta.json").exists());
     }
 }
