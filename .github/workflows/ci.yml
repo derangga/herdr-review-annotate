@@ -22,12 +22,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Keep in step with the cargo you run scripts/ci.sh with. Moving it is a change of its own.
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
-      - run: cargo build --no-default-features
-      - run: bash scripts/test-fetch-herdr-review.sh
+      - run: bash scripts/ci.sh
