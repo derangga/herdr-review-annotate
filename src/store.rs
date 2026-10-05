@@ -611,6 +611,7 @@ pub enum Warning {
     Config(String),
     MetaUnreadable,
     SentNotRecorded,
+    TargetNotSaved,
 }
 
 impl fmt::Display for Warning {
@@ -622,6 +623,9 @@ impl fmt::Display for Warning {
             Self::MetaUnreadable => f.write_str("meta.json is unreadable and was reset"),
             Self::SentNotRecorded => {
                 f.write_str("sent, but not recorded, the next send will repeat these comments")
+            }
+            Self::TargetNotSaved => {
+                f.write_str("could not save the target agent, the next send will look for it again")
             }
         }
     }

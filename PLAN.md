@@ -734,9 +734,9 @@ Errors, one enum per module:
 | `CommandError` | `UnknownId { id, open }`, `InvalidBody(why)`, `InvalidBatch { index, why }`, `NotAllowed { id }` | The caller asked for something the review cannot do. Only the TUI's edit and delete build `NotAllowed`, for an agent's comment: the `comment` subcommands never edit or delete, so no request of theirs breaks the rights rule |
 | `GitError` | `NotInstalled`, `NotARepo`, `NoBase { tried }`, `Failed { args, stderr }` | `git` could not answer |
 | `HerdrError` | `code`, `message` | As parsed by `agent_delivery.rs` |
-| `TargetError` | `NoAgent`, `Ambiguous(Vec<Target>)` | Resolution found zero or several agents |
+| `TargetError` | `NoAgent`, `Ambiguous(Vec<Target>)`, `Herdr(String)` | Resolution found zero or several agents, or `herdr agent list` failed |
 | `Refusal` | `Blocked`, `NotReady`, `AgentGone` | The agent cannot take a prompt now |
-| `Warning` | `SkippedLine(n)`, `Config(String)`, `MetaUnreadable`, `SentNotRecorded` | Not an error. Collected and shown, the operation still succeeds |
+| `Warning` | `SkippedLine(n)`, `Config(String)`, `MetaUnreadable`, `SentNotRecorded`, `TargetNotSaved` | Not an error. Collected and shown, the operation still succeeds |
 
 There is no `ParseError` for diffs. A file the parser cannot read becomes `Change::Unparsed` and the
 review continues.

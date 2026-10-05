@@ -7,7 +7,7 @@ use herdr_review::cli::{Command, Failure, Output, parse, run_comment};
 use herdr_review::diff::run_git;
 use herdr_review::env::Env;
 use herdr_review::herdr::run_herdr_output;
-use herdr_review::{open, spike, tui};
+use herdr_review::{open, send, spike, tui};
 
 #[allow(
     clippy::print_stdout,
@@ -30,6 +30,7 @@ fn main() -> ExitCode {
         Err(usage) => finish(&Failure::Usage(usage).output()),
         Ok(Command::Open { .. }) => open::run(&env),
         Ok(Command::Tui { repo }) => tui::run(&env, repo.as_deref()),
+        Ok(Command::Send { repo, all_open }) => send::run(&env, repo.as_deref(), all_open),
         Ok(Command::SpikeSend) => spike::send(&env),
         Ok(Command::Comment { repo, action }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

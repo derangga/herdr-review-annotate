@@ -21,6 +21,7 @@ use crate::store::{Spec, StoreError, Warning, WriteError};
 pub const USAGE: &str = "usage:
   herdr-review tui    [--repo <root>]
   herdr-review open   [--repo <root>] [--base <ref>]
+  herdr-review send   [--repo <root>] [--all-open]
   herdr-review comment apply   [--repo <root>] [--name <agent>] --stdin
   herdr-review comment list    [--repo <root>] [--status open|resolved] [--author user|agent] [--json]
   herdr-review comment reply   [--repo <root>] [--name <agent>] <id> -
@@ -48,6 +49,10 @@ pub enum Command {
     Open {
         repo: Option<PathBuf>,
         base: Option<String>,
+    },
+    Send {
+        repo: Option<PathBuf>,
+        all_open: bool,
     },
     SpikeSend,
     Comment {
@@ -233,6 +238,15 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             );
             no_arguments(parsed)?;
             Ok(Command::Open { repo, base })
+        }
+        "send" => {
+            let mut parsed = split(rest, &["--repo"], &["--all-open"])?;
+            let (repo, all_open) = (
+                parsed.value("--repo").map(PathBuf::from),
+                parsed.switch("--all-open"),
+            );
+            no_arguments(parsed)?;
+            Ok(Command::Send { repo, all_open })
         }
         "spike-send" => split(rest, &[], &[])
             .and_then(no_arguments)
@@ -479,6 +493,21 @@ mod tests {
                 base: Some("main".into())
             })
         );
+        assert_eq!(
+            parse(&args("send --all-open --repo /r")),
+            Ok(Command::Send {
+                repo: Some("/r".into()),
+                all_open: true
+            })
+        );
+        assert_eq!(
+            parse(&args("send")),
+            Ok(Command::Send {
+                repo: None,
+                all_open: false
+            })
+        );
+        assert!(parse(&args("send now")).is_err());
         assert_eq!(parse(&args("spike-send")), Ok(Command::SpikeSend));
         assert_eq!(
             comment_action("comment apply --stdin --name codex"),

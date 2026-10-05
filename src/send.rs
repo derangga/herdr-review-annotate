@@ -1,14 +1,21 @@
 //! Send: the prompt the agent receives, and which agent receives it.
 
 use std::fmt::{self, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::agent_delivery::agent_ready;
+use crate::agent_delivery::{Delivery, agent_ready, deliver_to_agent};
+use crate::diff::{RepoRoot, run_git};
 use crate::env::Env;
+use crate::herdr::{notify, run_herdr_output};
 use crate::meta::{self, Meta, Target};
-use crate::store::{Anchor, AnchorTarget, Comment, PaneId, Side, StoreError, TerminalId, Thread};
+use crate::open::parse_context;
+use crate::store::{
+    Anchor, AnchorTarget, Author, Comment, CommentId, Event, Kind, PaneId, Side, StoreError,
+    TerminalId, Thread, Warning, read, write,
+};
 
 /// `text` as one POSIX shell word. A single quote ends the quoting, is escaped, and starts it again.
 fn quote(text: &str) -> String {
@@ -127,7 +134,7 @@ impl fmt::Display for TargetError {
 /// An agent as `herdr agent get` and `herdr agent list` describe it.
 struct Seen {
     target: Target,
-    cwd: std::path::PathBuf,
+    cwd: PathBuf,
     workspace: Option<String>,
 }
 
@@ -257,6 +264,207 @@ pub fn save_target(
         return Ok(());
     }
     meta::save(dir, root, |meta| meta.target = Some(target.clone()))
+}
+
+/// What a send did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    Nothing,
+    Sent {
+        n: usize,
+        agent: String,
+    },
+    /// The agent was working, so Claude Code holds the prompt until its turn ends.
+    Queued {
+        n: usize,
+        agent: String,
+    },
+}
+
+impl fmt::Display for SendOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Nothing => f.write_str("nothing to send"),
+            Self::Sent { n, agent } => write!(f, "sent {n} to {agent}"),
+            Self::Queued { n, .. } => write!(f, "agent is working, {n} comments queued"),
+        }
+    }
+}
+
+/// A send that delivered, or had nothing to deliver, and what went wrong on the side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    pub outcome: SendOutcome,
+    pub warnings: Vec<Warning>,
+}
+
+/// Why nothing was delivered. No comment is marked sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendError {
+    Store(StoreError),
+    Target(TargetError),
+    /// The agent cannot take a prompt now, or Herdr failed. The text says nothing was sent.
+    Refused(String),
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(error) => error.fmt(f),
+            Self::Target(error) => error.fmt(f),
+            Self::Refused(message) => f.write_str(message),
+        }
+    }
+}
+
+/// `$HERDR_PLUGIN_ROOT/bin/herdr-review`, which Herdr sets for every plugin command and pane.
+fn plugin_bin(env: &Env) -> PathBuf {
+    env.get("HERDR_PLUGIN_ROOT").map_or_else(
+        || "herdr-review".into(),
+        |root| Path::new(root).join("bin/herdr-review"),
+    )
+}
+
+/// The comments a thread puts in a `sent` event: its user comments that no send carried, or all of
+/// them for a resend, and the root when the user reopened it, since that is what clears the reopen.
+fn carried(thread: &Thread, resend: bool) -> Vec<CommentId> {
+    let mut ids = thread
+        .comments()
+        .filter(|c| c.author.is_user() && (resend || c.sent_batch.is_none()))
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    if thread.reopened && !ids.contains(&thread.root.id) {
+        ids.push(thread.root.id.clone());
+    }
+    ids
+}
+
+fn is_working(agent_get: &Result<String, String>) -> bool {
+    let value = agent_get
+        .as_ref()
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    value
+        .and_then(|value| {
+            value
+                .pointer("/result/agent/agent_status")?
+                .as_str()
+                .map(|s| s == "working")
+        })
+        .unwrap_or(false)
+}
+
+/// Deliver the unsent threads to the target agent as one prompt (PLAN.md section 6.3), or every
+/// open thread with `all_open`, then record the send.
+///
+/// Nothing is retried. A second `herdr agent prompt` after an unclear failure could deliver the
+/// batch twice, so the user presses the key again. Once Herdr accepts the prompt the send is a
+/// success, and a failed write of the `sent` event is only a warning.
+pub fn send(
+    dir: &Path,
+    root: &Path,
+    env: &Env,
+    now: &str,
+    all_open: bool,
+    mut herdr: impl FnMut(&[String]) -> Result<String, String>,
+) -> Result<Sent, SendError> {
+    let review = read(dir).map_err(SendError::Store)?;
+    let threads = review
+        .threads
+        .iter()
+        .filter(|thread| thread.unsent || (all_open && thread.is_open()))
+        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+    if threads.is_empty() {
+        return Ok(Sent {
+            outcome: SendOutcome::Nothing,
+            warnings,
+        });
+    }
+    let (meta, warning) = meta::load(dir);
+    warnings.extend(warning);
+    let text = format(&threads, &plugin_bin(env), root);
+    let target = resolve_target(env, &meta, &mut herdr, root).map_err(SendError::Target)?;
+    let mut working = false;
+    deliver_to_agent(Delivery::Send, Some(target.pane.as_str()), &text, |args| {
+        let got = herdr(args);
+        if args.starts_with(&arguments(&["agent", "get"])) {
+            working = is_working(&got);
+        }
+        got
+    })
+    .map_err(SendError::Refused)?;
+    let ids = threads
+        .iter()
+        .flat_map(|thread| carried(thread, all_open))
+        .collect::<Vec<_>>();
+    let recorded = write(dir, now, |review, now| {
+        let batch = review.ids.clone().batch();
+        let kind = Kind::Sent { ids, batch };
+        let event = Event {
+            at: now.to_owned(),
+            by: Author::User,
+            kind,
+        };
+        Ok::<_, ()>((vec![event], ()))
+    });
+    if recorded.is_err() {
+        warnings.push(Warning::SentNotRecorded);
+    }
+    if save_target(dir, root, &meta, &target).is_err() {
+        warnings.push(Warning::TargetNotSaved);
+    }
+    let (n, agent) = (threads.len(), target.agent);
+    let outcome = if working {
+        SendOutcome::Queued { n, agent }
+    } else {
+        SendOutcome::Sent { n, agent }
+    };
+    Ok(Sent { outcome, warnings })
+}
+
+/// The `send` action's edge: every outcome and warning becomes a notification, since an action has
+/// no terminal. A refusal and a missing target exit 1.
+fn report(
+    result: &Result<Sent, SendError>,
+    mut notify: impl FnMut(&str, Option<&str>),
+) -> ExitCode {
+    match result {
+        Ok(sent) => {
+            let warnings = sent
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            let body = (!warnings.is_empty()).then(|| warnings.join("; "));
+            notify(&format!("review: {}", sent.outcome), body.as_deref());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            notify("review: not sent", Some(&error.to_string()));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The `send` action: the same send as the TUI's key, reported through notifications.
+pub fn run(env: &Env, repo: Option<&Path>, all_open: bool) -> ExitCode {
+    let context = parse_context(env.get("HERDR_PLUGIN_CONTEXT_JSON"));
+    let cwd = context.cwd.unwrap_or_else(|| env.cwd.clone());
+    let located = RepoRoot::resolve(repo, &cwd, run_git)
+        .map_err(|error| error.to_string())
+        .and_then(|root| {
+            let base = env.state_base().ok_or("set HOME or XDG_STATE_HOME")?;
+            Ok((meta::locate(&base, root.path()), root))
+        });
+    let result = match located {
+        Ok((dir, root)) => {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            send(&dir, root.path(), env, &now, all_open, run_herdr_output)
+        }
+        Err(message) => Err(SendError::Refused(message)),
+    };
+    report(&result, notify)
 }
 
 #[cfg(test)]
@@ -497,6 +705,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
     struct Herdr {
         panes: Vec<(&'static str, String)>,
         list: Vec<String>,
+        prompt_fails: bool,
         calls: std::cell::RefCell<Vec<String>>,
     }
 
@@ -505,6 +714,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
             Self {
                 panes: panes.to_vec(),
                 list: list.to_vec(),
+                prompt_fails: false,
                 calls: std::cell::RefCell::default(),
             }
         }
@@ -512,6 +722,13 @@ Comments on the diff (L = line in the original file, R = in the changed file):
         fn ask(&self, args: &[String]) -> Result<String, String> {
             let call = args.join(" ");
             self.calls.borrow_mut().push(call.clone());
+            if call.starts_with("agent prompt ") {
+                return if self.prompt_fails {
+                    Err("socket gone".into())
+                } else {
+                    Ok("{}".into())
+                };
+            }
             if call == "agent list" {
                 return Ok(format!(
                     r#"{{"result":{{"agents":[{}]}}}}"#,
@@ -705,5 +922,387 @@ Comments on the diff (L = line in the original file, R = in the changed file):
         std::fs::remove_file(dir.join("meta.json")).unwrap();
         save_target(&dir, Path::new(ROOT), &saved, &chosen).unwrap();
         assert!(!dir.join("meta.json").exists());
+    }
+
+    // The send.
+
+    const PLUGIN_ENV: [(&str, &str); 3] = [
+        ("REVIEW_DELIVER_TO", "w1:p1"),
+        ("REVIEW_DELIVER_TERM", "term_1"),
+        ("HERDR_PLUGIN_ROOT", "/plugin"),
+    ];
+
+    fn fresh(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("herdr-review-send-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn put(dir: &Path, events: Vec<Event>) {
+        write(dir, "t", |_, _| Ok::<_, ()>((events, ()))).unwrap();
+    }
+
+    fn user_comment(id: &str, body: &str) -> Event {
+        root(
+            &Author::User,
+            id,
+            "src/a.rs",
+            None,
+            Some((Side::New, 3, None)),
+            body,
+        )
+    }
+
+    fn agent_ready_in(status: &str) -> Herdr {
+        Herdr::new(
+            &[("w1:p1", agent_json("w1:p1", "term_1", ROOT, status, "w1"))],
+            &[],
+        )
+    }
+
+    fn run_send(dir: &Path, herdr: &Herdr, all_open: bool) -> Result<Sent, SendError> {
+        send(
+            dir,
+            Path::new(ROOT),
+            &env(&PLUGIN_ENV),
+            "t",
+            all_open,
+            |args| herdr.ask(args),
+        )
+    }
+
+    fn prompts(herdr: &Herdr) -> Vec<String> {
+        herdr
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("agent prompt "))
+            .collect()
+    }
+
+    fn sent_ids(dir: &Path) -> Vec<String> {
+        let log = std::fs::read_to_string(dir.join("review.jsonl")).unwrap();
+        log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|event| event["kind"] == "sent")
+            .flat_map(|event| event["ids"].as_array().cloned().unwrap_or_default())
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn unsent(dir: &Path) -> Vec<String> {
+        let review = read(dir).unwrap();
+        let unsent = review.threads.iter().filter(|t| t.unsent);
+        unsent.map(|t| t.root.id.to_string()).collect()
+    }
+
+    fn agent_answers(id: &str, reply_id: &str) -> Vec<Event> {
+        let agent = Author::Agent(Some("claude".into()));
+        vec![
+            reply(&agent, reply_id, id, "done"),
+            event(
+                &agent,
+                Kind::Resolve {
+                    id: CommentId::parse(id).unwrap(),
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn nothing_unsent_is_nothing_to_send_and_asks_herdr_nothing() {
+        let dir = fresh("none");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let herdr = agent_ready_in("idle");
+        run_send(&dir, &herdr, false).unwrap();
+        let again = run_send(&dir, &herdr, false).unwrap();
+        assert_eq!(again.outcome, SendOutcome::Nothing);
+        assert_eq!(again.outcome.to_string(), "nothing to send");
+        assert_eq!(herdr.calls().len(), 3, "{:?}", herdr.calls());
+        let empty = fresh("empty");
+        let herdr = agent_ready_in("idle");
+        assert_eq!(
+            run_send(&empty, &herdr, false).unwrap().outcome,
+            SendOutcome::Nothing
+        );
+        assert!(herdr.calls().is_empty());
+    }
+
+    #[test]
+    fn a_send_delivers_one_prompt_marks_every_comment_sent_and_remembers_the_target() {
+        let dir = fresh("happy");
+        put(
+            &dir,
+            vec![user_comment("u1", "first"), user_comment("u2", "second")],
+        );
+        let herdr = agent_ready_in("idle");
+        let sent = run_send(&dir, &herdr, false).unwrap();
+        assert_eq!(
+            sent,
+            Sent {
+                outcome: SendOutcome::Sent {
+                    n: 2,
+                    agent: "claude".into()
+                },
+                warnings: vec![]
+            }
+        );
+        assert_eq!(sent.outcome.to_string(), "sent 2 to claude");
+        let calls = prompts(&herdr);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].starts_with("agent prompt w1:p1 Address the review comments"));
+        assert!(
+            calls[0].contains("'/plugin/bin/herdr-review' comment resolve --repo '/work/repo'")
+        );
+        assert!(calls[0].contains("- [u1] src/a.rs:3 (R): first\n- [u2] src/a.rs:3 (R): second"));
+        assert_eq!(sent_ids(&dir), ["u1", "u2"]);
+        assert_eq!(unsent(&dir), Vec::<String>::new());
+        assert_eq!(meta::load(&dir).0.target, Some(target("w1:p1", "term_1")));
+    }
+
+    #[test]
+    fn a_working_agent_is_sent_to_and_the_comments_are_queued() {
+        let dir = fresh("working");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let herdr = agent_ready_in("working");
+        let sent = run_send(&dir, &herdr, false).unwrap();
+        assert_eq!(
+            sent.outcome,
+            SendOutcome::Queued {
+                n: 1,
+                agent: "claude".into()
+            }
+        );
+        assert_eq!(
+            sent.outcome.to_string(),
+            "agent is working, 1 comments queued"
+        );
+        assert_eq!(sent_ids(&dir), ["u1"]);
+    }
+
+    #[test]
+    fn a_refusal_marks_nothing_and_says_why() {
+        let dir = fresh("refused");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let blocked = agent_json("w1:p1", "term_1", ROOT, "blocked", "w1");
+        let herdr = Herdr::new(&[("w1:p1", blocked.clone())], &[blocked]);
+        let refused = run_send(&dir, &herdr, false);
+        assert!(
+            matches!(&refused, Err(SendError::Refused(why))
+                if why.contains("waiting on a prompt") && why.contains("still unsent")),
+            "{refused:?}"
+        );
+        assert!(prompts(&herdr).is_empty());
+        assert_eq!(unsent(&dir), ["u1"]);
+        assert!(sent_ids(&dir).is_empty());
+        assert_eq!(meta::load(&dir).0.target, None);
+    }
+
+    #[test]
+    fn a_failed_prompt_is_not_retried_and_marks_nothing() {
+        let dir = fresh("prompt-fails");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let mut herdr = agent_ready_in("idle");
+        herdr.prompt_fails = true;
+        assert!(matches!(
+            run_send(&dir, &herdr, false),
+            Err(SendError::Refused(_))
+        ));
+        assert_eq!(prompts(&herdr).len(), 1);
+        assert_eq!(unsent(&dir), ["u1"]);
+    }
+
+    #[test]
+    fn no_agent_and_several_agents_stop_the_send_before_any_prompt() {
+        let dir = fresh("no-target");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let none = Herdr::new(&[], &[]);
+        assert_eq!(
+            run_send(&dir, &none, false),
+            Err(SendError::Target(TargetError::NoAgent))
+        );
+        let two = Herdr::new(
+            &[],
+            &[
+                agent_json("w1:p2", "term_2", ROOT, "idle", "w1"),
+                agent_json("w1:p3", "term_3", ROOT, "idle", "w1"),
+            ],
+        );
+        assert!(matches!(
+            run_send(&dir, &two, false),
+            Err(SendError::Target(TargetError::Ambiguous(found))) if found.len() == 2
+        ));
+        assert!(prompts(&none).is_empty() && prompts(&two).is_empty());
+        assert_eq!(unsent(&dir), ["u1"]);
+    }
+
+    #[test]
+    fn a_sent_event_that_cannot_be_written_is_a_warning_and_the_send_still_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fresh("not-recorded");
+        put(&dir, vec![user_comment("u1", "x")]);
+        let herdr = agent_ready_in("idle");
+        let log = dir.join("review.jsonl");
+        let sent = send(
+            &dir,
+            Path::new(ROOT),
+            &env(&PLUGIN_ENV),
+            "t",
+            false,
+            |args| {
+                if args.get(1).is_some_and(|word| word == "prompt") {
+                    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o400)).unwrap();
+                }
+                herdr.ask(args)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            sent.outcome,
+            SendOutcome::Sent {
+                n: 1,
+                agent: "claude".into()
+            }
+        );
+        assert_eq!(sent.warnings, [Warning::SentNotRecorded]);
+        assert_eq!(unsent(&dir), ["u1"]);
+    }
+
+    #[test]
+    fn a_target_that_cannot_be_saved_is_a_warning_and_the_send_still_succeeds() {
+        let dir = fresh("not-saved");
+        put(&dir, vec![user_comment("u1", "x")]);
+        std::fs::create_dir_all(dir.join("meta.json")).unwrap();
+        let sent = run_send(&dir, &agent_ready_in("idle"), false).unwrap();
+        assert!(matches!(sent.outcome, SendOutcome::Sent { .. }));
+        assert_eq!(
+            sent.warnings,
+            [Warning::MetaUnreadable, Warning::TargetNotSaved]
+        );
+        assert_eq!(unsent(&dir), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_reopened_thread_goes_out_alone_marked_reopened() {
+        let dir = fresh("reopen");
+        put(
+            &dir,
+            vec![user_comment("u1", "one"), user_comment("u2", "two")],
+        );
+        run_send(&dir, &agent_ready_in("idle"), false).unwrap();
+        put(
+            &dir,
+            [agent_answers("u1", "a1"), agent_answers("u2", "a2")].concat(),
+        );
+        put(
+            &dir,
+            vec![event(
+                &Author::User,
+                Kind::Reopen {
+                    id: CommentId::parse("u2").unwrap(),
+                },
+            )],
+        );
+        assert_eq!(unsent(&dir), ["u2"]);
+        let herdr = agent_ready_in("idle");
+        let sent = run_send(&dir, &herdr, false).unwrap();
+        assert_eq!(
+            sent.outcome,
+            SendOutcome::Sent {
+                n: 1,
+                agent: "claude".into()
+            }
+        );
+        let prompt = &prompts(&herdr)[0];
+        assert!(
+            prompt.contains("- [u2] src/a.rs:3 (R), reopened: two"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("[u1]"));
+        assert_eq!(sent_ids(&dir), ["u1", "u2", "u2"]);
+        let again = run_send(&dir, &agent_ready_in("idle"), false).unwrap();
+        assert_eq!(again.outcome, SendOutcome::Nothing);
+    }
+
+    #[test]
+    fn all_open_resends_open_threads_and_clears_the_edited_mark() {
+        let dir = fresh("all-open");
+        put(
+            &dir,
+            vec![user_comment("u1", "one"), user_comment("u2", "two")],
+        );
+        run_send(&dir, &agent_ready_in("idle"), false).unwrap();
+        put(&dir, agent_answers("u2", "a1"));
+        put(
+            &dir,
+            vec![event(
+                &Author::User,
+                Kind::Edit {
+                    id: CommentId::parse("u1").unwrap(),
+                    body: "one, again".into(),
+                },
+            )],
+        );
+        assert!(read(&dir).unwrap().threads[0].root.edited_since_sent);
+        assert_eq!(
+            run_send(&dir, &agent_ready_in("idle"), false)
+                .unwrap()
+                .outcome,
+            SendOutcome::Nothing
+        );
+        let herdr = agent_ready_in("idle");
+        let sent = run_send(&dir, &herdr, true).unwrap();
+        assert_eq!(
+            sent.outcome,
+            SendOutcome::Sent {
+                n: 1,
+                agent: "claude".into()
+            }
+        );
+        let prompt = &prompts(&herdr)[0];
+        assert!(prompt.contains("[u1] src/a.rs:3 (R): one, again") && !prompt.contains("[u2]"));
+        assert!(!read(&dir).unwrap().threads[0].root.edited_since_sent);
+    }
+
+    #[test]
+    fn the_action_reports_every_outcome_as_a_notification() {
+        let note = |result: &Result<Sent, SendError>| {
+            let mut seen = Vec::new();
+            let code = report(result, |title, body| {
+                seen.push((title.to_owned(), body.map(str::to_owned)));
+            });
+            (code, seen)
+        };
+        let ok = Ok(Sent {
+            outcome: SendOutcome::Sent {
+                n: 2,
+                agent: "claude".into(),
+            },
+            warnings: vec![Warning::SentNotRecorded],
+        });
+        let (code, seen) = note(&ok);
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(seen[0].0, "review: sent 2 to claude");
+        assert!(seen[0].1.as_deref().unwrap().contains("not recorded"));
+        let (code, seen) = note(&Err(SendError::Target(TargetError::NoAgent)));
+        assert_eq!(code, ExitCode::FAILURE);
+        assert_eq!(
+            seen,
+            [(
+                "review: not sent".to_owned(),
+                Some("No agent found for this review.".to_owned())
+            )]
+        );
+        let (code, seen) = note(&Ok(Sent {
+            outcome: SendOutcome::Nothing,
+            warnings: vec![],
+        }));
+        assert_eq!(
+            (code, seen),
+            (
+                ExitCode::SUCCESS,
+                vec![("review: nothing to send".to_owned(), None)]
+            )
+        );
     }
 }
