@@ -157,6 +157,14 @@ text_id!(
     BatchId
 );
 text_id!(
+    /// A Herdr pane id such as `w1:p2`.
+    PaneId
+);
+text_id!(
+    /// A Herdr terminal id such as `term_65cfeec9f35116`.
+    TerminalId
+);
+text_id!(
     /// A repo-relative path with no `..` and no leading `/`.
     RelPath
 );
@@ -177,6 +185,27 @@ impl CommentId {
     /// The side that allocates this id.
     pub fn is_user(&self) -> bool {
         self.0.starts_with('u')
+    }
+}
+
+/// Herdr ids are short tokens. This accepts the characters they use and nothing a shell would
+/// read, since an id ends up in a command line.
+fn herdr_token(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '.'))
+}
+
+impl PaneId {
+    pub fn parse(text: &str) -> Option<Self> {
+        herdr_token(text).then(|| Self(text.to_owned()))
+    }
+}
+
+impl TerminalId {
+    pub fn parse(text: &str) -> Option<Self> {
+        herdr_token(text).then(|| Self(text.to_owned()))
     }
 }
 

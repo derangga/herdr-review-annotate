@@ -39,6 +39,7 @@ herdr-review/
     lib.rs             module list, so the copied files keep their `pub` items
     open.rs            the `open` action
     store.rs           event log: lock, append, read, fold
+    meta.rs            meta.json: load, locked save, find the state directory
     diff.rs            git runner, unified diff parser, anchor matching
     send.rs            prompt format, target resolution, mark sent
     tui.rs             review pane: layout, render, actions

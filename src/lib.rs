@@ -3,6 +3,7 @@
 pub mod agent_delivery;
 pub mod edit_keys;
 pub mod herdr;
+pub mod meta;
 pub mod open;
 pub mod spike;
 pub mod store;
