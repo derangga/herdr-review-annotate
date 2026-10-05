@@ -25,7 +25,7 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::actions;
-use crate::cards::place;
+use crate::cards::{Look, place};
 use crate::comment::CommandError;
 use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
 use crate::editor::{Editor, Outcome};
@@ -275,7 +275,13 @@ impl App {
         let spec = self.requested_spec();
         let diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
         let spot = self.diff.as_ref().and_then(|old| self.view.spot(old));
-        self.view.rebuild(&diff, &self.review, spot, &self.theme);
+        let now = (self.now)();
+        let look = Look {
+            theme: &self.theme,
+            keymap: &self.keymap,
+            now: &now,
+        };
+        self.view.rebuild(&diff, &self.review, spot, &look);
         self.diff = Some(diff);
         Ok(())
     }
@@ -285,7 +291,13 @@ impl App {
     fn rebuild_view(&mut self) {
         if let Some(diff) = &self.diff {
             let spot = self.view.spot(diff);
-            self.view.rebuild(diff, &self.review, spot, &self.theme);
+            let now = (self.now)();
+            let look = Look {
+                theme: &self.theme,
+                keymap: &self.keymap,
+                now: &now,
+            };
+            self.view.rebuild(diff, &self.review, spot, &look);
         }
     }
 
@@ -1593,9 +1605,9 @@ mod tests {
         std::fs::write(fixture.dir().join("review.jsonl"), log_line(&event)).unwrap();
         let mut app = fixture.started();
         drive(&fixture, &mut app, vec![None], |_| {});
-        // The file header, the hunk and two lines, and a card of a header and three body rows.
+        // The file header, the hunk and two lines, and a box of two borders and two body rows.
         assert_eq!(app.view.stream.len(), 8);
-        assert!(screen_of(&app).contains("u1 user"));
+        assert!(screen_of(&app).contains("● Your note"));
         // A narrower pane wraps the body into more rows, and the loop lays the stream out again.
         let mut git = |args: &[String]| fixture.git(args);
         let mut narrow = Terminal::new(TestBackend::new(30, 8)).unwrap();
@@ -1610,7 +1622,8 @@ mod tests {
             },
             || polls.get() >= 1,
         );
-        assert_eq!(app.view.stream.len(), 9);
+        // Five words fit a row of the 30 column box, so the body is four rows between the borders.
+        assert_eq!(app.view.stream.len(), 10);
     }
 
     #[test]
@@ -1995,7 +2008,7 @@ diff --git a/b.rs b/b.rs
         assert_eq!(app.view.focused(), Some(0));
         let screen = screen_of(&app);
         assert!(
-            screen.contains("u1 user") && screen.contains("fix this"),
+            screen.contains("● Your note · now · a.rs L1 [unsent]") && screen.contains("fix this"),
             "{screen}"
         );
     }
@@ -2559,7 +2572,7 @@ diff --git a/b.rs b/b.rs
         let mut app = opened(&fixture, patch_text());
         let screen = screen_of(&app);
         assert!(
-            screen.contains("u1 user") && !screen.contains("outdated"),
+            screen.contains("● Your note") && !screen.contains("outdated"),
             "{screen}"
         );
         // The line is edited in an editor, and R reloads.
@@ -2568,14 +2581,14 @@ diff --git a/b.rs b/b.rs
                 .to_vec();
         press(&fixture, &mut app, [key('R')]);
         let screen = screen_of(&app);
-        assert!(screen.contains("u1 user [outdated]"), "{screen}");
+        assert!(screen.contains("a.rs R1 [outdated]"), "{screen}");
         assert!(screen.contains("was: new"), "{screen}");
         // Everything is committed: the diff is empty, and the thread is still listed.
         fixture.patch.borrow_mut().clear();
         press(&fixture, &mut app, [key('R')]);
         let screen = screen_of(&app);
         assert!(screen.contains("Comments not in this diff (1)"), "{screen}");
-        assert!(screen.contains("a.rs:1 (R)"), "{screen}");
+        assert!(screen.contains("· a.rs R1 "), "{screen}");
         assert!(
             screen.contains("No changes in the working tree."),
             "{screen}"
@@ -2900,6 +2913,51 @@ diff --git a/b.rs b/b.rs
             assert_eq!(buffer[at].bg, latte.base, "{at:?}");
             assert_eq!(buffer[at].fg, latte.text, "{at:?}");
         }
+    }
+
+    #[test]
+    fn a_card_s_footer_names_the_keys_the_config_gives_and_an_agent_s_offers_only_reply() {
+        let fixture = Fixture::new("card-footer");
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[keys]\nreply = \"ctrl+r\"\ndelete = \"shift+x\"\n",
+        )
+        .unwrap();
+        write_log(
+            &fixture,
+            &[
+                thread_event("u1", Author::User, "mine"),
+                thread_event("a1", agent(), "theirs"),
+            ],
+        );
+        let mut app = opened(&fixture, patch_text());
+        let (rows, _) = drawn(&mut app, 80);
+        let footers = rows
+            .iter()
+            .filter(|row| row.contains('╰'))
+            .collect::<Vec<_>>();
+        assert_eq!(footers.len(), 2, "{}", rows.join("\n"));
+        assert!(
+            footers[0].ends_with("─ ctrl+r reply  e edit  X delete ╯"),
+            "{}",
+            footers[0]
+        );
+        assert!(footers[1].ends_with("─ ctrl+r reply ╯"), "{}", footers[1]);
+        assert!(
+            rows.join("\n").contains("● claude · "),
+            "{}",
+            rows.join("\n")
+        );
+        // The configured key is the one that works.
+        press(
+            &fixture,
+            &mut app,
+            [
+                key('n'),
+                Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            ],
+        );
+        assert!(app.compose.is_some());
     }
 
     #[test]

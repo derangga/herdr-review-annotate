@@ -316,6 +316,8 @@ pub struct Comment {
     pub id: CommentId,
     pub parent: Option<CommentId>,
     pub author: Author,
+    /// When it was written: the `at` of its `add` event, RFC 3339. An edit does not change it.
+    pub at: String,
     pub body: String,
     pub sent_batch: Option<BatchId>,
     pub edited_since_sent: bool,
@@ -463,7 +465,7 @@ impl Fold {
         }
     }
 
-    fn add(&mut self, by: &Author, add: &Add) {
+    fn add(&mut self, by: &Author, at: &str, add: &Add) {
         if self.index.contains_key(&add.id) || add.id.is_user() != by.is_user() {
             return;
         }
@@ -471,6 +473,7 @@ impl Fold {
             id: add.id.clone(),
             parent: add.parent.clone(),
             author: by.clone(),
+            at: at.to_owned(),
             body: add.body.clone(),
             sent_batch: None,
             edited_since_sent: false,
@@ -504,7 +507,7 @@ impl Fold {
     fn apply(&mut self, event: &Event) {
         let user = event.by.is_user();
         match &event.kind {
-            Kind::Add(add) => self.add(&event.by, add),
+            Kind::Add(add) => self.add(&event.by, &event.at, add),
             Kind::Edit { id, body } => {
                 // Nobody edits the other side's words (ADR 0004).
                 if let Some(comment) = self.comment_mut(id).filter(|c| c.author.is_user() == user) {
@@ -1076,6 +1079,25 @@ mod tests {
             reply(&Author::User, "u2", "a1"),
         ]);
         assert_eq!(thread(&review, "u1").replies.len(), 1);
+    }
+
+    #[test]
+    fn a_comment_keeps_the_time_of_its_add_event_through_an_edit() {
+        let mut later = reply(&agent(), "a1", "u1");
+        later.at = "2026-10-04T00:05:00Z".into();
+        let mut edit = event(
+            &Author::User,
+            Kind::Edit {
+                id: id("u1"),
+                body: "changed".into(),
+            },
+        );
+        edit.at = "2026-10-04T09:00:00Z".into();
+        let review = fold(&[root(&Author::User, "u1"), later, edit]);
+        let thread = thread(&review, "u1");
+        assert_eq!(thread.root.body, "changed");
+        assert_eq!(thread.root.at, "2026-10-04T00:00:00Z");
+        assert_eq!(thread.replies[0].at, "2026-10-04T00:05:00Z");
     }
 
     #[test]

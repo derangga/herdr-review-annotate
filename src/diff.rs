@@ -1394,6 +1394,7 @@ mod tests {
                 id: CommentId::parse("u1").unwrap(),
                 parent: None,
                 author: Author::User,
+                at: String::new(),
                 body: "fix".into(),
                 sent_batch: None,
                 edited_since_sent: false,

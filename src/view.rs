@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::cards::{Card, card};
+use crate::cards::{Card, Look, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
 use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
@@ -331,7 +331,7 @@ impl Stream {
         review: &Review,
         width: usize,
         layout: DiffLayout,
-        theme: &Theme,
+        look: &Look,
     ) -> Self {
         let files = diff
             .files
@@ -347,7 +347,7 @@ impl Stream {
             .threads
             .iter()
             .zip(&placements)
-            .map(|(thread, placement)| card(thread, *placement, width, theme))
+            .map(|(thread, placement)| card(thread, *placement, width, look))
             .collect::<Vec<_>>();
         let mut stream = Self {
             card_rows: vec![0; cards.len()],
@@ -950,8 +950,8 @@ impl View {
 
     /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
     /// the same card, else its row in the same file.
-    pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, theme: &Theme) {
-        self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), theme);
+    pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, look: &Look) {
+        self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), look);
         self.select = None;
         let stream = &self.stream;
         let on_card = |spot: &Spot| {
@@ -1584,6 +1584,7 @@ Binary files a/img.png and b/img.png differ
                 id: CommentId::parse(id).unwrap(),
                 parent: None,
                 author: Author::User,
+                at: String::new(),
                 body: "fix".into(),
                 sent_batch: None,
                 edited_since_sent: false,
@@ -1625,7 +1626,7 @@ Binary files a/img.png and b/img.png differ
     fn view(diff: &Diff, review: &Review, width: u16, height: u16) -> View {
         let mut view = View::default();
         view.resize(Rect::new(0, 0, width, height));
-        view.rebuild(diff, review, None, &Theme::default());
+        view.rebuild(diff, review, None, &Look::test());
         view
     }
 
@@ -1747,21 +1748,22 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(view.cursor, 0);
     }
 
-    // With `review()` at 80 columns the stream is 60 wide, so the cards line up under the code.
+    // With `review()` at 80 columns the stream is 60 wide. A card is a box: two borders around
+    // its body, and the old line text when it is outdated or not in the diff.
     // The block of threads not in the diff is rows 0..=4: the heading, and u4's four rows.
-    // a.rs starts at 5: header 5, hunk 6, a1 7, a2 8, A2 9, then u3 (rows 10-11), a3 12, then
-    // u1 (13-15), hunk 16, a10 17, a11 18, a12 19. b.rs starts at 20, and u2 is rows 21-22.
-    // Its hunk is 23, b1 24, b2 25, img.png 26, and its note 27.
+    // a.rs starts at 5: header 5, hunk 6, a1 7, a2 8, A2 9, then u3 (rows 10-12), a3 13, then
+    // u1 (14-17), hunk 18, a10 19, a11 20, a12 21. b.rs starts at 22, and u2 is rows 23-25.
+    // Its hunk is 26, b1 27, b2 28, img.png 29, and its note 30.
 
     #[test]
     fn cards_take_rows_under_the_lines_they_are_placed_at() {
         let diff = diff_of(PATCH);
         let review = review();
         let view = view(&diff, &review, 80, 12);
-        assert_eq!(view.stream.len(), 28);
-        assert_eq!(view.stream.hunk_rows, [6, 16, 23]);
-        assert_eq!(view.stream.thread_rows, [1, 10, 13, 21]);
-        assert_eq!(view.stream.file_start(1), Some(20));
+        assert_eq!(view.stream.len(), 31);
+        assert_eq!(view.stream.hunk_rows, [6, 18, 26]);
+        assert_eq!(view.stream.thread_rows, [1, 10, 14, 23]);
+        assert_eq!(view.stream.file_start(1), Some(22));
         assert_eq!(
             view.stream.placements,
             [
@@ -1771,7 +1773,7 @@ Binary files a/img.png and b/img.png differ
                 Placement::NotInDiff,
             ]
         );
-        let kinds = (0..28)
+        let kinds = (0..31)
             .map(|row| match view.stream.locate(&diff, row).unwrap() {
                 RowRef::BlockHeader(_) => "block".to_owned(),
                 RowRef::Card { thread, line } => format!("t{thread}.{line}"),
@@ -1785,10 +1787,10 @@ Binary files a/img.png and b/img.png differ
             .collect::<Vec<_>>();
         assert_eq!(
             kinds.join(" "),
-            "block t3.0 t3.1 t3.2 t3.3 file hunk a1 a2 A2 t2.0 t2.1 a3 t0.0 t0.1 t0.2 hunk \
-             a10 a11 a12 file t1.0 t1.1 hunk b1 b2 file note"
+            "block t3.0 t3.1 t3.2 t3.3 file hunk a1 a2 A2 t2.0 t2.1 t2.2 a3 t0.0 t0.1 t0.2 t0.3 \
+             hunk a10 a11 a12 file t1.0 t1.1 t1.2 hunk b1 b2 file note"
         );
-        assert!(view.stream.locate(&diff, 28).is_none());
+        assert!(view.stream.locate(&diff, 31).is_none());
     }
 
     #[test]
@@ -1801,13 +1803,13 @@ Binary files a/img.png and b/img.png differ
             view.apply(Action::NextThread);
             seen.push(view.cursor);
         }
-        assert_eq!(seen, [1, 10, 13, 21, 21]);
+        assert_eq!(seen, [1, 10, 14, 23, 23]);
         let mut back = Vec::new();
         for _ in 0..5 {
             view.apply(Action::PrevThread);
             back.push(view.cursor);
         }
-        assert_eq!(back, [13, 10, 1, 1, 1]);
+        assert_eq!(back, [14, 10, 1, 1, 1]);
     }
 
     #[test]
@@ -1823,13 +1825,13 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(focused(&mut view, 11), Some(2));
         assert_eq!(focused(&mut view, 9), Some(2));
         // The file header with a file comment, and the line u1 hangs under.
-        assert_eq!(focused(&mut view, 20), Some(1));
-        assert_eq!(focused(&mut view, 12), Some(0));
+        assert_eq!(focused(&mut view, 22), Some(1));
+        assert_eq!(focused(&mut view, 13), Some(0));
         // The block, its heading, a line with no card, and a hunk header.
         assert_eq!(focused(&mut view, 3), Some(3));
         assert_eq!(focused(&mut view, 0), None);
         assert_eq!(focused(&mut view, 7), None);
-        assert_eq!(focused(&mut view, 16), None);
+        assert_eq!(focused(&mut view, 18), None);
     }
 
     #[test]
@@ -1845,17 +1847,18 @@ Binary files a/img.png and b/img.png differ
         let at = |needle: &str| rows.iter().position(|row| row.contains(needle)).unwrap();
         // Not in the diff: the block comes first, with where it pointed.
         assert_eq!(at("Comments not in this diff (1)"), 0);
-        assert!(at("u4 user") < at("M a.rs"));
-        assert!(screen.contains("gone.rs:1 (R)"), "{screen}");
+        assert!(at("● Your note · gone.rs R1 ") < at("M a.rs"));
         assert!(screen.contains("was: x"), "{screen}");
         // Matched: under the line, with no tag.
-        assert_eq!(at("u3 user"), at("+A2") + 1);
-        assert!(!rows[at("u3 user")].contains("outdated"));
+        assert_eq!(at("· a.rs R3 "), at("+A2") + 1);
+        assert!(!rows[at("· a.rs R3 ")].contains("outdated"));
         // Outdated: under the nearest line, tagged, with the old text.
-        assert_eq!(at("u1 user [outdated]"), at(" a3") + 1);
+        assert_eq!(at("· a.rs R4 [outdated]"), at(" a3") + 1);
         assert!(screen.contains("was: not there anymore"), "{screen}");
-        // A file comment: under the file header.
-        assert_eq!(at("u2 user"), at("A b.rs") + 1);
+        // A file comment: under the file header, with the bare path.
+        assert_eq!(at("· b.rs [unsent]"), at("A b.rs") + 1);
+        // Every box closes with the keys that act on it, against the stream's right edge.
+        assert!(rows[at("· a.rs R3 ") + 2].ends_with(" r reply  e edit  d delete ╯"));
         // The cursor row is highlighted whether it is a card or a diff row.
         view.move_to(10);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
@@ -1877,6 +1880,35 @@ Binary files a/img.png and b/img.png differ
     }
 
     #[test]
+    fn a_card_is_a_box_across_the_whole_stream_in_the_side_by_side_layout() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let view = view(&diff, &review, 130, 40);
+        assert_eq!(view.stream.layout, DiffLayout::Split);
+        let screen = fresh(&view, &diff);
+        // The sidebar is 32 columns and the stream is the other 98.
+        let boxes = screen
+            .lines()
+            .map(|row| row.chars().skip(32).collect::<String>())
+            .filter(|row| row.starts_with('╭'))
+            .collect::<Vec<_>>();
+        assert_eq!(boxes.len(), 4, "{screen}");
+        for top in &boxes {
+            assert!(top.starts_with("╭ ● Your note · "), "{top}");
+            assert!(top.ends_with("─╮"), "{top}");
+            assert_eq!(string_width(top), 98, "{top}");
+        }
+        assert_eq!(
+            screen
+                .lines()
+                .filter(|row| row.ends_with(" r reply  e edit  d delete ╯"))
+                .count(),
+            4,
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn a_resolved_outdated_thread_is_one_line_with_no_tag() {
         let diff = diff_of(PATCH);
         let mut review = review();
@@ -1887,6 +1919,7 @@ Binary files a/img.png and b/img.png differ
             id: CommentId::parse("a1").unwrap(),
             parent: None,
             author: Author::Agent(Some("claude".into())),
+            at: String::new(),
             body: "Added with_capacity".into(),
             sent_batch: None,
             edited_since_sent: false,
@@ -1897,7 +1930,7 @@ Binary files a/img.png and b/img.png differ
             view.stream.placements[0],
             Placement::Outdated { near: Some(3) }
         );
-        assert_eq!(view.stream.len(), 26);
+        assert_eq!(view.stream.len(), 28);
         let screen = fresh(&view, &diff);
         assert!(
             screen.contains("✓ u1 resolved by agent:claude: Added with_capacity"),
@@ -1920,8 +1953,8 @@ Binary files a/img.png and b/img.png differ
         let view = view(&diff, &review, 80, 20);
         let screen = fresh(&view, &diff);
         assert!(screen.contains("Comments not in this diff (2)"), "{screen}");
-        assert!(screen.contains("a.rs:1 (R)"), "{screen}");
-        assert!(screen.contains("b.rs (file)"), "{screen}");
+        assert!(screen.contains("· a.rs R1 "), "{screen}");
+        assert!(screen.contains("· b.rs [unsent]"), "{screen}");
         assert!(
             screen.contains("No changes in the working tree."),
             "{screen}"
@@ -1942,7 +1975,7 @@ Binary files a/img.png and b/img.png differ
         };
         review.threads[0].root.author = Author::Agent(None);
         let view = view(&diff, &review, 80, 12);
-        assert_eq!(view.stream.len(), 6);
+        assert_eq!(view.stream.len(), 7);
         assert_eq!(view.stream.thread_rows, [1]);
     }
 
@@ -2149,14 +2182,14 @@ Binary files a/img.png and b/img.png differ
         let anchor = view.spot(&diff);
         // The first file lost its second hunk, so b.rs starts earlier.
         let smaller = diff_of(&PATCH.replace("@@ -10,2 +10,3 @@\n a10\n+a11\n a12\n", ""));
-        view.rebuild(&smaller, &Review::default(), anchor, &Theme::default());
+        view.rebuild(&smaller, &Review::default(), anchor, &Look::test());
         assert_eq!(view.cursor, 8);
         assert!(
             matches!(view.stream.locate(&smaller, 8), Some(RowRef::Line(row)) if row.text == "b1")
         );
         // The file is gone: the cursor stays on the nearest row that exists.
         let anchor = view.spot(&smaller);
-        view.rebuild(&diff_of(""), &Review::default(), anchor, &Theme::default());
+        view.rebuild(&diff_of(""), &Review::default(), anchor, &Look::test());
         assert_eq!(view.cursor, 0);
     }
 
@@ -2170,16 +2203,16 @@ Binary files a/img.png and b/img.png differ
         // A new thread above it pushes everything down by its rows.
         review.threads.push(thread("u5", "a.rs", line(1, "a1")));
         let spot = view.spot(&diff);
-        view.rebuild(&diff, &review, spot, &Theme::default());
+        view.rebuild(&diff, &review, spot, &Look::test());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Card { thread: 2, line: 1 })
         ));
-        assert_eq!(view.cursor, 11 + 2);
+        assert_eq!(view.cursor, 11 + 3);
         // The thread is deleted: the cursor goes to the line it hung under.
         review.threads.remove(2);
         let spot = view.spot(&diff);
-        view.rebuild(&diff, &review, spot, &Theme::default());
+        view.rebuild(&diff, &review, spot, &Look::test());
         assert!(
             matches!(view.stream.locate(&diff, view.cursor), Some(RowRef::Line(row)) if row.text == "A2")
         );
@@ -2243,7 +2276,7 @@ Binary files a/img.png and b/img.png differ
         // Upwards is the same range.
         let mut upwards = View::default();
         upwards.resize(Rect::new(0, 0, 80, 12));
-        upwards.rebuild(&diff, &Review::default(), None, &Theme::default());
+        upwards.rebuild(&diff, &Review::default(), None, &Look::test());
         upwards.move_to(5);
         upwards.toggle_select();
         assert_eq!(
@@ -2253,7 +2286,7 @@ Binary files a/img.png and b/img.png differ
         // Starting on a removed row, the range is on the old side.
         let mut old = View::default();
         old.resize(Rect::new(0, 0, 80, 12));
-        old.rebuild(&diff, &Review::default(), None, &Theme::default());
+        old.rebuild(&diff, &Review::default(), None, &Look::test());
         old.move_to(3);
         old.toggle_select();
         assert_eq!(
@@ -2292,7 +2325,7 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(view.select, None);
         view.toggle_select();
         assert_eq!(view.select, Some(1));
-        view.rebuild(&diff, &Review::default(), None, &Theme::default());
+        view.rebuild(&diff, &Review::default(), None, &Look::test());
         assert_eq!(view.select, None);
     }
 
@@ -2332,6 +2365,7 @@ Binary files a/img.png and b/img.png differ
             id: CommentId::parse("a1").unwrap(),
             parent: None,
             author: Author::Agent(None),
+            at: String::new(),
             body: "done".into(),
             sent_batch: None,
             edited_since_sent: false,
@@ -2341,10 +2375,14 @@ Binary files a/img.png and b/img.png differ
             view.move_to(row);
             view.focused_comment()
         };
-        // u3's card is rows 10 to 12 now: header, body, then the reply.
+        // u3's card is rows 10 to 13 now: the top border, the body, the reply, the bottom border.
         assert_eq!(at(&mut view, 10), Some((2, 0)));
         assert_eq!(at(&mut view, 11), Some((2, 0)));
         assert_eq!(at(&mut view, 12), Some((2, 1)));
+        // The bottom border names the keys that act on the root, so it is the root.
+        assert_eq!(at(&mut view, 13), Some((2, 0)));
+        // Past the box is a3, the line u1 hangs under.
+        assert_eq!(at(&mut view, 14), Some((0, 0)));
         // The line the card hangs under counts as the root.
         assert_eq!(at(&mut view, 9), Some((2, 0)));
         assert_eq!(at(&mut view, 7), None);
@@ -2358,9 +2396,9 @@ Binary files a/img.png and b/img.png differ
         let review = review();
         let mut view = view(&diff, &review, 80, 12);
         view.focus_thread(&CommentId::parse("u2").unwrap());
-        assert_eq!(view.cursor, 21);
+        assert_eq!(view.cursor, 23);
         view.focus_thread(&CommentId::parse("u9").unwrap());
-        assert_eq!(view.cursor, 21);
+        assert_eq!(view.cursor, 23);
     }
 
     #[test]
@@ -2657,7 +2695,7 @@ diff --git a/top.md b/top.md
         view.toggle_layout();
         assert_eq!(view.layout(), DiffLayout::Unified);
         assert!(view.needs_rebuild());
-        view.rebuild(&diff, &Review::default(), None, &Theme::default());
+        view.rebuild(&diff, &Review::default(), None, &Look::test());
         assert!(!view.needs_rebuild());
         view.resize(Rect::new(0, 0, 200, 14));
         assert_eq!(view.layout(), DiffLayout::Unified);
@@ -2811,14 +2849,14 @@ diff --git a/top.md b/top.md
         ));
         let spot = view.spot(&diff);
         view.toggle_layout();
-        view.rebuild(&diff, &review, spot, &Theme::default());
+        view.rebuild(&diff, &review, spot, &Look::test());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Line(row)) if row.text == "add21"
         ));
         let spot = view.spot(&diff);
         view.toggle_layout();
-        view.rebuild(&diff, &review, spot, &Theme::default());
+        view.rebuild(&diff, &review, spot, &Look::test());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Pair { new: Some(row), .. }) if row.text == "add21"

@@ -387,19 +387,32 @@ How the cards behave (built in M5):
 
 - A card is drawn under the line its thread is placed at, or under the file header for a file comment. An
   outdated thread is drawn under the nearest row, or under the file header when the file has no row on that
-  side. Several threads on one line stack in the review's order. The card is lined up under the code when the
-  stream is 50 columns wide or more, and indented by two columns below that.
-- An open card is a header (id, author, `[outdated]` on an open thread only, `(edited since sent)`), the
-  line text as it was when the comment was written for an outdated thread, the body wrapped to the stream's
-  width, and each reply indented under it. A resolved thread is one line: who resolved it and the first line
-  of its last comment, with no `outdated` tag.
+  side. Several threads on one line stack in the review's order. A card is as wide as the stream, with no
+  indent, in both layouts.
+- An open card is a rounded box, in the theme's warning colour for the user's thread and its agent colour for
+  an agent's. The top border reads `● <author> · <age> · <path> R<line>`: the author is `Your note` for the
+  user and the agent's name otherwise (`agent` when it has none), the side letter is `L` or `R`, a range is
+  `R101-110`, and a file comment has the bare path. Then come the badges `[outdated]` (on an open thread
+  only), `[new]`, `(edited since sent)` and `[unsent]`. A path that does not fit is cut from the left with `…`,
+  and is left out when there is no room for it. The id is not on an open card.
+- Inside the box are the line text as it was when the comment was written, for a thread that is outdated or
+  not in the diff, then the body wrapped to the box, then each reply indented under it.
+- The bottom border holds the keys on the right, read from the effective keymap: `reply`, `edit` and `delete`
+  for the user's thread, and only `reply` for an agent's. Each is the action's first key as the keymap prints
+  it, so the defaults read `r reply  e edit  d delete`, and an action with no key is left out.
+- The age is `now` under a minute, then `2m`, `3h`, `2d`, counted from the `at` of the comment's `add` event
+  to the time the stream was laid out. No timer runs, so the age on an idle pane is as old as its last layout.
+  A comment whose time is not RFC 3339 has no age.
+- A resolved thread is one line: a green `✓` in place of the bullet, the id, `[new]`, who resolved it and the
+  first line of its last comment, with no `outdated` tag.
 - Threads that are not in the diff, because their file is not in it or they were written against the other
-  spec, are listed in a block at the top of the stream under "Comments not in this diff". Each card there
-  also says the path and line it pointed at. With an empty diff the block is shown above the message. A
+  spec, are listed in a block at the top of the stream under "Comments not in this diff". A resolved one
+  also says the path and line it pointed at, which an open card has on its border. With an empty diff the block is shown above the message. A
   thread in the block is reached with next and previous thread, like any other.
 - The thread a key acts on is the one whose card holds the cursor, or the first one hung under the line the
   cursor is on. A card's height is its number of lines, so the stream is laid out again when the pane's
-  width changes.
+  width changes. Both borders of a box belong to its root comment, so `edit` and `delete` on the bottom
+  border act on the root.
 
 How comments are written (built in M5):
 
@@ -766,7 +779,7 @@ Records:
 | Type | Fields |
 |---|---|
 | `Event` | `kind`, `at`, `by: Author`, and the fields in section 3.2 |
-| `Comment` | `id`, `parent`, `author`, `body`, `sent_batch`, `edited_since_sent` |
+| `Comment` | `id`, `parent`, `author`, `at` (the time of its `add` event), `body`, `sent_batch`, `edited_since_sent` |
 | `Thread` | `root: Comment`, `anchor: Anchor`, `replies`, `status`, `is_new`, `unsent` |
 | `Anchor` | `path`, `old_path`, `target: AnchorTarget`, `spec: Spec` |
 | `Review` | `threads` in file order, `skipped_lines`. The result of the fold |
