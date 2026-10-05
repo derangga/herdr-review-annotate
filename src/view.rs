@@ -656,7 +656,21 @@ pub struct View {
     forced: Option<DiffLayout>,
     /// The half of a split row the mouse last clicked, until the cursor moves another way.
     half: Option<Side>,
+    /// Where the mouse last moved, as a column and a row of the screen. `None` until Herdr
+    /// delivers a motion event, which tells the pane hover works.
+    pointer: Option<(u16, u16)>,
 }
+
+/// The `[+]` that opens the comment editor on a line: the stream row it is on and the column of the
+/// stream where its three cells start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plus {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Cells in the `[+]` marker.
+const PLUS_WIDTH: usize = 3;
 
 impl Default for View {
     fn default() -> Self {
@@ -670,6 +684,7 @@ impl Default for View {
             select: None,
             forced: None,
             half: None,
+            pointer: None,
         }
     }
 }
@@ -687,6 +702,43 @@ impl View {
             } else {
                 DiffLayout::Unified
             })
+    }
+
+    /// The `[+]` to draw: on the row under the mouse, or on the cursor's row until the mouse has
+    /// moved once, so a pane whose Herdr drops motion still offers it. Only a code row has one. In
+    /// a split row it sits on the half under the mouse, in the gutter where the sign is.
+    pub fn plus(&self) -> Option<Plus> {
+        let stream = areas(self.area).stream;
+        let (row, half) = match self.pointer {
+            Some((column, line)) => {
+                let inside = column >= stream.x
+                    && column < stream.x + stream.width
+                    && line >= stream.y
+                    && line < stream.y + stream.height;
+                if !inside {
+                    return None;
+                }
+                let left = split_widths(usize::from(stream.width)).0;
+                let half = if usize::from(column - stream.x) < left {
+                    Side::Old
+                } else {
+                    Side::New
+                };
+                (self.scroll + usize::from(line - stream.y), Some(half))
+            }
+            None => (self.cursor, self.half),
+        };
+        match self.stream.file_row(row)? {
+            FileRow::Line { .. } => Some(Plus { row, col: 0 }),
+            FileRow::Pair { old, new, .. } => {
+                let old_side = (half == Some(Side::Old) && old.is_some()) || new.is_none();
+                let side = if old_side { Side::Old } else { Side::New };
+                let left = split_widths(usize::from(stream.width)).0;
+                let col = if side == Side::Old { 4 } else { left + 1 + 4 };
+                Some(Plus { row, col })
+            }
+            _ => None,
+        }
     }
 
     /// Switch to the other layout until toggled again. The caller lays the stream out again.
@@ -1004,7 +1056,7 @@ impl View {
     }
 
     /// The wheel scrolls and a click moves the cursor. Neither can be remapped.
-    pub fn mouse(&mut self, event: MouseEvent) {
+    pub fn mouse(&mut self, event: MouseEvent) -> bool {
         let areas = areas(self.area);
         let at = |rect: Rect| {
             event.column >= rect.x
@@ -1012,7 +1064,9 @@ impl View {
                 && event.row >= rect.y
                 && event.row < rect.y + rect.height
         };
+        let mut plus_clicked = false;
         match event.kind {
+            MouseEventKind::Moved => self.pointer = Some((event.column, event.row)),
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = event.kind == MouseEventKind::ScrollDown;
                 let height = self.height();
@@ -1027,6 +1081,14 @@ impl View {
             }
             MouseEventKind::Down(MouseButton::Left) if at(areas.stream) => {
                 let row = self.scroll + usize::from(event.row - areas.stream.y);
+                let column = usize::from(event.column - areas.stream.x);
+                // The marker is where the mouse is, or on the cursor's row when nothing moved it.
+                if self.pointer.is_some() {
+                    self.pointer = Some((event.column, event.row));
+                }
+                plus_clicked = self
+                    .plus()
+                    .is_some_and(|p| p.row == row && (p.col..p.col + PLUS_WIDTH).contains(&column));
                 if row < self.stream.len() {
                     self.panel = Panel::Stream;
                     self.move_to(row);
@@ -1054,6 +1116,7 @@ impl View {
             }
             _ => {}
         }
+        plus_clicked
     }
 }
 
@@ -1286,6 +1349,18 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
             view.cursor - view.scroll,
             style,
         );
+    }
+    if let Some(plus) = view.plus() {
+        let shown = plus.row >= view.scroll && plus.row < view.scroll + height;
+        if shown && plus.col + PLUS_WIDTH <= width {
+            let x = areas.stream.x + u16::try_from(plus.col).unwrap_or(0);
+            let y = areas.stream.y + u16::try_from(plus.row - view.scroll).unwrap_or(0);
+            let style = Style::new()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            frame.buffer_mut().set_string(x, y, "[+]", style);
+        }
     }
     if let Some(sidebar) = areas.sidebar {
         draw_sidebar(frame, sidebar, view, diff);
@@ -2614,5 +2689,156 @@ diff --git a/top.md b/top.md
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Pair { new: Some(row), .. }) if row.text == "add21"
         ));
+    }
+
+    fn motion(view: &mut View, column: u16, row: u16) {
+        view.mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    fn plus_rows(screen: &str) -> Vec<usize> {
+        let rows = screen.lines().enumerate();
+        rows.filter(|(_, row)| row.contains("[+]"))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    #[test]
+    fn hovering_a_code_row_shows_a_plus_on_it_and_nowhere_else() {
+        let (diff, mut view) = plain();
+        let stream = areas(view.area).stream;
+        // Row 2 is a1, a context line. Rows 0 and 1 are the file header and the hunk header.
+        motion(&mut view, stream.x + 12, stream.y + 2);
+        assert_eq!(view.plus(), Some(Plus { row: 2, col: 0 }));
+        assert_eq!(plus_rows(&fresh(&view, &diff)), [2]);
+        motion(&mut view, stream.x + 12, stream.y + 3);
+        assert_eq!(plus_rows(&fresh(&view, &diff)), [3]);
+        for header in [0, 1] {
+            motion(&mut view, stream.x + 12, stream.y + header);
+            assert_eq!(view.plus(), None, "row {header}");
+        }
+        // Off the stream, in the sidebar, there is none.
+        motion(&mut view, 2, 3);
+        assert_eq!(view.plus(), None);
+    }
+
+    #[test]
+    fn without_any_motion_the_plus_is_on_the_cursor_row() {
+        let (diff, mut view) = plain();
+        view.move_to(3);
+        assert_eq!(view.plus(), Some(Plus { row: 3, col: 0 }));
+        assert_eq!(plus_rows(&fresh(&view, &diff)), [3]);
+        view.move_to(1);
+        assert_eq!(view.plus(), None);
+        // Once the mouse has moved, the cursor no longer shows one.
+        let stream = areas(view.area).stream;
+        view.move_to(3);
+        motion(&mut view, 2, 0);
+        assert_eq!(view.plus(), None);
+        motion(&mut view, stream.x + 12, stream.y + 4);
+        assert_eq!(view.plus().map(|p| p.row), Some(4));
+    }
+
+    #[test]
+    fn the_plus_follows_the_wheel_while_the_mouse_stands_still() {
+        let (_, mut view) = plain();
+        let stream = areas(view.area).stream;
+        motion(&mut view, stream.x + 12, stream.y + 2);
+        assert_eq!(view.plus().map(|p| p.row), Some(2));
+        view.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: stream.x + 12,
+            row: stream.y + 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(view.plus().map(|p| p.row), Some(2 + view.scroll));
+    }
+
+    #[test]
+    fn a_click_on_the_plus_asks_for_a_comment_and_a_click_elsewhere_only_moves_the_cursor() {
+        let (_, mut view) = plain();
+        let stream = areas(view.area).stream;
+        let down = |view: &mut View, column: u16, row: u16| {
+            view.mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        motion(&mut view, stream.x + 1, stream.y + 3);
+        assert!(down(&mut view, stream.x + 1, stream.y + 3));
+        assert_eq!(view.cursor, 3);
+        assert!(!down(&mut view, stream.x + 12, stream.y + 3));
+        assert!(
+            !down(&mut view, stream.x + 3, stream.y + 3),
+            "the cell after the marker"
+        );
+        // The header row has no marker to click.
+        motion(&mut view, stream.x + 1, stream.y);
+        assert!(!down(&mut view, stream.x + 1, stream.y));
+    }
+
+    #[test]
+    fn in_a_split_row_the_plus_sits_on_the_hovered_half_and_a_click_on_it_chooses_that_half() {
+        let diff = diff_of(SPLIT_PATCH);
+        let mut view = view(&diff, &Review::default(), 130, 14);
+        let stream = areas(view.area).stream;
+        let (left, _) = split_widths(usize::from(stream.width));
+        let y = stream.y + 4;
+        motion(&mut view, stream.x + 10, y);
+        assert_eq!(view.plus(), Some(Plus { row: 4, col: 4 }));
+        let screen = fresh(&view, &diff);
+        let row = screen.lines().nth(4).unwrap();
+        assert!(row.contains("   4[+]old4"), "the number stays: {row}");
+        let right = u16::try_from(left).unwrap() + 10;
+        motion(&mut view, stream.x + right, y);
+        assert_eq!(
+            view.plus(),
+            Some(Plus {
+                row: 4,
+                col: left + 5
+            })
+        );
+        let cell = stream.x + u16::try_from(left + 5).unwrap();
+        let hit = view.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: cell,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(hit);
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            AnchorTarget::Line {
+                side: Side::New,
+                line: 4,
+                text: "new4".into()
+            }
+        );
+        // On the old half of the same row it is the old line.
+        motion(&mut view, stream.x + 10, y);
+        let hit = view.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: stream.x + 5,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(hit);
+        assert!(matches!(
+            view.capture(&diff).unwrap().target,
+            AnchorTarget::Line {
+                side: Side::Old,
+                line: 4,
+                ..
+            }
+        ));
+        // Over the empty right half of old5, the marker falls to the half that has the line.
+        motion(&mut view, stream.x + right, stream.y + 5);
+        assert_eq!(view.plus(), Some(Plus { row: 5, col: 4 }));
     }
 }

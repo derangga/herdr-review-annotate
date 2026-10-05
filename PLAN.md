@@ -377,6 +377,11 @@ How the layout behaves (built after M6):
   row with no new line. A click on a half chooses it for that row until the cursor moves. A range takes the
   side of its first row and ends at the last line on that side.
 - Cards hang under their row at the width of the whole stream, in both layouts.
+- A code row under the mouse shows `[+]` in its gutter, in both layouts. In a split row it is on the half under
+  the mouse, where the sign is, so the line number stays visible. A click on it opens the comment editor on that
+  line and half, as `comment` does. Until the mouse has moved once, which tells the pane that Herdr delivers
+  motion, the `[+]` is on the cursor's row instead, and a click elsewhere only moves the cursor. There is no
+  drag to select a range.
 
 How the cards behave (built in M5):
 

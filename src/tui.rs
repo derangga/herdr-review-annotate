@@ -13,7 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyCode, KeyEvent, KeyEventKind,
+    KeyCode, KeyEvent, KeyEventKind, MouseEvent,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -743,6 +743,16 @@ impl App {
         }
     }
 
+    /// A mouse event over the review. A click on the `[+]` of a line opens the comment editor
+    /// there, as `comment` does.
+    pub fn mouse(&mut self, mouse: MouseEvent) {
+        if self.view.mouse(mouse) {
+            self.warnings.clear();
+            self.status = None;
+            self.start_comment();
+        }
+    }
+
     /// A key while the editor is open.
     fn compose_key(&mut self, key: KeyEvent) {
         let Some(compose) = &mut self.compose else {
@@ -996,7 +1006,7 @@ pub fn run_loop<B: Backend>(
                     && app.compose.is_none()
                     && app.prompt.is_none() =>
             {
-                app.view.mouse(mouse);
+                app.mouse(mouse);
             }
             Ok(Some(Event::FocusGained)) if app.compose.is_none() => app.load(git),
             Ok(_) => {}
@@ -1715,7 +1725,7 @@ diff --git a/b.rs b/b.rs
     fn the_mouse_reaches_the_view_through_the_loop() {
         let fixture = Fixture::new("mouse");
         let mut app = started_with(&fixture, TWO_FILES);
-        let click = Event::Mouse(event::MouseEvent {
+        let click = Event::Mouse(MouseEvent {
             kind: event::MouseEventKind::Down(event::MouseButton::Left),
             column: 40,
             row: 3,
@@ -2679,5 +2689,43 @@ diff --git a/b.rs b/b.rs
                 .lines()
                 .any(|row| row.contains("old") && row.contains("new"))
         );
+    }
+
+    #[test]
+    fn clicking_the_plus_of_a_hovered_line_opens_the_editor_on_that_line() {
+        let fixture = Fixture::new("plus-click");
+        let mut app = opened(&fixture, patch_text());
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        // The stream starts at column 20. Row 3 is the added line, a.rs line 1 on the new side.
+        app.mouse(mouse(event::MouseEventKind::Moved, 30, 3));
+        assert!(screen_of(&app).lines().nth(3).unwrap().contains("[+]"));
+        app.mouse(mouse(
+            event::MouseEventKind::Down(event::MouseButton::Left),
+            21,
+            3,
+        ));
+        let compose = app.compose.as_ref().unwrap();
+        assert!(matches!(&compose.draft, Draft::Comment(anchor)
+            if anchor.target == AnchorTarget::Line { side: Side::New, line: 1, text: "new".into() }));
+        assert_eq!(compose.title, "Comment on a.rs:1 (R)");
+    }
+
+    #[test]
+    fn a_click_off_the_plus_does_not_open_the_editor() {
+        let fixture = Fixture::new("plus-miss");
+        let mut app = opened(&fixture, patch_text());
+        app.mouse(MouseEvent {
+            kind: event::MouseEventKind::Down(event::MouseButton::Left),
+            column: 40,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.compose.is_none());
+        assert_eq!(app.view.cursor, 3);
     }
 }
