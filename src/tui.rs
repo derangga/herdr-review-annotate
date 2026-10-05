@@ -474,6 +474,29 @@ impl App {
         }
     }
 
+    /// A thread an agent resolved is new until the cursor reaches it. Then one `seen` event is
+    /// written, so the marker stays cleared after a restart. A failed write is a warning, and the
+    /// next key tries again.
+    pub fn mark_seen(&mut self) {
+        if self.compose.is_some() {
+            return;
+        }
+        let root = self
+            .view
+            .focused()
+            .and_then(|thread| self.view.thread_id(thread))
+            .cloned();
+        let Some(root) = root.filter(|root| self.review.thread(root).is_some_and(|t| t.is_new))
+        else {
+            return;
+        };
+        let Some(dir) = self.dir.clone() else { return };
+        match actions::seen(&dir, &(self.now)(), &root) {
+            Ok(()) => self.refold(),
+            Err(error) => self.warn(Warning::Config(failure(&error))),
+        }
+    }
+
     /// Apply a key press: to the editor when one is open, else to the help overlay or the keymap.
     pub fn key(&mut self, key: KeyEvent, git: &mut Git) {
         if self.compose.is_some() {
@@ -671,7 +694,9 @@ pub fn run_loop<B: Backend>(
             app.save_draft();
             return Exit::Io;
         }
-        match poll(TICK) {
+        let polled = poll(TICK);
+        let input = matches!(polled, Ok(Some(Event::Key(_) | Event::Mouse(_))));
+        match polled {
             Err(_) => {
                 app.save_draft();
                 return Exit::Io;
@@ -684,6 +709,9 @@ pub fn run_loop<B: Backend>(
             }
             Ok(Some(Event::FocusGained)) if app.compose.is_none() => app.load(git),
             Ok(_) => {}
+        }
+        if input {
+            app.mark_seen();
         }
         if app.quit {
             return Exit::Quit;
@@ -1862,5 +1890,185 @@ diff --git a/b.rs b/b.rs
         press(&fixture, &mut app, [key('v'), key('c')]);
         assert_eq!(app.view.select, None);
         assert!(app.compose.is_some());
+    }
+
+    fn agent_reply_and_resolve(thread: &str, id: &str, body: &str) -> Vec<LogEvent> {
+        let mut reply = thread_event(id, agent(), body);
+        if let Kind::Add(add) = &mut reply.kind {
+            *add = Add {
+                id: CommentId::parse(id).unwrap(),
+                parent: CommentId::parse(thread),
+                path: None,
+                old_path: None,
+                side: None,
+                line: None,
+                end_line: None,
+                line_text: None,
+                spec: None,
+                body: body.into(),
+            };
+        }
+        let resolve = LogEvent {
+            at: "2026-10-05T00:00:00Z".into(),
+            by: agent(),
+            kind: Kind::Resolve {
+                id: CommentId::parse(thread).unwrap(),
+            },
+        };
+        vec![reply, resolve]
+    }
+
+    fn seen_events(fixture: &Fixture) -> usize {
+        std::fs::read_to_string(fixture.dir().join("review.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"seen\""))
+            .count()
+    }
+
+    #[test]
+    fn an_agent_resolve_shows_new_until_the_cursor_reaches_it_and_stays_cleared_after_a_restart() {
+        let fixture = Fixture::new("new-marker");
+        let mut events = vec![thread_event("u1", Author::User, "fix")];
+        events.extend(agent_reply_and_resolve("u1", "a1", "Added with_capacity"));
+        write_log(&fixture, &events);
+        let mut app = opened(&fixture, patch_text());
+        assert!(app.review.threads[0].is_new);
+        assert!(screen_of(&app).contains("✓ u1 [new] resolved by agent:claude"));
+        // Rows 1 and 2 are not the thread. Row 3 is the line its card hangs under.
+        drive(
+            &fixture,
+            &mut app,
+            vec![Some(key('j')), Some(key('j'))],
+            |_| {},
+        );
+        assert!(app.review.threads[0].is_new);
+        assert_eq!(seen_events(&fixture), 0);
+        drive(&fixture, &mut app, vec![Some(key('j'))], |_| {});
+        assert!(!app.review.threads[0].is_new);
+        assert_eq!(seen_events(&fixture), 1);
+        assert!(!screen_of(&app).contains("[new]"));
+        // Moving around the thread, away and back, writes nothing more.
+        let wander = [key('j'), key('k'), key('k'), key('j'), key('n')];
+        drive(&fixture, &mut app, wander.map(Some).to_vec(), |_| {});
+        assert_eq!(seen_events(&fixture), 1);
+        // A restart reads the seen event.
+        let restarted = opened(&fixture, patch_text());
+        assert!(!restarted.review.threads[0].is_new);
+        assert!(!screen_of(&restarted).contains("[new]"));
+    }
+
+    #[test]
+    fn jumping_to_the_card_with_next_thread_reaches_it() {
+        let fixture = Fixture::new("new-by-jump");
+        let mut events = vec![thread_event("u1", Author::User, "fix")];
+        events.extend(agent_reply_and_resolve("u1", "a1", "done"));
+        write_log(&fixture, &events);
+        let mut app = opened(&fixture, patch_text());
+        drive(&fixture, &mut app, vec![Some(key('n'))], |_| {});
+        assert_eq!(app.view.cursor, 4);
+        assert!(!app.review.threads[0].is_new);
+        assert_eq!(seen_events(&fixture), 1);
+    }
+
+    #[test]
+    fn a_resolve_written_by_another_process_while_the_pane_is_open_shows_new_with_no_key_pressed() {
+        let fixture = Fixture::new("new-live");
+        write_log(&fixture, &[thread_event("u1", Author::User, "fix")]);
+        let mut app = opened(&fixture, patch_text());
+        assert!(!screen_of(&app).contains("[new]"));
+        let mut events = vec![thread_event("u1", Author::User, "fix")];
+        events.extend(agent_reply_and_resolve("u1", "a1", "done"));
+        drive(&fixture, &mut app, vec![None, None], |tick| {
+            if tick == 1 {
+                write_log(&fixture, &events);
+            }
+        });
+        assert!(app.review.threads[0].is_new);
+        assert!(screen_of(&app).contains("✓ u1 [new] resolved by agent:claude: done"));
+        // No key was pressed, so nothing was marked seen.
+        assert_eq!(seen_events(&fixture), 0);
+    }
+
+    #[test]
+    fn a_shorter_log_is_read_again_from_the_start() {
+        let fixture = Fixture::new("shorter");
+        write_log(
+            &fixture,
+            &[
+                thread_event("u1", Author::User, "first"),
+                thread_event("u2", Author::User, "second"),
+            ],
+        );
+        let mut app = opened(&fixture, patch_text());
+        assert_eq!(app.review.threads.len(), 2);
+        drive(&fixture, &mut app, vec![None, None], |tick| {
+            if tick == 0 {
+                write_log(&fixture, &[thread_event("u1", Author::User, "first")]);
+            }
+        });
+        assert_eq!(app.review.threads.len(), 1);
+        assert_eq!(app.review.threads[0].root.body, "first");
+        assert_eq!(fixture.diffs.get(), 2);
+        // A log that is gone entirely is an empty review.
+        drive(&fixture, &mut app, vec![None, None], |tick| {
+            if tick == 0 {
+                std::fs::remove_file(fixture.dir().join("review.jsonl")).unwrap();
+            }
+        });
+        assert!(app.review.threads.is_empty());
+    }
+
+    #[test]
+    fn a_seen_event_that_cannot_be_written_is_a_warning_and_the_next_key_tries_again() {
+        let fixture = Fixture::new("seen-busy");
+        let mut events = vec![thread_event("u1", Author::User, "fix")];
+        events.extend(agent_reply_and_resolve("u1", "a1", "done"));
+        write_log(&fixture, &events);
+        let mut app = opened(&fixture, patch_text());
+        let held = crate::store::lock(&fixture.dir()).unwrap();
+        let landing = vec![Some(key('j')), Some(key('j')), Some(key('j'))];
+        drive(&fixture, &mut app, landing, |_| {});
+        assert!(app.review.threads[0].is_new);
+        assert_eq!(seen_events(&fixture), 0);
+        assert!(screen_of(&app).contains("review is busy, press again"));
+        // The cursor is still on the thread, and the next key writes the event.
+        drop(held);
+        drive(&fixture, &mut app, vec![Some(key('n'))], |_| {});
+        assert_eq!(seen_events(&fixture), 1);
+        assert!(!app.review.threads[0].is_new);
+    }
+
+    #[test]
+    fn editing_the_commented_line_tags_the_thread_outdated_and_committing_moves_it_to_the_block() {
+        let fixture = Fixture::new("outdated-then-committed");
+        write_log(&fixture, &[thread_event("u1", Author::User, "fix")]);
+        let mut app = opened(&fixture, patch_text());
+        let screen = screen_of(&app);
+        assert!(
+            screen.contains("u1 user") && !screen.contains("outdated"),
+            "{screen}"
+        );
+        // The line is edited in an editor, and R reloads.
+        *fixture.patch.borrow_mut() =
+            b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+edited\n"
+                .to_vec();
+        press(&fixture, &mut app, [key('R')]);
+        let screen = screen_of(&app);
+        assert!(screen.contains("u1 user [outdated]"), "{screen}");
+        assert!(screen.contains("was: new"), "{screen}");
+        // Everything is committed: the diff is empty, and the thread is still listed.
+        fixture.patch.borrow_mut().clear();
+        press(&fixture, &mut app, [key('R')]);
+        let screen = screen_of(&app);
+        assert!(screen.contains("Comments not in this diff (1)"), "{screen}");
+        assert!(screen.contains("a.rs:1 (R)"), "{screen}");
+        assert!(
+            screen.contains("No changes in the working tree."),
+            "{screen}"
+        );
+        // And the user can still act on it from there.
+        press(&fixture, &mut app, [key('n'), key('x')]);
+        assert!(!app.review.threads[0].is_open());
     }
 }

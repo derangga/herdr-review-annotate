@@ -110,7 +110,8 @@ fn was(anchor: &Anchor) -> Option<&str> {
     }
 }
 
-/// The lines of one thread at `width` cells. A resolved thread is one line. An open thread is its
+/// The lines of one thread at `width` cells. A resolved thread is one line, which says `[new]` while
+/// an agent's resolve has not been looked at. An open thread is its
 /// header, the body, and each reply indented under it. The `outdated` tag is on open threads only,
 /// and a thread that is not in the diff says where it pointed.
 pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
@@ -126,14 +127,24 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
         } else {
             String::new()
         };
-        let text = format!(
-            "{pad}✓ {id}{place} resolved by {}: {}",
+        let head = format!("{pad}✓ {id}");
+        let tag = if thread.is_new { " [new]" } else { "" };
+        let rest = format!(
+            "{place} resolved by {}: {}",
             name(by),
             first_line(&last.body)
         );
+        let left = width.saturating_sub(string_width(&head) + string_width(tag));
         let mut card = Card::default();
         card.push(
-            Line::styled(truncate_to_width(&text, width), dim()),
+            Line::from(vec![
+                Span::styled(head, dim()),
+                Span::styled(
+                    tag,
+                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(truncate_to_width(&rest, left), dim()),
+            ]),
             thread.replies.len(),
         );
         return card;
@@ -305,6 +316,34 @@ mod tests {
             "{}",
             lines[0]
         );
+    }
+
+    #[test]
+    fn a_resolved_thread_says_new_until_it_has_been_seen() {
+        let mut thread = thread("fix");
+        thread.status = Status::Resolved {
+            by: Author::Agent(Some("claude".into())),
+        };
+        thread
+            .replies
+            .push(comment("a1", Author::Agent(None), "Added with_capacity"));
+        thread.is_new = true;
+        let placement = Placement::Matched { line: Some(7) };
+        let new = text(&card(&thread, placement, 80));
+        assert_eq!(
+            new,
+            ["           ✓ u1 [new] resolved by agent:claude: Added with_capacity"]
+        );
+        thread.is_new = false;
+        let seen = text(&card(&thread, placement, 80));
+        assert_eq!(
+            seen,
+            ["           ✓ u1 resolved by agent:claude: Added with_capacity"]
+        );
+        // The tag survives a cut: it is before what gets truncated.
+        thread.is_new = true;
+        assert!(text(&card(&thread, placement, 30))[0].contains("[new]"));
+        assert!(string_width(&text(&card(&thread, placement, 30))[0]) <= 30);
     }
 
     #[test]

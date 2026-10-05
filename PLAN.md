@@ -395,6 +395,12 @@ How comments are written (built in M5):
 - `reply` replies to the thread the cursor is on. `edit` and `delete` act on the comment whose line of the card
   the cursor is on, or on the root when it is on the line above the card. They refuse an agent's comment.
   Deleting a root deletes its thread and nothing asks first. `resolve` flips any thread, whoever wrote it.
+- A store change is read within one tick, 250 ms, whoever wrote it, and the diff is reloaded with it. A log
+  that is shorter than the one read, or gone, is read again from the start.
+- A resolved card says `[new]` while an agent's resolve has not been looked at. After a key or a click that
+  leaves the cursor on a new thread, on its card or on the line it hangs under, one `seen` event is written.
+  The marker stays cleared after a restart, and moving around the thread writes nothing more. A write that
+  fails is a warning, and the next key tries again.
 - When the pane is told to end, or its terminal fails, with text in the editor, the text is written as the
   comment, reply or edit it was for.
 

@@ -110,6 +110,20 @@ pub fn delete(dir: &Path, now: &str, id: &CommentId) -> Written<()> {
     })
 }
 
+/// The user has looked at a thread an agent resolved. A thread that is not new writes nothing, so
+/// two panes landing on it write one event between them.
+pub fn seen(dir: &Path, now: &str, id: &CommentId) -> Written<()> {
+    write(dir, now, |review, now| {
+        let thread = review.thread(id).ok_or_else(|| unknown(review, id))?;
+        let events = if thread.is_new {
+            vec![event(now, Kind::Seen { id: id.clone() })]
+        } else {
+            Vec::new()
+        };
+        Ok((events, ()))
+    })
+}
+
 /// Resolve an open thread or reopen a resolved one, whoever wrote it. Returns whether the thread
 /// is resolved afterwards.
 pub fn toggle(dir: &Path, now: &str, id: &CommentId) -> Written<bool> {
@@ -323,6 +337,34 @@ mod tests {
         assert_eq!(next.as_str(), "u3");
         assert!(matches!(
             delete(&dir, NOW, &id("u1")),
+            Err(WriteError::Build(CommandError::UnknownId { .. }))
+        ));
+    }
+
+    #[test]
+    fn seen_clears_new_once_and_a_second_call_writes_nothing() {
+        let dir = two_threads("seen");
+        // The agent resolves its own thread, which is new to the user.
+        let resolved = Event {
+            at: NOW.into(),
+            by: Author::Agent(Some("claude".into())),
+            kind: Kind::Resolve { id: id("a1") },
+        };
+        let path = dir.join("review.jsonl");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&serde_json::to_string(&resolved).unwrap());
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+        assert!(read(&dir).unwrap().threads[1].is_new);
+        seen(&dir, NOW, &id("a1")).unwrap();
+        assert!(!read(&dir).unwrap().threads[1].is_new);
+        let length = std::fs::metadata(&path).unwrap().len();
+        seen(&dir, NOW, &id("a1")).unwrap();
+        // The user's open thread is not new either.
+        seen(&dir, NOW, &id("u1")).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert!(matches!(
+            seen(&dir, NOW, &id("u9")),
             Err(WriteError::Build(CommandError::UnknownId { .. }))
         ));
     }
