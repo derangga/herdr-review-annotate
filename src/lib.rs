@@ -5,6 +5,7 @@ pub mod edit_keys;
 pub mod herdr;
 pub mod open;
 pub mod spike;
+pub mod store;
 pub mod tui;
 pub mod width;
 

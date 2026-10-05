@@ -108,8 +108,9 @@ Fold rules:
 
 - Events apply in file order. An event that names an unknown id, or breaks the rights rule (ADR 0004),
   is skipped.
-- A thread is unsent when its root or any reply by the user has no `sent` event, or when a `reopen` by
-  the user comes after its last `sent`.
+- A thread is unsent when its root (if the user wrote it) or any reply by the user has no `sent` event,
+  or when a `reopen` by the user comes after its last `sent`. A `sent` event's `ids` are comment ids.
+  Naming a root id also clears that thread's reopen.
 - An `edit` never makes a comment unsent. A user comment with an `edit` after its last `sent` is
   "edited since sent". The card shows that mark, and the agent sees the new text only on a resend.
 - A thread is `new` when its last `resolve` is by an agent and no `seen` follows it.
