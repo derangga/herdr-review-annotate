@@ -21,6 +21,7 @@ pub enum Action {
     PrevThread,
     NextThread,
     SwitchPanel,
+    ToggleSidebar,
     Comment,
     SelectRange,
     Reply,
@@ -38,7 +39,7 @@ pub enum Action {
 
 impl Action {
     /// In the order of the table in PLAN.md section 7, which is the order of the help overlay.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -48,6 +49,7 @@ impl Action {
         Self::PrevThread,
         Self::NextThread,
         Self::SwitchPanel,
+        Self::ToggleSidebar,
         Self::Comment,
         Self::SelectRange,
         Self::Reply,
@@ -75,6 +77,7 @@ impl Action {
             Self::PrevThread => "prev_thread",
             Self::NextThread => "next_thread",
             Self::SwitchPanel => "switch_panel",
+            Self::ToggleSidebar => "toggle_sidebar",
             Self::Comment => "comment",
             Self::SelectRange => "select_range",
             Self::Reply => "reply",
@@ -103,6 +106,7 @@ impl Action {
             Self::PrevThread => "previous thread",
             Self::NextThread => "next thread",
             Self::SwitchPanel => "switch between sidebar and stream",
+            Self::ToggleSidebar => "show or hide the sidebar",
             Self::Comment => "comment on the line, range or file",
             Self::SelectRange => "start a range",
             Self::Reply => "reply to the thread",
@@ -134,6 +138,7 @@ impl Action {
             Self::PrevThread => &["shift+n"],
             Self::NextThread => &["n"],
             Self::SwitchPanel => &["tab"],
+            Self::ToggleSidebar => &["f"],
             Self::Comment => &["c"],
             Self::SelectRange => &["v"],
             Self::Reply => &["r"],
@@ -471,6 +476,11 @@ mod tests {
             (KeyCode::Char('n'), KeyModifiers::NONE, Action::NextThread),
             (KeyCode::Char('N'), KeyModifiers::SHIFT, Action::PrevThread),
             (KeyCode::Tab, KeyModifiers::NONE, Action::SwitchPanel),
+            (
+                KeyCode::Char('f'),
+                KeyModifiers::NONE,
+                Action::ToggleSidebar,
+            ),
             (KeyCode::Char('s'), KeyModifiers::NONE, Action::Resend),
             (KeyCode::Char('S'), KeyModifiers::SHIFT, Action::Send),
             (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::Reload),
@@ -576,14 +586,14 @@ mod tests {
 
     #[test]
     fn an_unknown_action_is_skipped_with_a_warning() {
-        let keymap = Keymap::from_toml("[keys]\nfly = \"f\"\nquit = \"Q\"\n");
+        let keymap = Keymap::from_toml("[keys]\nfly = \"z\"\nquit = \"Q\"\n");
         assert_eq!(warnings(&keymap).len(), 1);
         assert!(warnings(&keymap)[0].contains("unknown action 'fly'"));
         assert_eq!(
             keymap.action(&press(KeyCode::Char('Q'), KeyModifiers::SHIFT)),
             Some(Action::Quit)
         );
-        assert_eq!(keymap.action(&char_key('f')), None);
+        assert_eq!(keymap.action(&char_key('z')), None);
     }
 
     #[test]

@@ -334,6 +334,7 @@ only in v1.
 | `prev_hunk`, `next_hunk` | `[`, `]` | Previous or next hunk |
 | `prev_thread`, `next_thread` | `shift+n`, `n` | Previous or next thread |
 | `switch_panel` | `tab` | Switch between sidebar and stream |
+| `toggle_sidebar` | `f` | Show or hide the sidebar |
 | `comment` | `c` | Comment on the line, the selected range, or the file when the cursor is on a file header |
 | `select_range` | `v` | Start a range |
 | `reply` | `r` | Reply to the focused thread |
@@ -358,6 +359,13 @@ How the body behaves (built in M4):
   against the right edge. The name is cut with `…` before the counts. The sidebar is left out below 50
   columns and follows the file under the cursor. With the sidebar focused, `up` and `down` move to the
   previous and next file, and the page keys move by a page of files. A click on a heading does nothing.
+- `toggle_sidebar` hides the sidebar and shows it again. While it is hidden the stream has the whole
+  width and is laid out again, as after a resize, so cards and the editor box are as wide as the pane.
+  Hiding it moves the focus to the stream. While the sidebar is not drawn, because it is hidden or the
+  pane is under 50 columns, `switch_panel` does nothing and the focus stays on the stream. In a pane
+  under 50 columns the key still flips the state, which shows once the pane is wider, and the status
+  line says the pane is too narrow to show the sidebar. The state is not saved: `areas` in `view.rs` is
+  the one place that decides whether the sidebar is drawn, from the state and the width.
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
   inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).

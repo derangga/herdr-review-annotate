@@ -460,6 +460,7 @@ impl App {
                 self.view.toggle_layout();
                 self.rebuild_view();
             }
+            Action::ToggleSidebar => self.toggle_sidebar(),
             Action::Comment => self.start_comment(),
             Action::SelectRange => self.view.toggle_select(),
             Action::Reply => self.start_reply(),
@@ -469,6 +470,19 @@ impl App {
             _ => {
                 self.view.apply(action);
             }
+        }
+    }
+
+    /// `toggle_sidebar`: show or hide the sidebar and lay the stream out at its new width. A pane
+    /// too narrow for a sidebar keeps the choice for when it is wider, and says so either way,
+    /// since nothing on screen moves.
+    fn toggle_sidebar(&mut self) {
+        self.view.toggle_sidebar();
+        if self.view.needs_rebuild() {
+            self.rebuild_view();
+        }
+        if self.view.too_narrow() {
+            self.notice("the pane is too narrow to show the sidebar");
         }
     }
 
@@ -1049,7 +1063,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 /// The editor, as wide as the stream, under the cursor or under the last of `rows`, the rows a new
 /// comment points at, whichever is lower.
 fn draw_compose(frame: &mut Frame, app: &App, compose: &Compose, rows: Option<(usize, usize)>) {
-    let stream = areas(frame.area()).stream;
+    let stream = areas(frame.area(), app.view.sidebar).stream;
     let under = rows.map_or(app.view.cursor, |(_, high)| high.max(app.view.cursor));
     let at = under.saturating_sub(app.view.scroll);
     let height = compose
@@ -3138,6 +3152,157 @@ diff --git a/b.rs b/b.rs
                 .lines()
                 .any(|row| row.contains("old") && row.contains("new"))
         );
+    }
+
+    fn act(fixture: &Fixture, app: &mut App, action: Action) {
+        fixture.with_git(|git| app.handle(action, git));
+    }
+
+    /// The column the open card's box starts at and the one it ends at, in the pane at `width`.
+    fn card_span(app: &mut App, width: u16) -> (usize, usize) {
+        let (rows, _) = drawn(app, width);
+        let top = rows.iter().find(|row| row.contains("Your note")).unwrap();
+        let cells = top.chars().collect::<Vec<_>>();
+        let start = cells.iter().position(|c| *c == '╭').unwrap();
+        (start, cells.iter().position(|c| *c == '╮').unwrap())
+    }
+
+    #[test]
+    fn the_sidebar_key_hides_and_shows_it_and_the_cards_follow_the_stream_s_width() {
+        // The sidebar is 20 columns of an 80 column pane and 32 of a 130 column one.
+        for (width, sidebar) in [(80, 20), (130, 32)] {
+            let fixture = Fixture::new(&format!("sidebar-toggle-{width}"));
+            write_log(&fixture, &[thread_event("u1", Author::User, "fix")]);
+            let mut app = opened(&fixture, patch_text());
+            let last = usize::from(width) - 1;
+            assert_eq!(card_span(&mut app, width), (sidebar, last));
+            assert!(drawn(&mut app, width).0.join("\n").contains("•M a.rs"));
+            act(&fixture, &mut app, Action::ToggleSidebar);
+            assert!(!app.view.sidebar_drawn());
+            assert_eq!(card_span(&mut app, width), (0, last));
+            let (rows, _) = drawn(&mut app, width);
+            assert!(rows[0].starts_with("M a.rs"), "{}", rows[0]);
+            assert!(!rows.join("\n").contains("•M a.rs"));
+            act(&fixture, &mut app, Action::ToggleSidebar);
+            assert!(app.view.sidebar_drawn());
+            assert_eq!(card_span(&mut app, width), (sidebar, last));
+            assert_eq!(app.message(), None);
+        }
+    }
+
+    #[test]
+    fn the_editor_box_is_as_wide_as_the_pane_while_the_sidebar_is_hidden() {
+        let fixture = Fixture::new("sidebar-editor");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, chars("fjjjc"));
+        let (rows, buffer) = drawn(&mut app, 80);
+        assert!(
+            rows[4].starts_with("╭ Draft note - a.rs R1 ─"),
+            "{}",
+            rows[4]
+        );
+        assert!(rows[4].ends_with("─╮"), "{}", rows[4]);
+        assert!(rows[6].starts_with("╰─"), "{}", rows[6]);
+        // The mark of the commented row is in the pane's first column.
+        assert_eq!(buffer[(0, 3)].symbol(), "▌");
+    }
+
+    #[test]
+    fn hiding_the_sidebar_moves_the_focus_to_the_stream_and_switch_panel_does_nothing() {
+        let fixture = Fixture::new("sidebar-focus");
+        let mut app = opened(&fixture, patch_text());
+        act(&fixture, &mut app, Action::SwitchPanel);
+        assert_eq!(app.view.panel, crate::view::Panel::Sidebar);
+        act(&fixture, &mut app, Action::ToggleSidebar);
+        assert_eq!(app.view.panel, crate::view::Panel::Stream);
+        act(&fixture, &mut app, Action::SwitchPanel);
+        assert_eq!(app.view.panel, crate::view::Panel::Stream);
+        // With the focus on the stream, down moves one row and not one file.
+        act(&fixture, &mut app, Action::Down);
+        assert_eq!(app.view.cursor, 1);
+        act(&fixture, &mut app, Action::ToggleSidebar);
+        act(&fixture, &mut app, Action::SwitchPanel);
+        assert_eq!(app.view.panel, crate::view::Panel::Sidebar);
+    }
+
+    #[test]
+    fn a_pane_under_50_columns_keeps_the_focus_on_the_stream_and_says_it_is_too_narrow() {
+        let fixture = Fixture::new("sidebar-narrow");
+        let mut app = opened(&fixture, patch_text());
+        act(&fixture, &mut app, Action::SwitchPanel);
+        // The pane shrinks with the sidebar focused.
+        app.resize(Rect::new(0, 0, 49, 12));
+        assert_eq!(app.view.panel, crate::view::Panel::Stream);
+        act(&fixture, &mut app, Action::SwitchPanel);
+        assert_eq!(app.view.panel, crate::view::Panel::Stream);
+        act(&fixture, &mut app, Action::ToggleSidebar);
+        assert!(!app.view.sidebar, "the key still flips the state");
+        let said = Some((
+            Tone::Notice,
+            "the pane is too narrow to show the sidebar".to_owned(),
+        ));
+        assert_eq!(app.status, said);
+        assert!(drawn(&mut app, 49).0[11].contains("too narrow to show the sidebar"));
+        act(&fixture, &mut app, Action::ToggleSidebar);
+        assert!(app.view.sidebar);
+        assert_eq!(app.status, said);
+        // Wide again, the sidebar is back, since the state is the one the key left.
+        app.resize(Rect::new(0, 0, 80, 12));
+        assert!(app.view.sidebar_drawn());
+    }
+
+    #[test]
+    fn a_click_and_the_plus_land_on_their_row_and_column_while_the_sidebar_is_hidden() {
+        let fixture = Fixture::new("sidebar-mouse");
+        let mut app = opened(&fixture, patch_text());
+        act(&fixture, &mut app, Action::ToggleSidebar);
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let click = event::MouseEventKind::Down(event::MouseButton::Left);
+        // The stream starts at column 0. A click in what was the sidebar moves the cursor.
+        app.mouse(mouse(click, 10, 2));
+        assert_eq!(app.view.cursor, 2);
+        assert_eq!(app.view.panel, crate::view::Panel::Stream);
+        assert!(app.compose.is_none());
+        app.mouse(mouse(event::MouseEventKind::Moved, 10, 3));
+        let (rows, _) = drawn(&mut app, 80);
+        assert!(rows[3].starts_with("[+]"), "{}", rows[3]);
+        app.mouse(mouse(click, 1, 3));
+        let compose = app.compose.as_ref().unwrap();
+        assert!(matches!(&compose.draft, Draft::Comment(anchor)
+            if anchor.target == AnchorTarget::Line { side: Side::New, line: 1, text: "new".into() }));
+    }
+
+    #[test]
+    fn the_sidebar_key_can_be_rebound_and_the_help_overlay_lists_it() {
+        let fixture = Fixture::new("sidebar-rebind");
+        let mut app = opened(&fixture, patch_text());
+        app.view.help = true;
+        app.resize(Rect::new(0, 0, 80, 30));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(text.contains("f                show or hide the sidebar"));
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[keys]\ntoggle_sidebar = \"g\"\n",
+        )
+        .unwrap();
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('f')]);
+        assert!(app.view.sidebar_drawn());
+        press(&fixture, &mut app, [key('g')]);
+        assert!(!app.view.sidebar_drawn());
     }
 
     #[test]

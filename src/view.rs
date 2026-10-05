@@ -606,14 +606,16 @@ pub struct Areas {
 /// Narrower than this and the sidebar is left out.
 const SIDEBAR_MIN_TOTAL: u16 = 50;
 
-pub fn areas(area: Rect) -> Areas {
+/// Where each part goes in a pane of `area`. `sidebar` is whether the user wants the sidebar. It
+/// is drawn when they do and the pane is wide enough, and this is the one place that decides.
+pub fn areas(area: Rect, sidebar: bool) -> Areas {
     let [body, warnings, status] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
-    if area.width < SIDEBAR_MIN_TOTAL {
+    if !sidebar || area.width < SIDEBAR_MIN_TOTAL {
         return Areas {
             sidebar: None,
             stream: body,
@@ -658,6 +660,8 @@ pub struct View {
     pub panel: Panel,
     pub help: bool,
     pub area: Rect,
+    /// The user wants the sidebar. A pane under 50 columns leaves it out all the same.
+    pub sidebar: bool,
     /// The row a range started at, while one is being selected.
     pub select: Option<usize>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
@@ -689,6 +693,7 @@ impl Default for View {
             panel: Panel::Stream,
             help: false,
             area: Rect::default(),
+            sidebar: true,
             select: None,
             forced: None,
             half: None,
@@ -698,8 +703,35 @@ impl Default for View {
 }
 
 impl View {
+    fn areas(&self) -> Areas {
+        areas(self.area, self.sidebar)
+    }
+
+    /// The sidebar is on screen: the user wants it and the pane is wide enough.
+    pub fn sidebar_drawn(&self) -> bool {
+        self.areas().sidebar.is_some()
+    }
+
+    /// No sidebar fits in a pane this narrow, whatever the user wants.
+    pub fn too_narrow(&self) -> bool {
+        areas(self.area, true).sidebar.is_none()
+    }
+
+    /// Show the sidebar, or hide it and give the stream its columns. The caller lays the stream
+    /// out again. The focus cannot stay on a sidebar that is gone.
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar = !self.sidebar;
+        self.leave_hidden_sidebar();
+    }
+
+    fn leave_hidden_sidebar(&mut self) {
+        if !self.sidebar_drawn() {
+            self.panel = Panel::Stream;
+        }
+    }
+
     fn height(&self) -> usize {
-        usize::from(areas(self.area).stream.height).max(1)
+        usize::from(self.areas().stream.height).max(1)
     }
 
     /// How the diff is drawn: what the user chose, else side by side in a wide pane.
@@ -716,7 +748,7 @@ impl View {
     /// moved once, so a pane whose Herdr drops motion still offers it. Only a code row has one. In
     /// a split row it sits on the half under the mouse, in the gutter where the sign is.
     pub fn plus(&self) -> Option<Plus> {
-        let stream = areas(self.area).stream;
+        let stream = self.areas().stream;
         let (row, half) = match self.pointer {
             Some((column, line)) => {
                 let inside = column >= stream.x
@@ -952,7 +984,7 @@ impl View {
     }
 
     fn stream_width(&self) -> usize {
-        usize::from(areas(self.area).stream.width)
+        usize::from(self.areas().stream.width)
     }
 
     /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
@@ -990,6 +1022,7 @@ impl View {
 
     pub fn resize(&mut self, area: Rect) {
         self.area = area;
+        self.leave_hidden_sidebar();
         self.ensure_visible();
     }
 
@@ -1076,6 +1109,7 @@ impl View {
             Action::NextHunk => self.jump(true, true),
             Action::PrevThread => self.jump(false, false),
             Action::NextThread => self.jump(false, true),
+            Action::SwitchPanel if !self.sidebar_drawn() => {}
             Action::SwitchPanel => {
                 self.panel = match self.panel {
                     Panel::Sidebar => Panel::Stream,
@@ -1090,7 +1124,7 @@ impl View {
 
     /// The wheel scrolls and a click moves the cursor. Neither can be remapped.
     pub fn mouse(&mut self, event: MouseEvent) -> bool {
-        let areas = areas(self.area);
+        let areas = self.areas();
         let at = |rect: Rect| {
             event.column >= rect.x
                 && event.column < rect.x + rect.width
@@ -1386,7 +1420,7 @@ pub fn draw(
     mark: Option<(usize, usize)>,
     syntax: &Cache,
 ) {
-    let areas = areas(frame.area());
+    let areas = areas(frame.area(), view.sidebar);
     let cursor_style = Style::new().bg(theme.cursor);
     let height = usize::from(areas.stream.height);
     let width = usize::from(areas.stream.width);
@@ -1449,7 +1483,7 @@ pub fn draw(
 /// Mark rows `low..=high` of the stream as what the open editor comments on: a tint across the
 /// row and a bar in its first cell. A cell that holds a digit of a line number keeps it.
 fn draw_mark(frame: &mut Frame, view: &View, (low, high): (usize, usize), theme: &Theme) {
-    let area = areas(frame.area()).stream;
+    let area = areas(frame.area(), view.sidebar).stream;
     let last = view.scroll + usize::from(area.height).saturating_sub(1);
     for row in low.max(view.scroll)..=high.min(last) {
         let at = row - view.scroll;
@@ -2126,7 +2160,7 @@ Binary files a/img.png and b/img.png differ
         view.mouse(mouse(MouseEventKind::ScrollUp, 40, 3));
         assert_eq!(view.scroll, 3);
         // A click in the stream.
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         view.mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             stream.x + 4,
@@ -2844,7 +2878,7 @@ diff --git a/top.md b/top.md
             Ok(line(Side::New, 20, "add21"))
         );
         // Clicks: the left half is the old side, the right half the new side.
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         let (left, _) = split_widths(usize::from(stream.width));
         let y = stream.y + 4;
         click(&mut view, stream.x + 3, y);
@@ -2960,7 +2994,7 @@ diff --git a/top.md b/top.md
     #[test]
     fn hovering_a_code_row_shows_a_plus_on_it_and_nowhere_else() {
         let (diff, mut view) = plain();
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         // Row 2 is a1, a context line. Rows 0 and 1 are the file header and the hunk header.
         motion(&mut view, stream.x + 12, stream.y + 2);
         assert_eq!(view.plus(), Some(Plus { row: 2, col: 0 }));
@@ -2985,7 +3019,7 @@ diff --git a/top.md b/top.md
         view.move_to(1);
         assert_eq!(view.plus(), None);
         // Once the mouse has moved, the cursor no longer shows one.
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         view.move_to(3);
         motion(&mut view, 2, 0);
         assert_eq!(view.plus(), None);
@@ -2996,7 +3030,7 @@ diff --git a/top.md b/top.md
     #[test]
     fn the_plus_follows_the_wheel_while_the_mouse_stands_still() {
         let (_, mut view) = plain();
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         motion(&mut view, stream.x + 12, stream.y + 2);
         assert_eq!(view.plus().map(|p| p.row), Some(2));
         view.mouse(MouseEvent {
@@ -3011,7 +3045,7 @@ diff --git a/top.md b/top.md
     #[test]
     fn a_click_on_the_plus_asks_for_a_comment_and_a_click_elsewhere_only_moves_the_cursor() {
         let (_, mut view) = plain();
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         let down = |view: &mut View, column: u16, row: u16| {
             view.mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -3037,7 +3071,7 @@ diff --git a/top.md b/top.md
     fn in_a_split_row_the_plus_sits_on_the_hovered_half_and_a_click_on_it_chooses_that_half() {
         let diff = diff_of(SPLIT_PATCH);
         let mut view = view(&diff, &Review::default(), 130, 14);
-        let stream = areas(view.area).stream;
+        let stream = view.areas().stream;
         let (left, _) = split_widths(usize::from(stream.width));
         let y = stream.y + 4;
         motion(&mut view, stream.x + 10, y);
