@@ -119,7 +119,9 @@ Fold rules:
 ### 3.3 Writing
 
 Every mutation is one call, `store::write(dir, now, build)`. It opens `lock` and tries
-`File::try_lock` every 50 ms for up to 2 seconds, then gives up with `Busy`. Under the lock it reads
+`File::try_lock` every 2 ms for up to 2 seconds, then gives up with `Busy`. A writer that releases the
+lock waits 2 ms before returning, so a waiting process can take it. Without that pause, 8 processes in
+a loop starved one that polled every 50 ms. Under the lock it reads
 and folds `review.jsonl`, calls `build` with the folded review to validate the request and produce the
 events, writes all lines with one `write_all` on an `O_APPEND` handle, and drops the lock. Ids (`u<n>`
 for the user, `a<n>` for agents, `b<n>` for send batches) are the highest counter in the folded review
@@ -690,7 +692,7 @@ review pane can make the agent's own `git` commands fail while both run in one w
 ```
 -> store::write(dir, now, build)
   -> open lock file                        R: dir     E: Io -> propagate
-  -> try_lock, up to 2 s                              E: held -> retry every 50 ms, then Busy
+  -> try_lock, up to 2 s                              E: held -> retry every 2 ms, then Busy
   -> read review.jsonl, fold               R: dir     E: Io -> propagate
                                                       E: bad line -> escape, Warning::SkippedLine
   -> build(&Review) -> Vec<Event>                     E: CommandError -> propagate, nothing written

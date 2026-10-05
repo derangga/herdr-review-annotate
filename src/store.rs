@@ -2,7 +2,16 @@
 //!
 //! This part is pure. Reading and writing the file is in the functions below the fold.
 
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::fs::{DirBuilder, File, OpenOptions, TryLockError};
+use std::hash::{Hash, Hasher};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +220,10 @@ impl Ids {
         BatchId(format!("b{}", self.batch))
     }
 
+    fn seen_batch(&mut self, batch: &BatchId) {
+        self.batch = self.batch.max(counter(batch.as_str(), 'b').unwrap_or(0));
+    }
+
     fn seen(&mut self, id: &CommentId) {
         let n = counter(id.as_str(), 'u')
             .or_else(|| counter(id.as_str(), 'a'))
@@ -329,6 +342,10 @@ impl Thread {
         std::iter::once(&self.root).chain(&self.replies)
     }
 
+    fn comments_mut(&mut self) -> impl Iterator<Item = &mut Comment> {
+        std::iter::once(&mut self.root).chain(&mut self.replies)
+    }
+
     pub const fn is_open(&self) -> bool {
         matches!(self.status, Status::Open)
     }
@@ -359,24 +376,6 @@ impl Review {
     }
 }
 
-fn comment_mut<'a>(threads: &'a mut [Thread], id: &CommentId) -> Option<&'a mut Comment> {
-    threads.iter_mut().find_map(|thread| {
-        std::iter::once(&mut thread.root)
-            .chain(&mut thread.replies)
-            .find(|comment| comment.id == *id)
-    })
-}
-
-fn root_mut<'a>(threads: &'a mut [Thread], id: &CommentId) -> Option<&'a mut Thread> {
-    threads.iter_mut().find(|thread| thread.root.id == *id)
-}
-
-fn known(threads: &[Thread], id: &CommentId) -> bool {
-    threads
-        .iter()
-        .any(|thread| thread.comments().any(|comment| comment.id == *id))
-}
-
 /// The anchor of a root `add`, or `None` when the event lacks a field its shape needs.
 fn anchor(add: &Add) -> Option<Anchor> {
     let target = match (add.side, add.line, &add.line_text) {
@@ -404,91 +403,133 @@ fn anchor(add: &Add) -> Option<Anchor> {
     })
 }
 
-fn apply_add(review: &mut Review, by: &Author, add: &Add) {
-    if known(&review.threads, &add.id) || add.id.is_user() != by.is_user() {
-        return;
-    }
-    let comment = Comment {
-        id: add.id.clone(),
-        parent: add.parent.clone(),
-        author: by.clone(),
-        body: add.body.clone(),
-        sent_batch: None,
-        edited_since_sent: false,
-    };
-    if let Some(parent) = &add.parent {
-        let Some(thread) = root_mut(&mut review.threads, parent) else {
-            return;
-        };
-        thread.replies.push(comment);
-    } else {
-        let Some(anchor) = anchor(add) else { return };
-        review.threads.push(Thread {
-            root: comment,
-            anchor,
-            replies: Vec::new(),
-            status: Status::Open,
-            is_new: false,
-            reopened: false,
-            unsent: false,
-        });
-    }
-    review.ids.seen(&add.id);
+/// A review being folded, with the position of the thread that holds each comment id.
+struct Fold {
+    review: Review,
+    index: HashMap<CommentId, usize>,
 }
 
-fn apply(review: &mut Review, event: &Event) {
-    let threads = &mut review.threads;
-    match &event.kind {
-        Kind::Add(add) => apply_add(review, &event.by, add),
-        Kind::Edit { id, body } => {
-            // Nobody edits the other side's words (ADR 0004).
-            if let Some(comment) =
-                comment_mut(threads, id).filter(|c| c.author.is_user() == event.by.is_user())
-            {
-                comment.body.clone_from(body);
-                comment.edited_since_sent =
-                    comment.author.is_user() && comment.sent_batch.is_some();
+impl Fold {
+    fn thread_of(&mut self, id: &CommentId) -> Option<&mut Thread> {
+        let at = *self.index.get(id)?;
+        self.review.threads.get_mut(at)
+    }
+
+    fn comment_mut(&mut self, id: &CommentId) -> Option<&mut Comment> {
+        self.thread_of(id)?.comments_mut().find(|c| c.id == *id)
+    }
+
+    fn root_mut(&mut self, id: &CommentId) -> Option<&mut Thread> {
+        self.thread_of(id).filter(|thread| thread.root.id == *id)
+    }
+
+    fn reindex(&mut self) {
+        self.index.clear();
+        for (at, thread) in self.review.threads.iter().enumerate() {
+            for comment in thread.comments() {
+                self.index.insert(comment.id.clone(), at);
             }
         }
-        Kind::Delete { id } => {
-            let own =
-                comment_mut(threads, id).is_some_and(|c| c.author.is_user() == event.by.is_user());
-            if own {
-                threads.retain(|thread| thread.root.id != *id);
-                for thread in threads.iter_mut() {
-                    thread.replies.retain(|reply| reply.id != *id);
+    }
+
+    fn add(&mut self, by: &Author, add: &Add) {
+        if self.index.contains_key(&add.id) || add.id.is_user() != by.is_user() {
+            return;
+        }
+        let comment = Comment {
+            id: add.id.clone(),
+            parent: add.parent.clone(),
+            author: by.clone(),
+            body: add.body.clone(),
+            sent_batch: None,
+            edited_since_sent: false,
+        };
+        let at = if let Some(parent) = &add.parent {
+            let Some(at) = self.index.get(parent).copied() else {
+                return;
+            };
+            let Some(thread) = self.root_mut(parent) else {
+                return;
+            };
+            thread.replies.push(comment);
+            at
+        } else {
+            let Some(anchor) = anchor(add) else { return };
+            self.review.threads.push(Thread {
+                root: comment,
+                anchor,
+                replies: Vec::new(),
+                status: Status::Open,
+                is_new: false,
+                reopened: false,
+                unsent: false,
+            });
+            self.review.threads.len() - 1
+        };
+        self.index.insert(add.id.clone(), at);
+        self.review.ids.seen(&add.id);
+    }
+
+    fn apply(&mut self, event: &Event) {
+        let user = event.by.is_user();
+        match &event.kind {
+            Kind::Add(add) => self.add(&event.by, add),
+            Kind::Edit { id, body } => {
+                // Nobody edits the other side's words (ADR 0004).
+                if let Some(comment) = self.comment_mut(id).filter(|c| c.author.is_user() == user) {
+                    comment.body.clone_from(body);
+                    comment.edited_since_sent =
+                        comment.author.is_user() && comment.sent_batch.is_some();
                 }
             }
-        }
-        Kind::Resolve { id } => {
-            if let Some(thread) = root_mut(threads, id).filter(|thread| thread.is_open()) {
-                thread.status = Status::Resolved {
-                    by: event.by.clone(),
-                };
-                thread.is_new = !event.by.is_user();
-            }
-        }
-        Kind::Reopen { id } => {
-            if let Some(thread) = root_mut(threads, id).filter(|thread| !thread.is_open()) {
-                thread.status = Status::Open;
-                thread.is_new = false;
-                thread.reopened = event.by.is_user();
-            }
-        }
-        Kind::Sent { ids, batch } => {
-            for id in ids {
-                if let Some(comment) = comment_mut(threads, id) {
-                    comment.sent_batch = Some(batch.clone());
-                    comment.edited_since_sent = false;
+            Kind::Delete { id } => {
+                if self
+                    .comment_mut(id)
+                    .is_none_or(|c| c.author.is_user() != user)
+                {
+                    return;
                 }
-                if let Some(thread) = root_mut(threads, id) {
-                    thread.reopened = false;
+                if self.root_mut(id).is_some() {
+                    self.review.threads.retain(|thread| thread.root.id != *id);
+                    self.reindex();
+                } else {
+                    if let Some(thread) = self.thread_of(id) {
+                        thread.replies.retain(|reply| reply.id != *id);
+                    }
+                    self.index.remove(id);
                 }
             }
-        }
-        Kind::Seen { id } => {
-            if let Some(thread) = root_mut(threads, id) {
-                thread.is_new = false;
+            Kind::Resolve { id } => {
+                if let Some(thread) = self.root_mut(id).filter(|thread| thread.is_open()) {
+                    thread.status = Status::Resolved {
+                        by: event.by.clone(),
+                    };
+                    thread.is_new = !user;
+                }
+            }
+            Kind::Reopen { id } => {
+                if let Some(thread) = self.root_mut(id).filter(|thread| !thread.is_open()) {
+                    thread.status = Status::Open;
+                    thread.is_new = false;
+                    thread.reopened = user;
+                }
+            }
+            Kind::Sent { ids, batch } => {
+                for id in ids {
+                    if let Some(comment) = self.comment_mut(id) {
+                        comment.sent_batch = Some(batch.clone());
+                        comment.edited_since_sent = false;
+                    }
+                    if let Some(thread) = self.root_mut(id) {
+                        thread.reopened = false;
+                    }
+                }
+                self.review.ids.seen_batch(batch);
+            }
+            Kind::Seen { id } => {
+                if let Some(thread) = self.root_mut(id) {
+                    thread.is_new = false;
+                }
             }
         }
     }
@@ -497,10 +538,14 @@ fn apply(review: &mut Review, event: &Event) {
 /// Apply the events in order. An event that names an unknown id, or breaks the rights rule, is
 /// skipped.
 pub fn fold(events: &[Event]) -> Review {
-    let mut review = Review::default();
+    let mut fold = Fold {
+        review: Review::default(),
+        index: HashMap::new(),
+    };
     for event in events {
-        apply(&mut review, event);
+        fold.apply(event);
     }
+    let mut review = fold.review;
     for thread in &mut review.threads {
         let unsent_user = thread
             .comments()
@@ -508,6 +553,242 @@ pub fn fold(events: &[Event]) -> Review {
         thread.unsent = unsent_user || thread.reopened;
     }
     review
+}
+
+/// The disk failed, or the lock was not free in time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    Io { path: PathBuf, kind: io::ErrorKind },
+    Busy,
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, kind } => write!(f, "{}: {kind}", path.display()),
+            Self::Busy => f.write_str("review is busy, try again"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+/// Not an error. Collected and shown, and the operation still succeeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    SkippedLine(usize),
+    Config(String),
+    MetaUnreadable,
+    SentNotRecorded,
+}
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SkippedLine(1) => f.write_str("1 unreadable event"),
+            Self::SkippedLine(n) => write!(f, "{n} unreadable events"),
+            Self::Config(message) => f.write_str(message),
+            Self::MetaUnreadable => f.write_str("meta.json is unreadable and was reset"),
+            Self::SentNotRecorded => {
+                f.write_str("sent, but not recorded, the next send will repeat these comments")
+            }
+        }
+    }
+}
+
+/// Why `write` did not write: the store failed, or `build` refused the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError<E> {
+    Store(StoreError),
+    Build(E),
+}
+
+impl<E> From<StoreError> for WriteError<E> {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+const REVIEW_FILE: &str = "review.jsonl";
+const LOCK_FILE: &str = "lock";
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+const LOCK_POLL: Duration = Duration::from_millis(2);
+
+fn io_error(path: &Path) -> impl FnOnce(io::Error) -> StoreError {
+    let path = path.to_path_buf();
+    move |error| StoreError::Io {
+        path,
+        kind: error.kind(),
+    }
+}
+
+/// `${XDG_STATE_HOME:-~/.local/state}/herdr-review`, on macOS and Linux alike (ADR 0009).
+pub fn state_base(xdg_state_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let state = match xdg_state_home.filter(|path| path.is_absolute()) {
+        Some(xdg) => xdg.to_path_buf(),
+        None => home?.join(".local/state"),
+    };
+    Some(state.join("herdr-review"))
+}
+
+/// The directory of one review: the hash of the canonical root, in hex.
+pub fn state_dir(base: &Path, root: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    base.join(format!("{:016x}", hasher.finish()))
+}
+
+/// Create `dir` with mode 0700 when it is missing.
+pub(crate) fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(io_error(dir))
+}
+
+/// The exclusive lock on a review directory. The kernel drops it when the holder exits or dies.
+#[derive(Debug)]
+pub(crate) struct Lock {
+    file: File,
+}
+
+impl Drop for Lock {
+    /// Unlock, then pause. A writer that loops would otherwise take the lock again before a waiter
+    /// polling every few milliseconds sees it free, and the waiter would time out with `Busy`.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+        sleep(LOCK_POLL);
+    }
+}
+
+/// Take the lock, trying every 2 ms for up to 2 seconds.
+pub(crate) fn lock(dir: &Path) -> Result<Lock, StoreError> {
+    let path = dir.join(LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io_error(&path))?;
+    let deadline = Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Lock { file }),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => sleep(LOCK_POLL),
+            Err(TryLockError::WouldBlock) => return Err(StoreError::Busy),
+            Err(TryLockError::Error(error)) => return Err(io_error(&path)(error)),
+        }
+    }
+}
+
+/// What one read of the log returned.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub events: Vec<Event>,
+    /// Complete lines that did not parse.
+    pub skipped: usize,
+    /// Where the next read starts: after the last complete line.
+    pub offset: u64,
+    /// The file ends in a line with no newline, which is not read.
+    pub unterminated: bool,
+    /// The file is shorter than the offset asked for, so the read started at 0.
+    pub restarted: bool,
+}
+
+/// Read the complete lines of `review.jsonl` from byte `from`. A missing file is an empty log.
+pub fn read_events(dir: &Path, from: u64) -> Result<Chunk, StoreError> {
+    let path = dir.join(REVIEW_FILE);
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Chunk {
+                restarted: from > 0,
+                ..Chunk::default()
+            });
+        }
+        Err(error) => return Err(io_error(&path)(error)),
+    };
+    let len = file.metadata().map_err(io_error(&path))?.len();
+    let restarted = from > len;
+    let start = if restarted { 0 } else { from };
+    file.seek(SeekFrom::Start(start)).map_err(io_error(&path))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(io_error(&path))?;
+    let complete = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let (lines, tail) = bytes.split_at_checked(complete).unwrap_or_default();
+    let mut chunk = Chunk {
+        offset: start + complete as u64,
+        unterminated: !tail.is_empty(),
+        restarted,
+        ..Chunk::default()
+    };
+    for line in lines
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        match serde_json::from_slice(line) {
+            Ok(event) => chunk.events.push(event),
+            Err(_) => chunk.skipped += 1,
+        }
+    }
+    Ok(chunk)
+}
+
+fn fold_chunk(chunk: &Chunk) -> Review {
+    let mut review = fold(&chunk.events);
+    review.skipped_lines = chunk.skipped + usize::from(chunk.unterminated);
+    review
+}
+
+/// Read the whole log and fold it. Readers take no lock.
+pub fn read(dir: &Path) -> Result<Review, StoreError> {
+    read_events(dir, 0).map(|chunk| fold_chunk(&chunk))
+}
+
+/// Run one mutation under the lock: read and fold the log, let `build` validate the request and
+/// produce the events, and append them with one `write_all`.
+///
+/// `build` gets the folded review and `now`, and returns the events with a value for the caller.
+/// No events means nothing is written. An error from `build` leaves the file unchanged.
+pub fn write<T, E>(
+    dir: &Path,
+    now: &str,
+    build: impl FnOnce(&Review, &str) -> Result<(Vec<Event>, T), E>,
+) -> Result<T, WriteError<E>> {
+    ensure_dir(dir)?;
+    let _lock = lock(dir)?;
+    let chunk = read_events(dir, 0)?;
+    let review = fold_chunk(&chunk);
+    let (events, value) = build(&review, now).map_err(WriteError::Build)?;
+    if events.is_empty() {
+        return Ok(value);
+    }
+    let path = dir.join(REVIEW_FILE);
+    // A crashed writer left half a line. End it, so the next event does not join it.
+    let mut bytes = if chunk.unterminated {
+        b"\n".to_vec()
+    } else {
+        Vec::new()
+    };
+    for event in &events {
+        serde_json::to_writer(&mut bytes, event)
+            .map_err(io::Error::from)
+            .map_err(io_error(&path))?;
+        bytes.push(b'\n');
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(&bytes))
+        .map_err(io_error(&path))?;
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -518,6 +799,8 @@ pub fn fold(events: &[Event]) -> Review {
     clippy::panic
 )]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     fn agent() -> Author {
@@ -928,5 +1211,255 @@ mod tests {
         assert!(matches!(add(file), Some(AnchorTarget::File)));
         assert!(add(|a| a.line_text = None).is_none());
         assert!(add(|a| a.path = None).is_none());
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("herdr-review-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn add_root(review: &Review, now: &str) -> Result<(Vec<Event>, CommentId), ()> {
+        let id = review.ids.clone().comment(&Author::User);
+        let Kind::Add(mut add) = root(&Author::User, id.as_str()).kind else {
+            unreachable!()
+        };
+        add.id = id.clone();
+        Ok((
+            vec![Event {
+                at: now.into(),
+                by: Author::User,
+                kind: Kind::Add(add),
+            }],
+            id,
+        ))
+    }
+
+    fn log(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(REVIEW_FILE)).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_state_directory_follows_xdg_then_home() {
+        let base = |xdg: Option<&str>, home: Option<&str>| {
+            state_base(xdg.map(Path::new), home.map(Path::new))
+        };
+        assert_eq!(base(Some("/x"), Some("/h")), Some("/x/herdr-review".into()));
+        assert_eq!(
+            base(None, Some("/h")),
+            Some("/h/.local/state/herdr-review".into())
+        );
+        assert_eq!(
+            base(Some("rel"), Some("/h")),
+            Some("/h/.local/state/herdr-review".into())
+        );
+        assert_eq!(base(None, None), None);
+        let a = state_dir(Path::new("/s"), Path::new("/repo/a"));
+        assert_eq!(a, state_dir(Path::new("/s"), Path::new("/repo/a")));
+        assert_ne!(a, state_dir(Path::new("/s"), Path::new("/repo/b")));
+        assert_eq!(a.file_name().map(std::ffi::OsStr::len), Some(16));
+    }
+
+    #[test]
+    fn a_write_creates_private_files_and_a_read_folds_them() {
+        let dir = temp_dir("write");
+        let id = write(&dir, "t", add_root).unwrap();
+        assert_eq!(id.as_str(), "u1");
+        let id = write(&dir, "t", add_root).unwrap();
+        assert_eq!(id.as_str(), "u2");
+        let review = read(&dir).unwrap();
+        assert_eq!(review.threads.len(), 2);
+        assert_eq!(review.skipped_lines, 0);
+        let mode = |path: PathBuf| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dir.clone()), 0o700);
+        assert_eq!(mode(dir.join(REVIEW_FILE)), 0o600);
+        assert_eq!(mode(dir.join(LOCK_FILE)), 0o600);
+    }
+
+    #[test]
+    fn a_missing_log_reads_as_an_empty_review() {
+        let review = read(&temp_dir("missing")).unwrap();
+        assert!(review.threads.is_empty());
+    }
+
+    #[test]
+    fn a_build_error_leaves_the_file_unchanged() {
+        let dir = temp_dir("build-error");
+        write(&dir, "t", add_root).unwrap();
+        let before = log(&dir);
+        let result = write(&dir, "t", |_, _| {
+            Err::<(Vec<Event>, ()), _>("unknown id zz9")
+        });
+        assert_eq!(result, Err(WriteError::Build("unknown id zz9")));
+        assert_eq!(log(&dir), before);
+    }
+
+    #[test]
+    fn a_build_with_no_events_writes_nothing() {
+        let dir = temp_dir("no-events");
+        write(&dir, "t", |_, _| Ok::<_, ()>((Vec::new(), 7))).unwrap();
+        assert!(!dir.join(REVIEW_FILE).exists());
+    }
+
+    #[test]
+    fn a_lock_held_for_longer_than_two_seconds_gives_busy() {
+        let dir = temp_dir("busy");
+        ensure_dir(&dir).unwrap();
+        let held = lock(&dir).unwrap();
+        let started = Instant::now();
+        let result = write(&dir, "t", add_root);
+        let waited = started.elapsed();
+        assert_eq!(result, Err(WriteError::Store(StoreError::Busy)));
+        assert!(
+            waited >= Duration::from_millis(1900) && waited < Duration::from_secs(4),
+            "{waited:?}"
+        );
+        drop(held);
+        assert!(write(&dir, "t", add_root).is_ok());
+    }
+
+    #[test]
+    fn a_lock_freed_within_two_seconds_is_taken() {
+        let dir = temp_dir("freed");
+        ensure_dir(&dir).unwrap();
+        let held = lock(&dir).unwrap();
+        let release = std::thread::spawn(move || {
+            sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        assert!(write(&dir, "t", add_root).is_ok());
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn a_panic_in_build_releases_the_lock() {
+        let dir = temp_dir("panic");
+        let result = std::panic::catch_unwind(|| {
+            let _ = write::<(), ()>(&dir, "t", |_, _| panic!("broken invariant"));
+        });
+        assert!(result.is_err());
+        assert!(write(&dir, "t", add_root).is_ok());
+    }
+
+    #[test]
+    fn an_unusable_state_directory_is_an_io_error() {
+        let dir = temp_dir("io");
+        std::fs::write(&dir, "a file").unwrap();
+        let result = write(&dir.join("inner"), "t", add_root);
+        assert!(matches!(
+            result,
+            Err(WriteError::Store(StoreError::Io { .. }))
+        ));
+        std::fs::remove_file(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_log_is_an_io_error() {
+        let dir = temp_dir("unreadable");
+        std::fs::create_dir_all(dir.join(REVIEW_FILE)).unwrap();
+        assert!(matches!(read(&dir), Err(StoreError::Io { .. })));
+        assert!(matches!(
+            write(&dir, "t", add_root),
+            Err(WriteError::Store(StoreError::Io { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_appended_to_is_an_io_error() {
+        let dir = temp_dir("readonly");
+        write(&dir, "t", add_root).unwrap();
+        let path = dir.join(REVIEW_FILE);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let result = write(&dir, "t", add_root);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            result,
+            Err(WriteError::Store(StoreError::Io { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_bad_line_is_skipped_and_counted() {
+        let dir = temp_dir("bad-line");
+        write(&dir, "t", add_root).unwrap();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(dir.join(REVIEW_FILE))
+            .unwrap();
+        file.write_all(b"not json\n{\"kind\":\"nope\"}\n\n")
+            .unwrap();
+        drop(file);
+        write(&dir, "t", add_root).unwrap();
+        let review = read(&dir).unwrap();
+        assert_eq!(review.threads.len(), 2);
+        assert_eq!(review.skipped_lines, 2);
+    }
+
+    #[test]
+    fn a_file_cut_mid_line_yields_every_earlier_event_and_one_skipped_line() {
+        let dir = temp_dir("truncated");
+        write(&dir, "t", add_root).unwrap();
+        write(&dir, "t", add_root).unwrap();
+        let text = log(&dir);
+        std::fs::write(dir.join(REVIEW_FILE), &text[..text.len() - 20]).unwrap();
+        let review = read(&dir).unwrap();
+        assert_eq!(review.threads.len(), 1);
+        assert_eq!(review.skipped_lines, 1);
+    }
+
+    #[test]
+    fn a_write_after_a_cut_line_does_not_join_it() {
+        let dir = temp_dir("rejoin");
+        write(&dir, "t", add_root).unwrap();
+        let text = log(&dir);
+        std::fs::write(dir.join(REVIEW_FILE), &text[..text.len() - 20]).unwrap();
+        write(&dir, "t", add_root).unwrap();
+        let review = read(&dir).unwrap();
+        assert_eq!(review.threads.len(), 1);
+        assert_eq!(review.skipped_lines, 1);
+    }
+
+    #[test]
+    fn a_read_from_an_offset_returns_only_the_new_lines() {
+        let dir = temp_dir("offset");
+        write(&dir, "t", add_root).unwrap();
+        let first = read_events(&dir, 0).unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(first.offset, log(&dir).len() as u64);
+        assert!(read_events(&dir, first.offset).unwrap().events.is_empty());
+        write(&dir, "t", add_root).unwrap();
+        let next = read_events(&dir, first.offset).unwrap();
+        assert_eq!(next.events.len(), 1);
+        assert!(!next.restarted);
+        assert_eq!(next.offset, log(&dir).len() as u64);
+    }
+
+    #[test]
+    fn a_read_stops_before_a_line_that_is_still_being_written() {
+        let dir = temp_dir("partial");
+        write(&dir, "t", add_root).unwrap();
+        let done = log(&dir).len() as u64;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(dir.join(REVIEW_FILE))
+            .unwrap();
+        file.write_all(b"{\"kind\":\"add\"").unwrap();
+        let chunk = read_events(&dir, 0).unwrap();
+        assert_eq!(
+            (chunk.events.len(), chunk.skipped, chunk.offset),
+            (1, 0, done)
+        );
+        assert!(chunk.unterminated);
+    }
+
+    #[test]
+    fn a_file_shorter_than_the_offset_is_read_from_the_start() {
+        let dir = temp_dir("rewritten");
+        write(&dir, "t", add_root).unwrap();
+        let chunk = read_events(&dir, 100_000).unwrap();
+        assert!(chunk.restarted);
+        assert_eq!(chunk.events.len(), 1);
+        assert!(read_events(&temp_dir("none"), 5).unwrap().restarted);
     }
 }
