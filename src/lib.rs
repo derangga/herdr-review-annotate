@@ -15,6 +15,7 @@ pub mod herdr;
 pub mod keymap;
 pub mod meta;
 pub mod open;
+pub mod send;
 pub mod spike;
 pub mod store;
 pub mod tui;
