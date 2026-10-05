@@ -369,7 +369,7 @@ only in v1.
 | `switch_panel` | `tab` | Switch between sidebar and stream |
 | `toggle_sidebar` | `f` | Show or hide the sidebar |
 | `comment` | `c` | Comment on the line, the selected range, or the file when the cursor is on a file header |
-| `select_range` | `v` | Start a range |
+| `select_range` | `v` | Start or leave visual mode, to select a range |
 | `reply` | `r` | Reply to the focused thread |
 | `edit`, `delete` | `e`, `d` | Edit or delete your own focused comment |
 | `resolve` | `x` | Resolve or reopen the focused thread |
@@ -452,8 +452,20 @@ How the layout behaves (built after M6):
 - A code row under the mouse shows `[+]` in its gutter, in both layouts. In a split row it is on the half under
   the mouse, where the sign is, so the line number stays visible. A click on it opens the comment editor on that
   line and half, as `comment` does. Until the mouse has moved once, which tells the pane that Herdr delivers
-  motion, the `[+]` is on the cursor's row instead, and a click elsewhere only moves the cursor. There is no
-  drag to select a range.
+  motion, the `[+]` is on the cursor's row instead, and a click elsewhere only moves the cursor.
+- A drag selects a range, as in Neovim. A left press in the stream moves the cursor and starts a gesture. The
+  first `Drag(Left)` of the gesture enters visual mode with the press row as the start, even when it stays
+  on that row, and each later drag moves the cursor to the row it is on, whatever the column. Terminals send
+  a drag only when the cell changes, so a click that does not move never selects. A drag above the stream
+  scrolls up one row and puts the cursor on the top visible row, and one below scrolls down one row and
+  puts it on the bottom visible row. That is one row per event, with no timer, and it works while the pointer
+  is over the footer or outside the pane, since Herdr keeps sending drags. The selection follows the mouse
+  onto cards, file headers and other files as `j` and `k` do, and the footer shows the reason a range
+  across files cannot be commented. `Up(Left)` ends the gesture and visual mode stays. A drag with no
+  gesture behind it, because the press was in the sidebar or outside the stream, does nothing. A plain press
+  in the stream while in visual mode leaves it and moves the cursor. A press on the `[+]` keeps the selection
+  and the cursor moves to that row, so `comment` covers the range from where it started to that row. A
+  reload ends the gesture too.
 
 How syntax colours behave (built after M6, behind the `syntax` feature):
 
@@ -516,9 +528,22 @@ How comments are written (built in M5):
   a diff line it is that line, on the new side, or on the old side for a removed row. On a file header, or the
   note of a file with no rows, it is the file. A hunk header is refused. On a card it is the row the card
   hangs under, and a card in the not-in-diff block is refused.
-- `select_range` starts a range at the cursor and a second press drops it. The range runs to the cursor, stays
-  inside one file, takes the side of its first line, ends at the last line on that side, and keeps the text of
-  its first line. A reload drops it. `comment` uses it and ends it.
+- `select_range` enters and leaves visual mode. Visual mode is a selection being open, `View::select`, and has
+  no flag of its own. It starts at the cursor's row and the half the last click chose, and a second press
+  drops it. `Esc` also leaves it. `Esc` is a fixed key like the editor's and does nothing outside visual
+  mode. Every other action still works there, and motions grow the range. The range runs to the cursor, stays
+  inside one file, takes the side of its first line, ends at the last line on that side, and keeps the text
+  of its first line. On a split row, the half the selection started on is that side, whichever way the
+  cursor moves, provided the first row has a line there. A reload, `switch_spec`, `toggle_layout` and a
+  resize drop it. `comment` uses it and ends it. When the range cannot be commented on, `comment` says why
+  and visual mode stays.
+- In visual mode the status line has the selection colour behind the whole line. The left is a ` VISUAL `
+  chip in the visual colour (peach, on the base colour), then where a comment would point and how many lines
+  it covers, as `src/a.rs R12-18 (7 lines)`, `(1 line)` for one line, and the bare path for a file. When
+  `comment` would be refused, the reason takes that place in the removed colour. The spec chip, the agent and
+  the unsent chip are hidden until visual mode ends. A message still takes the left side. The right side is
+  `c comment  v/esc cancel`, with the first key of `comment` and `select_range` from the keymap, and it drops
+  off from the left like the other keys.
 - The editor is a rounded box in the theme's warning colour, placed and sized as the card of the saved
   comment will be. Its text has an empty row above it and a cell clear of each side. It is drawn under the
   cursor row, or under the last row of the range a new comment points at when that is lower,
@@ -532,7 +557,9 @@ How comments are written (built in M5):
   its first cell, and no `[+]` is drawn. The bar gives way to a digit of a line number.
 - A failed save keeps the editor open with its text, and the reason replaces the keys on the bottom border and
   is on the status line. The diff is not reloaded while the editor is open: a store change, `reload` and
-  regaining focus wait until it closes.
+  regaining focus wait until it closes. Visual mode follows the same rule for a store change and for
+  regaining focus, which do nothing until it ends, so the range is not dropped under the cursor. `reload`
+  is a key the user presses, so it still works there and ends visual mode.
 - A saved comment, reply, edit, delete, resolve or reopen is written with `actions.rs`, then the pane reads the
   log again and lays the stream out. It does not reload the diff. A new comment or reply moves the cursor to
   its thread's card.
@@ -616,7 +643,7 @@ name = "catppuccin-latte"
   each one `Warning::Config`, and the pane starts in mocha.
 - The table is read once when the pane starts, with `[keys]`.
 - `theme.rs` is the only module that names a colour. Every other module draws with a role of `Theme`: base,
-  text, subtle text, border, accent, agent, cursor, selection, added, removed, their two tints, filler,
+  text, subtle text, border, accent, agent, cursor, selection, visual, added, removed, their two tints, filler,
   header, popup, warning and success. The tint behind an added or a removed row is the flavor's green or red
   mixed 15 parts in a hundred into its base, so it follows the flavor.
 - The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
@@ -918,6 +945,7 @@ Records:
 | `Target` | `pane: PaneId`, `terminal: TerminalId`, `agent: String` |
 | `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
 | `Diff` | `files`, `rev` (what the working tree was compared against), `spec`, `notices` (cap reached, base missing, and so on) |
+| `Select` | `row`, `half: Option<Side>`: where a range being selected started, and the half of a split row it started on. `View::select` holds one while visual mode is on, and `View::drag` is whether a left press in the stream is held. Neither is stored |
 | `Keymap` | Key to `Action`, plus `warnings` |
 | `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |
 | `Env` | Every `HERDR_*` and `REVIEW_*` value, read once in `main.rs` |

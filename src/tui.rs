@@ -35,8 +35,8 @@ use crate::keymap::{Action, Keymap};
 use crate::meta::{Meta, Target, locate, save};
 use crate::send::{Scope, SendError, TargetError, resolve_target, save_target, send};
 use crate::store::{
-    Anchor, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning, WriteError,
-    archive, log_len, read,
+    Anchor, AnchorTarget, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning,
+    WriteError, archive, log_len, read,
 };
 use crate::syntax::Cache;
 use crate::termination::Termination;
@@ -428,8 +428,12 @@ impl App {
     }
 
     /// Once per tick: when the log changed, read it and reload the diff, since an agent replying
-    /// is the moment its fix landed. A failed read is a warning and the next tick tries again.
+    /// is the moment its fix landed. It waits while the editor is open or a range is being
+    /// selected. A failed read is a warning and the next tick tries again.
     pub fn check_store(&mut self, git: &mut Git) {
+        if self.view.select.is_some() {
+            return;
+        }
         let (Screen::Review, Some(dir), Some(root), None) = (
             &self.screen,
             self.dir.clone(),
@@ -864,6 +868,10 @@ impl App {
             self.prompt_key(key);
         } else if self.view.help {
             self.view.help = false;
+        } else if key.code == KeyCode::Esc && self.view.select.is_some() {
+            self.warnings.clear();
+            self.status = None;
+            self.view.select = None;
         } else if let Some(action) = self.keymap.action(&key) {
             self.handle(action, git);
         }
@@ -970,6 +978,40 @@ impl App {
         spans
     }
 
+    /// The left of the status line in visual mode: the chip, then the place a comment would point
+    /// at and how many lines it covers, or why it could not point anywhere.
+    fn visual_state(&self) -> Vec<Span<'static>> {
+        let theme = &self.theme;
+        let mut spans = vec![Span::styled(
+            " VISUAL ",
+            Style::new().fg(theme.base).bg(theme.visual),
+        )];
+        match self.diff.as_ref().map(|diff| self.view.capture(diff)) {
+            Some(Ok(anchor)) => {
+                let lines = match &anchor.target {
+                    AnchorTarget::File => None,
+                    AnchorTarget::Line { .. } => Some(1),
+                    AnchorTarget::Range { start, end, .. } => Some(end - start + 1),
+                };
+                let count = match lines {
+                    None => String::new(),
+                    Some(1) => " (1 line)".to_owned(),
+                    Some(n) => format!(" ({n} lines)"),
+                };
+                spans.push(Span::styled(
+                    format!(" {}{count}", place(&anchor)),
+                    Style::new().fg(theme.text),
+                ));
+            }
+            Some(Err(why)) => spans.push(Span::styled(
+                format!(" {why}"),
+                Style::new().fg(theme.removed),
+            )),
+            None => {}
+        }
+        spans
+    }
+
     /// The status line, `width` cells wide: the state, or the message that takes its place, on the
     /// left and the keys against the right edge. Keys that do not fit beside the left part drop off
     /// from the left.
@@ -987,16 +1029,32 @@ impl App {
                     Style::new().fg(colour),
                 )]
             }
+            None if self.view.select.is_some() => self.visual_state(),
             None => self.state(),
         };
         let used = spans
             .iter()
             .map(|span| string_width(&span.content))
             .sum::<usize>();
-        let keys = FOOTER.map(|(action, what)| {
-            let key = sanitize_terminal_text(&self.keymap.label(action));
-            (string_width(&key) + 1 + what.len(), key, what)
-        });
+        let label = |action| self.keymap.label(action);
+        let keys = if self.view.select.is_some() {
+            vec![
+                (label(Action::Comment), "comment"),
+                (format!("{}/esc", label(Action::SelectRange)), "cancel"),
+            ]
+        } else {
+            FOOTER
+                .iter()
+                .map(|(action, what)| (label(*action), *what))
+                .collect()
+        };
+        let keys = keys
+            .into_iter()
+            .map(|(key, what)| {
+                let key = sanitize_terminal_text(&key);
+                (string_width(&key) + 1 + what.len(), key, what)
+            })
+            .collect::<Vec<_>>();
         let room = width.saturating_sub(used + 2);
         let fits = |from: usize| {
             let shown = keys.iter().skip(from);
@@ -1091,9 +1149,13 @@ pub fn render(frame: &mut Frame, app: &App) {
             .style(Style::new().add_modifier(Modifier::BOLD)),
         warnings,
     );
+    let bar = if app.view.select.is_some() {
+        app.theme.selection
+    } else {
+        app.theme.header
+    };
     frame.render_widget(
-        Paragraph::new(app.status_line(width))
-            .style(Style::new().fg(app.theme.text).bg(app.theme.header)),
+        Paragraph::new(app.status_line(width)).style(Style::new().fg(app.theme.text).bg(bar)),
         status,
     );
     app.theme.paint(frame.buffer_mut());
@@ -1258,7 +1320,9 @@ pub fn run_loop<B: Backend>(
             {
                 app.mouse(mouse);
             }
-            Ok(Some(Event::FocusGained)) if app.compose.is_none() => app.load(git),
+            Ok(Some(Event::FocusGained)) if app.compose.is_none() && app.view.select.is_none() => {
+                app.load(git);
+            }
             Ok(_) => {}
         }
         if input {
@@ -2830,7 +2894,7 @@ diff --git a/b.rs b/b.rs
         let fixture = Fixture::new("select");
         let mut app = opened(&fixture, TWO_FILES);
         press(&fixture, &mut app, [key('j'), key('j'), key('v')]);
-        assert_eq!(app.view.select, Some(2));
+        assert_eq!(app.view.select.map(|select| select.row), Some(2));
         press(&fixture, &mut app, [key('v')]);
         assert_eq!(app.view.select, None);
         press(&fixture, &mut app, [key('v'), key('c')]);
@@ -3875,5 +3939,130 @@ diff --git a/b.rs b/b.rs
             "{}",
             screen_of(&app)
         );
+    }
+
+    #[test]
+    fn visual_mode_names_the_range_and_hides_the_state_until_it_ends() {
+        let fixture = Fixture::new("visual-footer");
+        let mut app = opened(&fixture, TWO_FILES);
+        assert!(screen_of(&app).contains("WORKING TREE"));
+        press(&fixture, &mut app, [key('j'), key('j'), key('v')]);
+        let screen = screen_of(&app);
+        assert!(screen.contains(" VISUAL  a.rs R1 (1 line)"), "{screen}");
+        assert!(screen.contains("c comment  v/esc cancel"), "{screen}");
+        assert!(!screen.contains("WORKING TREE") && !screen.contains("no agent"));
+        // The range grows with the cursor: a1, a2 removed, A2 added and a3 are new lines 1 to 3.
+        press(&fixture, &mut app, [key('j'), key('j'), key('j')]);
+        assert!(
+            screen_of(&app).contains(" VISUAL  a.rs R1-3 (3 lines)"),
+            "{}",
+            screen_of(&app)
+        );
+        press(&fixture, &mut app, [key('v')]);
+        let screen = screen_of(&app);
+        assert!(screen.contains("WORKING TREE") && screen.contains("no agent"));
+        assert!(!screen.contains("VISUAL"));
+    }
+
+    #[test]
+    fn the_visual_status_line_is_tinted_across_the_whole_width() {
+        let fixture = Fixture::new("visual-tint");
+        let mut app = opened(&fixture, TWO_FILES);
+        press(&fixture, &mut app, [key('v')]);
+        let theme = Theme::default();
+        let (_, row) = status_row(&mut app, 80);
+        assert_eq!(row.len(), 80);
+        let chip = " VISUAL ".len();
+        for (at, cell) in row.iter().enumerate() {
+            let want = if at < chip {
+                theme.visual
+            } else {
+                theme.selection
+            };
+            assert_eq!(cell.bg, want, "cell {at}");
+        }
+        assert_eq!(row[1].fg, theme.base);
+        // A notice takes the left side and is drawn on the tint as well.
+        app.notice("select lines to comment on");
+        let (text, row) = status_row(&mut app, 80);
+        assert!(text.contains("select lines to comment on"));
+        assert!(row.iter().all(|cell| cell.bg == theme.selection));
+        // Outside visual mode the bar is the header colour again.
+        app.view.select = None;
+        assert!(
+            status_row(&mut app, 80)
+                .1
+                .iter()
+                .all(|cell| cell.bg == theme.header)
+        );
+    }
+
+    #[test]
+    fn a_range_across_two_files_shows_why_in_the_footer() {
+        let fixture = Fixture::new("visual-two-files");
+        let mut app = opened(&fixture, TWO_FILES);
+        press(&fixture, &mut app, [key('j'), key('j'), key('v')]);
+        press(&fixture, &mut app, (0..6).map(|_| key('j')));
+        let line = status_row(&mut app, 80);
+        let why = "a range stays inside one file";
+        assert!(
+            cells_of(&line, why)
+                .iter()
+                .all(|cell| cell.fg == Theme::default().removed)
+        );
+        // Pressing `c` leaves the editor closed and the mode on.
+        press(&fixture, &mut app, [key('c')]);
+        assert!(app.compose.is_none() && app.view.select.is_some());
+    }
+
+    #[test]
+    fn the_visual_footer_keys_follow_a_rebound_comment_and_select_range() {
+        let fixture = Fixture::new("visual-rebind");
+        let mut app = configured(&fixture, "[keys]\ncomment = \"m\"\nselect_range = \"w\"\n");
+        press(&fixture, &mut app, [key('w')]);
+        let screen = screen_of(&app);
+        assert!(screen.contains("VISUAL"), "{screen}");
+        assert!(screen.contains("m comment  w/esc cancel"), "{screen}");
+        assert!(!screen.contains("c comment") && !screen.contains("v/esc"));
+    }
+
+    #[test]
+    fn escape_leaves_visual_mode_and_does_nothing_outside_it() {
+        let fixture = Fixture::new("visual-escape");
+        let mut app = opened(&fixture, TWO_FILES);
+        press(&fixture, &mut app, [key('j'), key('j')]);
+        let before = app.view.clone();
+        press(&fixture, &mut app, [esc()]);
+        assert_eq!(app.view, before);
+        assert!(app.compose.is_none() && app.prompt.is_none() && !app.quit);
+        press(&fixture, &mut app, [key('v'), key('j')]);
+        assert!(app.view.select.is_some());
+        press(&fixture, &mut app, [esc()]);
+        assert_eq!(app.view.select, None);
+        assert_eq!(app.view.cursor, 3);
+        assert!(!screen_of(&app).contains("VISUAL"));
+    }
+
+    #[test]
+    fn a_write_from_another_process_waits_for_visual_mode_to_end() {
+        let fixture = Fixture::new("visual-pickup");
+        let mut app = opened(&fixture, TWO_FILES);
+        press(&fixture, &mut app, [key('v')]);
+        let line = log_line(&add_event("u1"));
+        let path = fixture.dir().join("review.jsonl");
+        drive(&fixture, &mut app, vec![None, None], |tick| {
+            if tick == 0 {
+                std::fs::write(&path, &line).unwrap();
+            }
+        });
+        assert_eq!(app.review.threads.len(), 0);
+        assert_eq!(fixture.diffs.get(), 1);
+        // Focus coming back does not reload either.
+        drive(&fixture, &mut app, vec![Some(Event::FocusGained)], |_| {});
+        assert_eq!(fixture.diffs.get(), 1);
+        press(&fixture, &mut app, [esc()]);
+        drive(&fixture, &mut app, vec![None], |_| {});
+        assert_eq!(app.review.threads.len(), 1);
+        assert_eq!(fixture.diffs.get(), 2);
     }
 }

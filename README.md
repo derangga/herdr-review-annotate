@@ -53,8 +53,9 @@ typo in `review.open` shows up only when you press the key.
 
 1. Focus the pane where your agent runs and press `prefix+i`. The review opens in a split to its right.
    Pressing it again focuses the open review pane.
-2. Move to a line with `j` and `k`, press `c`, write the comment, and save it. `v` starts a range first.
-   `c` on a file header comments on the whole file.
+2. Move to a line with `j` and `k`, press `c`, write the comment, and save it. `v` starts visual mode first:
+   move with `j` and `k`, or drag the mouse over the lines, to grow the range, then press `c`. `Esc` or
+   `v` leaves visual mode. `c` on a file header comments on the whole file.
 3. Press `S` to send every unsent comment to the agent as one prompt. `s` sends the thread under the
    cursor again. You can also press `prefix+shift+i` from the agent's pane.
 4. The agent replies or resolves each thread with `herdr-review comment ...`. A thread it resolved shows
@@ -88,7 +89,7 @@ effect.
 | `switch_panel` | `tab` | switch between sidebar and stream |
 | `toggle_sidebar` | `f` | show or hide the sidebar |
 | `comment` | `c` | comment on the line, range or file |
-| `select_range` | `v` | start a range |
+| `select_range` | `v` | select lines (visual mode) |
 | `reply` | `r` | reply to the thread |
 | `edit` | `e` | edit your comment |
 | `delete` | `d` | delete your comment |

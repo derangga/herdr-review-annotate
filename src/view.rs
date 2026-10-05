@@ -747,6 +747,13 @@ pub struct Spot {
     line: Option<(Side, u32)>,
 }
 
+/// Where a range being selected started: the row, and the half of a split row it started on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Select {
+    pub row: usize,
+    pub half: Option<Side>,
+}
+
 /// The cursor, the scroll position, the focus, and the help overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
@@ -758,8 +765,8 @@ pub struct View {
     pub area: Rect,
     /// The user wants the sidebar. A pane under 50 columns leaves it out all the same.
     pub sidebar: bool,
-    /// The row a range started at, while one is being selected.
-    pub select: Option<usize>,
+    /// Where a range started, while one is being selected. This is visual mode.
+    pub select: Option<Select>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
     forced: Option<DiffLayout>,
     /// Cells of code hidden on the left of every row, and the file they were set for.
@@ -767,6 +774,8 @@ pub struct View {
     hfile: usize,
     /// The half of a split row the mouse last clicked, until the cursor moves another way.
     half: Option<Side>,
+    /// A left press in the stream is held, so a drag selects a range until the button comes up.
+    drag: bool,
     /// Where the mouse last moved, as a column and a row of the screen. `None` until Herdr
     /// delivers a motion event, which tells the pane hover works.
     pointer: Option<(u16, u16)>,
@@ -798,6 +807,7 @@ impl Default for View {
             hscroll: 0,
             hfile: 0,
             half: None,
+            drag: false,
             pointer: None,
         }
     }
@@ -952,7 +962,10 @@ impl View {
     pub fn toggle_select(&mut self) {
         self.select = match self.select {
             Some(_) => None,
-            None => self.base_row(),
+            None => self.base_row().map(|row| Select {
+                row,
+                half: self.half,
+            }),
         };
     }
 
@@ -963,7 +976,7 @@ impl View {
         let row = self
             .base_row()
             .ok_or("that thread's file is not in the diff, reply to it instead")?;
-        let start = self.select.unwrap_or(row);
+        let start = self.select.map_or(row, |select| select.row);
         let (low, high) = (start.min(row), start.max(row));
         let file = self.stream.file_at(row);
         if self.stream.file_at(low) != file || self.stream.file_at(high) != file {
@@ -1004,10 +1017,12 @@ impl View {
                 _ => Err("select lines to comment on"),
             };
         };
-        // The side a click chose counts for the row under the cursor, when the row has it.
+        // The half the selection started on counts, else the side a click chose for the row under
+        // the cursor, when the first row has a line there.
         let clicked = self
-            .half
-            .filter(|_| first_at == self.cursor)
+            .select
+            .and_then(|select| select.half)
+            .or_else(|| self.half.filter(|_| first_at == self.cursor))
             .filter(|side| if *side == Side::Old { old } else { new }.is_some());
         let side = clicked.unwrap_or(if new.is_some() { Side::New } else { Side::Old });
         let first = on_side(side, (first_at, old, new)).ok_or("no line number here")?;
@@ -1093,6 +1108,7 @@ impl View {
     pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, look: &Look) {
         self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), look);
         self.select = None;
+        self.drag = false;
         let stream = &self.stream;
         let on_card = |spot: &Spot| {
             let (id, line) = spot.card.as_ref()?;
@@ -1258,7 +1274,30 @@ impl View {
         true
     }
 
-    /// The wheel scrolls and a click moves the cursor. Neither can be remapped.
+    /// The first drag of a gesture starts a selection at the press row. Each drag then moves the
+    /// cursor to the row it is on, or scrolls one row when it is above or below the stream.
+    fn drag_to(&mut self, screen_row: u16, stream: Rect) {
+        if self.select.is_none() {
+            self.select = Some(Select {
+                row: self.cursor,
+                half: self.half,
+            });
+        }
+        let height = self.height();
+        if screen_row < stream.y {
+            self.scroll = self.scroll.saturating_sub(1);
+            self.move_to(self.scroll);
+        } else if screen_row >= stream.y + stream.height {
+            let max_scroll = self.stream.len().saturating_sub(height);
+            self.scroll = (self.scroll + 1).min(max_scroll);
+            self.move_to(self.scroll + height - 1);
+        } else {
+            self.move_to(self.scroll + usize::from(screen_row - stream.y));
+        }
+    }
+
+    /// The wheel scrolls and a click moves the cursor. Neither can be remapped. A drag from a press
+    /// in the stream selects a range.
     pub fn mouse(&mut self, event: MouseEvent) -> bool {
         let areas = self.areas();
         let at = |rect: Rect| {
@@ -1295,7 +1334,13 @@ impl View {
                 plus_clicked = self
                     .plus()
                     .is_some_and(|p| p.row == row && (p.col..p.col + PLUS_WIDTH).contains(&column));
+                // A press on the `[+]` keeps the selection, so the comment covers it.
+                if !plus_clicked {
+                    self.select = None;
+                }
+                self.drag = false;
                 if row < self.stream.len() {
+                    self.drag = !plus_clicked;
                     self.panel = Panel::Stream;
                     self.move_to(row);
                     if matches!(self.stream.file_row(row), Some(FileRow::Pair { .. })) {
@@ -1305,7 +1350,15 @@ impl View {
                     }
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.drag => {
+                if self.pointer.is_some() {
+                    self.pointer = Some((event.column, event.row));
+                }
+                self.drag_to(event.row, areas.stream);
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.drag = false,
             MouseEventKind::Down(MouseButton::Left) => {
+                self.drag = false;
                 if let Some(sidebar) = areas.sidebar.filter(|rect| at(*rect)) {
                     let selected = self.stream.side_row_of(self.stream.file_at(self.cursor));
                     let top = sidebar_top(
@@ -1609,8 +1662,8 @@ pub fn draw(
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
     frame.render_widget(Paragraph::new(lines), areas.stream);
-    if let Some(start) = view.select {
-        let (low, high) = (start.min(view.cursor), start.max(view.cursor));
+    if let Some(select) = view.select {
+        let (low, high) = (select.row.min(view.cursor), select.row.max(view.cursor));
         for row in low.max(view.scroll)..=high.min(view.scroll + height.saturating_sub(1)) {
             highlight(
                 frame.buffer_mut(),
@@ -2647,7 +2700,7 @@ Binary files a/img.png and b/img.png differ
             Err("a range stays inside one file")
         );
         // The file header and the hunk header under it hold no line.
-        view.select = Some(0);
+        view.select = Some(Select { row: 0, half: None });
         assert_eq!(
             target_at(&mut view, &diff, 1),
             Err("select lines to comment on")
@@ -2656,7 +2709,7 @@ Binary files a/img.png and b/img.png differ
         view.toggle_select();
         assert_eq!(view.select, None);
         view.toggle_select();
-        assert_eq!(view.select, Some(1));
+        assert_eq!(view.select.map(|select| select.row), Some(1));
         view.rebuild(&diff, &Review::default(), None, &Look::test());
         assert_eq!(view.select, None);
     }
@@ -3399,5 +3452,189 @@ diff --git a/top.md b/top.md
         view.hscroll = 8;
         view.apply(Action::ScrollReset);
         assert_eq!(view.hscroll, 0);
+    }
+
+    fn mouse_event(view: &mut View, kind: MouseEventKind, column: u16, row: u16) -> bool {
+        view.mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn press_at(view: &mut View, column: u16, row: u16) -> bool {
+        mouse_event(view, MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    fn drag_to(view: &mut View, column: u16, row: u16) {
+        mouse_event(view, MouseEventKind::Drag(MouseButton::Left), column, row);
+    }
+
+    fn release(view: &mut View) {
+        mouse_event(view, MouseEventKind::Up(MouseButton::Left), 0, 0);
+    }
+
+    /// The pane starts at screen row 4, so there are rows above the stream to drag over.
+    fn lowered() -> (Diff, View) {
+        let (diff, mut view) = plain();
+        view.resize(Rect::new(0, 4, 80, 14));
+        (diff, view)
+    }
+
+    #[test]
+    fn dragging_from_a_press_selects_from_the_press_row_and_keeps_it_after_release() {
+        let (_, mut view) = plain();
+        let stream = view.areas().stream;
+        press_at(&mut view, stream.x + 4, stream.y + 2);
+        assert_eq!(view.select, None);
+        drag_to(&mut view, stream.x + 4, stream.y + 3);
+        drag_to(&mut view, stream.x + 9, stream.y + 4);
+        assert_eq!(view.select, Some(Select { row: 2, half: None }));
+        assert_eq!(view.cursor, 4);
+        release(&mut view);
+        assert_eq!(
+            (view.select.map(|select| select.row), view.cursor),
+            (Some(2), 4)
+        );
+        // The gesture is over, so a drag without a new press does nothing.
+        drag_to(&mut view, stream.x + 4, stream.y + 7);
+        assert_eq!(view.cursor, 4);
+    }
+
+    #[test]
+    fn a_drag_that_stays_on_the_press_row_still_selects() {
+        let (_, mut view) = plain();
+        let stream = view.areas().stream;
+        press_at(&mut view, stream.x + 4, stream.y + 3);
+        drag_to(&mut view, stream.x + 8, stream.y + 3);
+        assert_eq!(view.select, Some(Select { row: 3, half: None }));
+    }
+
+    #[test]
+    fn a_drag_whose_press_was_not_in_the_stream_changes_nothing() {
+        let (_, mut view) = plain();
+        let stream = view.areas().stream;
+        // A click in the sidebar on the second file moves the cursor there.
+        press_at(&mut view, 2, 2);
+        let before = view.clone();
+        drag_to(&mut view, stream.x + 4, stream.y + 5);
+        drag_to(&mut view, stream.x + 4, stream.y + 8);
+        assert_eq!(view, before);
+        // A press past the end of the stream holds nothing either.
+        view.resize(Rect::new(0, 0, 80, 40));
+        press_at(&mut view, stream.x + 4, stream.y + 30);
+        drag_to(&mut view, stream.x + 4, stream.y + 5);
+        assert_eq!(view.select, None);
+    }
+
+    #[test]
+    fn a_drag_above_the_stream_scrolls_up_one_row_and_stops_at_the_top() {
+        let (_, mut view) = lowered();
+        let stream = view.areas().stream;
+        mouse_event(&mut view, MouseEventKind::ScrollDown, stream.x, stream.y);
+        assert_eq!(view.scroll, 3);
+        press_at(&mut view, stream.x + 4, stream.y + 5);
+        assert_eq!(view.cursor, 8);
+        for (scroll, cursor) in [(2, 2), (1, 1), (0, 0), (0, 0)] {
+            // The column does not matter, and the row is above the pane.
+            drag_to(&mut view, 70, stream.y - 3);
+            assert_eq!((view.scroll, view.cursor), (scroll, cursor));
+        }
+        assert_eq!(view.select, Some(Select { row: 8, half: None }));
+    }
+
+    #[test]
+    fn a_drag_below_the_stream_scrolls_down_one_row_and_stops_at_the_end() {
+        let (_, mut view) = lowered();
+        let stream = view.areas().stream;
+        press_at(&mut view, stream.x + 4, stream.y + 2);
+        // The stream has 16 rows and shows 12, so it scrolls 4 rows at most.
+        let below = stream.y + stream.height + 5;
+        for (scroll, cursor) in [(1, 12), (2, 13), (3, 14), (4, 15), (4, 15)] {
+            drag_to(&mut view, 1, below);
+            assert_eq!((view.scroll, view.cursor), (scroll, cursor));
+        }
+        // Dragging back into the stream moves the cursor to that row.
+        drag_to(&mut view, 40, stream.y + 1);
+        assert_eq!(view.cursor, 5);
+    }
+
+    #[test]
+    fn a_plain_press_leaves_visual_mode_and_one_on_the_plus_keeps_it() {
+        let (_, mut view) = plain();
+        let stream = view.areas().stream;
+        press_at(&mut view, stream.x + 4, stream.y + 2);
+        drag_to(&mut view, stream.x + 4, stream.y + 4);
+        release(&mut view);
+        assert!(view.select.is_some());
+        // The `[+]` of row 5 is in its first three cells once the mouse is over the row.
+        mouse_event(&mut view, MouseEventKind::Moved, stream.x + 1, stream.y + 5);
+        assert!(press_at(&mut view, stream.x + 1, stream.y + 5));
+        assert_eq!(
+            (view.select.map(|select| select.row), view.cursor),
+            (Some(2), 5)
+        );
+        // Any other press drops the selection and moves the cursor.
+        assert!(!press_at(&mut view, stream.x + 8, stream.y + 7));
+        assert_eq!((view.select, view.cursor), (None, 7));
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_the_old_half_gives_an_old_side_range_in_both_directions() {
+        let diff = diff_of(SPLIT_PATCH);
+        let mut view = view(&diff, &Review::default(), 130, 14);
+        let stream = view.areas().stream;
+        let range = |start, end| AnchorTarget::Range {
+            side: Side::Old,
+            start,
+            end,
+            text: "old4".into(),
+        };
+        // Down from the old half of row 4 to row 6, and then up from row 6 to row 4.
+        press_at(&mut view, stream.x + 3, stream.y + 4);
+        drag_to(&mut view, stream.x + 3, stream.y + 6);
+        assert_eq!(view.capture(&diff).unwrap().target, range(4, 6));
+        release(&mut view);
+        press_at(&mut view, stream.x + 3, stream.y + 6);
+        drag_to(&mut view, stream.x + 3, stream.y + 4);
+        assert_eq!(view.capture(&diff).unwrap().target, range(4, 6));
+        // The same on the new half starts from the new side.
+        let left = u16::try_from(split_widths(usize::from(stream.width)).0).unwrap();
+        release(&mut view);
+        press_at(&mut view, stream.x + left + 3, stream.y + 6);
+        drag_to(&mut view, stream.x + left + 3, stream.y + 4);
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            AnchorTarget::Range {
+                side: Side::New,
+                start: 4,
+                end: 5,
+                text: "new4".into()
+            }
+        );
+        // `v` after a click remembers the half through the motions that clear the click.
+        press_at(&mut view, stream.x + 3, stream.y + 4);
+        view.toggle_select();
+        view.apply(Action::Down);
+        view.apply(Action::Down);
+        assert_eq!(view.capture(&diff).unwrap().target, range(4, 6));
+    }
+
+    #[test]
+    fn a_rebuild_in_the_middle_of_a_drag_drops_the_selection_and_the_gesture() {
+        let (diff, mut view) = plain();
+        let stream = view.areas().stream;
+        press_at(&mut view, stream.x + 4, stream.y + 2);
+        drag_to(&mut view, stream.x + 4, stream.y + 4);
+        assert!(view.select.is_some() && view.drag);
+        view.rebuild(&diff, &Review::default(), None, &Look::test());
+        assert!(view.select.is_none() && !view.drag);
+        // With no press behind it, the next drag selects nothing until a new press.
+        drag_to(&mut view, stream.x + 4, stream.y + 6);
+        assert_eq!(view.select, None);
+        press_at(&mut view, stream.x + 4, stream.y + 6);
+        drag_to(&mut view, stream.x + 4, stream.y + 8);
+        assert_eq!(view.select.map(|select| select.row), Some(6));
     }
 }

@@ -203,6 +203,8 @@ pub struct Theme {
     pub cursor: Color,
     /// Behind the rows of a range being selected.
     pub selection: Color,
+    /// The chip that says visual mode is on.
+    pub visual: Color,
     pub added: Color,
     pub removed: Color,
     /// Behind an added and a removed row.
@@ -242,6 +244,7 @@ impl Theme {
             agent: rgb(palette.mauve),
             cursor: rgb(palette.surface1),
             selection: blend(palette.blue, palette.base, SELECTION_PERCENT),
+            visual: rgb(palette.peach),
             added: rgb(palette.green),
             removed: rgb(palette.red),
             added_bg: blend(palette.green, palette.base, TINT_PERCENT),

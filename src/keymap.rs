@@ -123,7 +123,7 @@ impl Action {
             Self::SwitchPanel => "switch between sidebar and stream",
             Self::ToggleSidebar => "show or hide the sidebar",
             Self::Comment => "comment on the line, range or file",
-            Self::SelectRange => "start a range",
+            Self::SelectRange => "select lines (visual mode)",
             Self::Reply => "reply to the thread",
             Self::Edit => "edit your comment",
             Self::Delete => "delete your comment",
