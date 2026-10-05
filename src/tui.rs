@@ -36,7 +36,7 @@ use crate::meta::{Meta, Target, locate, save};
 use crate::send::{Scope, SendError, TargetError, resolve_target, save_target, send};
 use crate::store::{
     Anchor, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning, WriteError,
-    log_len, read,
+    archive, log_len, read,
 };
 use crate::syntax::Cache;
 use crate::termination::Termination;
@@ -140,6 +140,8 @@ pub enum Prompt {
     },
     /// Quitting with unsent comments: send, keep, or stay.
     Quit,
+    /// Archiving the resolved threads: archive, or stay.
+    Archive,
 }
 
 /// What a message on the status line is: something that happened, or something that went wrong.
@@ -472,6 +474,7 @@ impl App {
             Action::Edit => self.start_edit(),
             Action::Delete => self.delete(),
             Action::Resolve => self.toggle_resolve(),
+            Action::Archive => self.ask_archive(),
             _ => {
                 self.view.apply(action);
             }
@@ -592,7 +595,9 @@ impl App {
         match (self.prompt.take(), key.code) {
             (Some(Prompt::Quit), KeyCode::Char('s')) => self.request(Scope::Unsent, true),
             (Some(Prompt::Quit), KeyCode::Char('k')) => self.quit = true,
-            (Some(Prompt::Quit), KeyCode::Esc | KeyCode::Char('n')) => {}
+            (Some(Prompt::Quit), KeyCode::Esc | KeyCode::Char('n'))
+            | (Some(Prompt::Archive), KeyCode::Esc) => {}
+            (Some(Prompt::Archive), KeyCode::Char('a')) => self.run_archive(),
             (
                 Some(Prompt::Pick {
                     found,
@@ -764,6 +769,35 @@ impl App {
                 self.refold();
             }
             Err(error) => self.fail(failure(&error)),
+        }
+    }
+
+    /// How many resolved threads `archive` takes, and how many of them were never sent.
+    fn archivable(&self) -> (usize, usize) {
+        let taken = self.review.threads.iter().filter(|t| t.archivable());
+        (taken.clone().count(), taken.filter(|t| t.unsent).count())
+    }
+
+    /// `archive`: ask before the resolved threads leave the pane. With none, say so.
+    fn ask_archive(&mut self) {
+        if self.archivable().0 == 0 {
+            self.notice("nothing to archive");
+        } else {
+            self.prompt = Some(Prompt::Archive);
+        }
+    }
+
+    /// The archive prompt said yes: move the resolved threads to `archive.jsonl`. The store reads
+    /// the log again under its lock, so the count is what it moved and not what the prompt said.
+    fn run_archive(&mut self) {
+        let Some(dir) = self.dir.clone() else { return };
+        match archive(&dir, &(self.now)()) {
+            Ok(done) if done.threads == 0 => self.notice("nothing to archive"),
+            Ok(done) => {
+                self.notice(format!("archived {}", done.threads));
+                self.refold();
+            }
+            Err(error) => self.fail(failure(&WriteError::Store(error))),
         }
     }
 
@@ -1037,7 +1071,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
     if let Some(prompt) = &app.prompt {
-        draw_prompt(frame, prompt, app.unsent(), &app.theme);
+        draw_prompt(frame, prompt, app);
     }
     let width = usize::from(frame.area().width);
     let notices = app
@@ -1084,19 +1118,36 @@ fn draw_compose(frame: &mut Frame, app: &App, compose: &Compose, rows: Option<(u
 }
 
 /// The question the pane is waiting on, in a box over the middle of the pane.
-fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize, theme: &Theme) {
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt, app: &App) {
+    let theme = &app.theme;
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
     let (title, lines) = match prompt {
-        Prompt::Quit => (
-            format!(
-                " {unsent} unsent comment{} ",
-                if unsent == 1 { "" } else { "s" }
-            ),
-            vec![
-                Line::from("[s] send, then quit"),
-                Line::from("[k] quit and keep them unsent"),
-                Line::from("[esc] stay"),
-            ],
-        ),
+        Prompt::Quit => {
+            let unsent = app.unsent();
+            (
+                format!(" {unsent} unsent comment{} ", plural(unsent)),
+                vec![
+                    Line::from("[s] send, then quit"),
+                    Line::from("[k] quit and keep them unsent"),
+                    Line::from("[esc] stay"),
+                ],
+            )
+        }
+        Prompt::Archive => {
+            let (threads, unsent) = app.archivable();
+            let never_sent = if unsent == 0 {
+                String::new()
+            } else {
+                format!(" ({unsent} never sent)")
+            };
+            (
+                format!(
+                    " archive {threads} resolved thread{}{never_sent}? ",
+                    plural(threads)
+                ),
+                vec![Line::from("[a] archive"), Line::from("[esc] stay")],
+            )
+        }
         Prompt::Pick {
             found, selected, ..
         } => (
@@ -1117,7 +1168,9 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize, theme: &Theme)
         ),
     };
     let area = frame.area();
-    let width = area.width.saturating_sub(4).min(44);
+    // Wide enough for the title between the corners, and no narrower than 44.
+    let wanted = u16::try_from(string_width(&title) + 2).unwrap_or(u16::MAX);
+    let width = area.width.saturating_sub(4).min(wanted.max(44));
     let height = (u16::try_from(lines.len()).unwrap_or(0) + 2).min(area.height);
     let popup = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
@@ -3369,6 +3422,195 @@ diff --git a/b.rs b/b.rs
         assert!(app.view.sidebar_drawn());
         assert_eq!(app.warnings.len(), 1, "{:?}", app.warnings);
         assert!(app.warnings[0].to_string().contains("not valid TOML"));
+    }
+
+    fn user_event(kind: Kind) -> LogEvent {
+        LogEvent {
+            at: "2026-10-05T00:00:00Z".into(),
+            by: Author::User,
+            kind,
+        }
+    }
+
+    fn cid(text: &str) -> CommentId {
+        CommentId::parse(text).unwrap()
+    }
+
+    /// Four threads of the user's: u1 sent and resolved, u2 resolved and never sent, u3 open, and
+    /// u4 resolved by the agent, which the user has not looked at.
+    fn with_resolved_threads(name: &str) -> (Fixture, App) {
+        let fixture = Fixture::new(name);
+        let mut events = ["u1", "u2", "u3", "u4"]
+            .map(|id| thread_event(id, Author::User, id))
+            .to_vec();
+        events.push(user_event(Kind::Sent {
+            ids: vec![cid("u1"), cid("u3"), cid("u4")],
+            batch: crate::store::BatchId::parse("b1").unwrap(),
+        }));
+        events.push(user_event(Kind::Resolve { id: cid("u1") }));
+        events.push(user_event(Kind::Resolve { id: cid("u2") }));
+        let mut by_agent = user_event(Kind::Resolve { id: cid("u4") });
+        by_agent.by = agent();
+        events.push(by_agent);
+        write_log(&fixture, &events);
+        let app = opened(&fixture, patch_text());
+        (fixture, app)
+    }
+
+    fn thread_ids(app: &App) -> Vec<&str> {
+        let threads = app.review.threads.iter();
+        threads.map(|thread| thread.root.id.as_str()).collect()
+    }
+
+    fn log_of(fixture: &Fixture, file: &str) -> String {
+        std::fs::read_to_string(fixture.dir().join(file)).unwrap_or_default()
+    }
+
+    #[test]
+    fn archive_asks_first_and_then_moves_the_resolved_threads_out_of_the_pane() {
+        let (fixture, mut app) = with_resolved_threads("archive");
+        assert_eq!(app.unsent(), 1);
+        press(&fixture, &mut app, [key('A')]);
+        assert_eq!(app.prompt, Some(Prompt::Archive));
+        let screen = screen_of(&app);
+        assert!(
+            screen.contains(" archive 2 resolved threads (1 never sent)? "),
+            "{screen}"
+        );
+        assert!(screen.contains("[a] archive") && screen.contains("[esc] stay"));
+        press(&fixture, &mut app, [key('x')]);
+        assert!(app.prompt.is_some(), "an unrelated key answers nothing");
+        assert_eq!(log_of(&fixture, "archive.jsonl"), "");
+        press(&fixture, &mut app, [key('a')]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.status, Some((Tone::Notice, "archived 2".to_owned())));
+        // The open thread stays, and so does the one whose resolve is still new.
+        assert_eq!(thread_ids(&app), ["u3", "u4"]);
+        assert_eq!(app.unsent(), 0);
+        let screen = screen_of(&app);
+        assert!(screen.contains("archived 2"), "{screen}");
+        assert!(!screen.contains("✓ u1") && !screen.contains("✓ u2"));
+        assert!(screen.contains("✓ u4 [new]"), "{screen}");
+        let moved = log_of(&fixture, "archive.jsonl");
+        assert!(moved.contains("\"id\":\"u1\"") && moved.contains("\"id\":\"u2\""));
+        assert!(!moved.contains("\"id\":\"u3\"") && !moved.contains("\"id\":\"u4\""));
+        let left = log_of(&fixture, "review.jsonl");
+        assert!(!left.contains("\"id\":\"u1\"") && !left.contains("\"id\":\"u2\""));
+    }
+
+    #[test]
+    fn escape_at_the_archive_prompt_writes_nothing() {
+        let fixture = Fixture::new("archive-esc");
+        write_log(
+            &fixture,
+            &[
+                thread_event("u1", Author::User, "fix"),
+                user_event(Kind::Sent {
+                    ids: vec![cid("u1")],
+                    batch: crate::store::BatchId::parse("b1").unwrap(),
+                }),
+                user_event(Kind::Resolve { id: cid("u1") }),
+            ],
+        );
+        let mut app = opened(&fixture, patch_text());
+        let before = log_of(&fixture, "review.jsonl");
+        press(&fixture, &mut app, [key('A')]);
+        // One thread, and it was sent, so the question has no bracket.
+        assert!(screen_of(&app).contains(" archive 1 resolved thread? "));
+        press(&fixture, &mut app, [esc()]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(log_of(&fixture, "review.jsonl"), before);
+        assert!(!fixture.dir().join("archive.jsonl").exists());
+        assert_eq!(thread_ids(&app), ["u1"]);
+    }
+
+    #[test]
+    fn with_nothing_to_archive_the_status_line_says_so_and_no_prompt_opens() {
+        let (fixture, mut app) = two_user_threads("archive-nothing", &[IDLE]);
+        press(&fixture, &mut app, [key('A')]);
+        assert_eq!(app.prompt, None);
+        let said = Some((Tone::Notice, "nothing to archive".to_owned()));
+        assert_eq!(app.status, said);
+        assert!(screen_of(&app).contains("nothing to archive"));
+        // A resolve that is still new is not something to archive either.
+        let (fixture, mut app) = with_resolved_threads("archive-new-only");
+        press(&fixture, &mut app, [key('A'), key('a'), key('A')]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.status, said);
+        assert_eq!(thread_ids(&app), ["u3", "u4"]);
+    }
+
+    #[test]
+    fn a_comment_written_after_an_archive_takes_the_next_id_also_after_a_restart() {
+        let (fixture, mut app) = with_resolved_threads("archive-ids");
+        press(&fixture, &mut app, [key('A'), key('a')]);
+        // The cursor is on the file header, which a comment may point at.
+        press(&fixture, &mut app, [key('c'), key('x'), ctrl_s()]);
+        assert_eq!(thread_ids(&app), ["u3", "u4", "u5"]);
+        let mut restarted = opened(&fixture, patch_text());
+        press(&fixture, &mut restarted, [key('c'), key('x'), ctrl_s()]);
+        assert_eq!(thread_ids(&restarted), ["u3", "u4", "u5", "u6"]);
+        // Batch b1 went to the archive with u1, and the next send is still b2.
+        fixture.agents(&[IDLE]);
+        press(&fixture, &mut restarted, [key('S')]);
+        assert!(log_of(&fixture, "review.jsonl").contains("\"batch\":\"b2\""));
+    }
+
+    #[test]
+    fn an_archive_of_a_busy_review_says_so_and_changes_neither_file() {
+        let (fixture, mut app) = with_resolved_threads("archive-busy");
+        let before = log_of(&fixture, "review.jsonl");
+        let held = crate::store::lock(&fixture.dir()).unwrap();
+        press(&fixture, &mut app, [key('A'), key('a')]);
+        drop(held);
+        let said = Some((Tone::Failure, "review is busy, press again".to_owned()));
+        assert_eq!(app.status, said);
+        assert_eq!(log_of(&fixture, "review.jsonl"), before);
+        assert!(!fixture.dir().join("archive.jsonl").exists());
+        assert_eq!(thread_ids(&app).len(), 4);
+    }
+
+    #[test]
+    fn an_archive_by_another_pane_is_picked_up_because_the_log_got_shorter() {
+        let (fixture, mut app) = with_resolved_threads("archive-other-pane");
+        let before = std::fs::metadata(fixture.dir().join("review.jsonl")).unwrap();
+        drive(&fixture, &mut app, vec![None, None], |tick| {
+            if tick == 0 {
+                archive(&fixture.dir(), "2026-10-05T00:00:00Z").unwrap();
+            }
+        });
+        let after = std::fs::metadata(fixture.dir().join("review.jsonl")).unwrap();
+        assert!(after.len() < before.len());
+        assert_eq!(thread_ids(&app), ["u3", "u4"]);
+        assert!(app.warnings.is_empty(), "{:?}", app.warnings);
+        assert!(!screen_of(&app).contains("✓ u1"));
+    }
+
+    #[test]
+    fn the_archive_key_can_be_rebound_and_the_help_overlay_lists_it() {
+        let (fixture, mut app) = with_resolved_threads("archive-rebind");
+        app.view.help = true;
+        app.resize(Rect::new(0, 0, 80, 30));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(text.contains("A                archive the resolved threads"));
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[keys]\narchive = \"z\"\n",
+        )
+        .unwrap();
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('A')]);
+        assert_eq!(app.prompt, None);
+        press(&fixture, &mut app, [key('z')]);
+        assert_eq!(app.prompt, Some(Prompt::Archive));
     }
 
     #[test]

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use herdr_review::store::{Add, Author, Event, Kind, RelPath, Spec, StoreError, WriteError, read, write};
+use herdr_review::store::{
+    Add, Author, Event, Kind, RelPath, Spec, StoreError, WriteError, archive, read, write,
+};
 
 const DIR: &str = "REVIEW_TEST_DIR";
 const APPENDS: usize = 200;
@@ -115,4 +117,51 @@ fn a_lock_held_by_another_process_gives_busy_and_killing_the_holder_frees_it() {
     holder.kill().unwrap();
     holder.wait().unwrap();
     assert!(write(&dir, "t", |_, _| Ok::<_, ()>((Vec::new(), ()))).is_ok());
+}
+
+/// The ids of the `add` events in one of the two logs.
+fn added(dir: &Path, file: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+    text.lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["kind"] == "add")
+        .map(|event| event["id"].to_string())
+        .collect()
+}
+
+#[test]
+fn appends_from_other_processes_during_archives_lose_nothing_and_reuse_no_id() {
+    const WRITERS: usize = 4;
+    let dir = temp_dir("archive");
+    let mut children = (0..WRITERS)
+        .map(|_| child("child_appends", &dir).spawn().unwrap())
+        .collect::<Vec<_>>();
+    let mut archives = 0;
+    // While the children append, resolve whatever is open and archive it, over and over.
+    while children.iter_mut().any(|child| child.try_wait().unwrap().is_none()) {
+        let resolved = write(&dir, "t", |review, now| {
+            let resolve = |id: &herdr_review::store::CommentId| Event {
+                at: now.into(),
+                by: Author::User,
+                kind: Kind::Resolve { id: id.clone() },
+            };
+            Ok::<_, ()>((review.open_ids().into_iter().map(resolve).collect(), ()))
+        });
+        assert!(matches!(resolved, Ok(()) | Err(WriteError::Store(StoreError::Busy))), "{resolved:?}");
+        match archive(&dir, "t") {
+            Ok(done) => archives += usize::from(done.threads > 0),
+            Err(StoreError::Busy) => {}
+            Err(error) => panic!("{error}"),
+        }
+    }
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    assert!(archives > 1, "{archives} archives ran beside the writers");
+    let mut ids = added(&dir, "review.jsonl");
+    ids.extend(added(&dir, "archive.jsonl"));
+    assert_eq!(ids.len(), WRITERS * APPENDS);
+    let unique = ids.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), WRITERS * APPENDS);
+    assert_eq!(read(&dir).unwrap().skipped_lines, 0);
 }

@@ -19,4 +19,4 @@ Glossary only. Decisions are in `docs/adr/`, the build plan is in `PLAN.md`.
 | Resend | Send an open thread again although it was already sent. |
 | New | A marker on a thread an agent resolved that the user has not looked at yet. |
 | Target agent | The agent that receives a send for this review. |
-| Archive | Move resolved threads out of the review. Only the user archives. |
+| Archive | Move resolved threads out of the review, into `archive.jsonl`. Only the user archives. A thread that is still new stays. |

@@ -28,6 +28,7 @@ pub enum Action {
     Edit,
     Delete,
     Resolve,
+    Archive,
     Send,
     Resend,
     Reload,
@@ -39,7 +40,7 @@ pub enum Action {
 
 impl Action {
     /// In the order of the table in PLAN.md section 7, which is the order of the help overlay.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -56,6 +57,7 @@ impl Action {
         Self::Edit,
         Self::Delete,
         Self::Resolve,
+        Self::Archive,
         Self::Send,
         Self::Resend,
         Self::Reload,
@@ -84,6 +86,7 @@ impl Action {
             Self::Edit => "edit",
             Self::Delete => "delete",
             Self::Resolve => "resolve",
+            Self::Archive => "archive",
             Self::Send => "send",
             Self::Resend => "resend",
             Self::Reload => "reload",
@@ -113,6 +116,7 @@ impl Action {
             Self::Edit => "edit your comment",
             Self::Delete => "delete your comment",
             Self::Resolve => "resolve or reopen the thread",
+            Self::Archive => "archive the resolved threads",
             Self::Send => "send unsent comments",
             Self::Resend => "resend the thread",
             Self::Reload => "reload the diff",
@@ -145,6 +149,7 @@ impl Action {
             Self::Edit => &["e"],
             Self::Delete => &["d"],
             Self::Resolve => &["x"],
+            Self::Archive => &["shift+a"],
             Self::Send => &["shift+s"],
             Self::Resend => &["s"],
             Self::Reload => &["shift+r"],
@@ -481,6 +486,7 @@ mod tests {
                 KeyModifiers::NONE,
                 Action::ToggleSidebar,
             ),
+            (KeyCode::Char('A'), KeyModifiers::SHIFT, Action::Archive),
             (KeyCode::Char('s'), KeyModifiers::NONE, Action::Resend),
             (KeyCode::Char('S'), KeyModifiers::SHIFT, Action::Send),
             (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::Reload),

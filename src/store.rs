@@ -2,8 +2,8 @@
 //!
 //! This part is pure. Reading and writing the file is in the functions below the fold.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{DirBuilder, File, OpenOptions, TryLockError};
 use std::hash::{Hash, Hasher};
@@ -294,12 +294,33 @@ pub struct Add {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Kind {
     Add(Add),
-    Edit { id: CommentId, body: String },
-    Delete { id: CommentId },
-    Resolve { id: CommentId },
-    Reopen { id: CommentId },
-    Sent { ids: Vec<CommentId>, batch: BatchId },
-    Seen { id: CommentId },
+    Edit {
+        id: CommentId,
+        body: String,
+    },
+    Delete {
+        id: CommentId,
+    },
+    Resolve {
+        id: CommentId,
+    },
+    Reopen {
+        id: CommentId,
+    },
+    Sent {
+        ids: Vec<CommentId>,
+        batch: BatchId,
+    },
+    Seen {
+        id: CommentId,
+    },
+    /// Threads were archived. The counters are the highest ids the log had used by then, so an
+    /// id that went to `archive.jsonl` is not given out again.
+    Archived {
+        user: u32,
+        agent: u32,
+        batch: u32,
+    },
 }
 
 /// One line of `review.jsonl`. `at` is RFC 3339 and only for display. File order is the order.
@@ -381,6 +402,11 @@ impl Thread {
 
     pub const fn is_open(&self) -> bool {
         matches!(self.status, Status::Open)
+    }
+
+    /// `archive` takes it: it is resolved, and the user has seen an agent's resolve.
+    pub const fn archivable(&self) -> bool {
+        !self.is_open() && !self.is_new
     }
 }
 
@@ -565,13 +591,19 @@ impl Fold {
                     thread.is_new = false;
                 }
             }
+            Kind::Archived { user, agent, batch } => {
+                let ids = &mut self.review.ids;
+                ids.user = ids.user.max(*user);
+                ids.agent = ids.agent.max(*agent);
+                ids.batch = ids.batch.max(*batch);
+            }
         }
     }
 }
 
 /// Apply the events in order. An event that names an unknown id, or breaks the rights rule, is
 /// skipped.
-pub fn fold(events: &[Event]) -> Review {
+pub fn fold<'a>(events: impl IntoIterator<Item = &'a Event>) -> Review {
     let mut fold = Fold {
         review: Review::default(),
         index: HashMap::new(),
@@ -648,6 +680,7 @@ impl<E> From<StoreError> for WriteError<E> {
 }
 
 const REVIEW_FILE: &str = "review.jsonl";
+const ARCHIVE_FILE: &str = "archive.jsonl";
 const LOCK_FILE: &str = "lock";
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_POLL: Duration = Duration::from_millis(2);
@@ -824,10 +857,7 @@ pub fn write<T, E>(
         Vec::new()
     };
     for event in &events {
-        serde_json::to_writer(&mut bytes, event)
-            .map_err(io::Error::from)
-            .map_err(io_error(&path))?;
-        bytes.push(b'\n');
+        push_line(&mut bytes, event, &path)?;
     }
     OpenOptions::new()
         .create(true)
@@ -837,6 +867,174 @@ pub fn write<T, E>(
         .and_then(|mut file| file.write_all(&bytes))
         .map_err(io_error(&path))?;
     Ok(value)
+}
+
+/// Add `event` to `bytes` as one line of the log at `path`.
+fn push_line(bytes: &mut Vec<u8>, event: &Event, path: &Path) -> Result<(), StoreError> {
+    serde_json::to_writer(&mut *bytes, event)
+        .map_err(io::Error::from)
+        .map_err(io_error(path))?;
+    bytes.push(b'\n');
+    Ok(())
+}
+
+/// What one archive moved out of the review.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Archived {
+    pub threads: usize,
+    /// How many of them had a comment of the user's that was never sent.
+    pub unsent: usize,
+}
+
+/// The comment an event is about. A `sent` names several and `archived` names none.
+const fn subject(kind: &Kind) -> Option<&CommentId> {
+    match kind {
+        Kind::Add(add) => Some(&add.id),
+        Kind::Edit { id, .. }
+        | Kind::Delete { id }
+        | Kind::Resolve { id }
+        | Kind::Reopen { id }
+        | Kind::Seen { id } => Some(id),
+        Kind::Sent { .. } | Kind::Archived { .. } => None,
+    }
+}
+
+/// Move every resolved thread the user has seen out of the review, under the lock: append its
+/// events to `archive.jsonl`, then replace `review.jsonl` with a log that has the rest.
+///
+/// The archive is written first, so a crash between the two leaves a thread in both files and
+/// never in neither. The new log starts with an `archived` event that holds the highest ids, and
+/// keeps every line that did not parse as it was. With nothing to archive nothing is written.
+pub fn archive(dir: &Path, now: &str) -> Result<Archived, StoreError> {
+    ensure_dir(dir)?;
+    let _lock = lock(dir)?;
+    let path = dir.join(REVIEW_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(io_error(&path)(error)),
+    };
+    // Nobody writes while the lock is held, so a last line with no newline is a line too.
+    let lines = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| (line, serde_json::from_slice::<Event>(line).ok()))
+        .collect::<Vec<_>>();
+    let review = fold(lines.iter().filter_map(|(_, event)| event.as_ref()));
+    let taken = review
+        .threads
+        .iter()
+        .filter(|thread| thread.archivable())
+        .collect::<Vec<_>>();
+    if taken.is_empty() {
+        return Ok(Archived::default());
+    }
+    let done = Archived {
+        threads: taken.len(),
+        unsent: taken.iter().filter(|thread| thread.unsent).count(),
+    };
+    // The roots, then every reply to one of them, deleted replies included.
+    let mut gone = taken
+        .iter()
+        .map(|thread| &thread.root.id)
+        .collect::<HashSet<_>>();
+    for (_, event) in &lines {
+        if let Some(Kind::Add(add)) = event.as_ref().map(|event| &event.kind)
+            && add
+                .parent
+                .as_ref()
+                .is_some_and(|parent| gone.contains(parent))
+        {
+            gone.insert(&add.id);
+        }
+    }
+    let archive = dir.join(ARCHIVE_FILE);
+    let (mut kept, mut moved) = (Vec::new(), Vec::new());
+    let ids = review.ids;
+    let carried = Event {
+        at: now.to_owned(),
+        by: Author::User,
+        kind: Kind::Archived {
+            user: ids.user,
+            agent: ids.agent,
+            batch: ids.batch,
+        },
+    };
+    push_line(&mut kept, &carried, &path)?;
+    let raw = |bytes: &mut Vec<u8>, line: &[u8]| {
+        bytes.extend_from_slice(line);
+        bytes.push(b'\n');
+    };
+    for (line, event) in &lines {
+        match event.as_ref().map(|event| (event, &event.kind)) {
+            // The one written above replaces it.
+            Some((_, Kind::Archived { .. })) => {}
+            // A send that carried comments of both kinds is split, and each part keeps the batch.
+            Some((event, Kind::Sent { ids, batch })) => {
+                let (theirs, ours) = ids
+                    .iter()
+                    .cloned()
+                    .partition::<Vec<_>, _>(|id| gone.contains(id));
+                if theirs.is_empty() || ours.is_empty() {
+                    raw(
+                        if theirs.is_empty() {
+                            &mut kept
+                        } else {
+                            &mut moved
+                        },
+                        line,
+                    );
+                    continue;
+                }
+                for (ids, bytes, path) in [(theirs, &mut moved, &archive), (ours, &mut kept, &path)]
+                {
+                    let kind = Kind::Sent {
+                        ids,
+                        batch: batch.clone(),
+                    };
+                    push_line(
+                        bytes,
+                        &Event {
+                            kind,
+                            ..(*event).clone()
+                        },
+                        path,
+                    )?;
+                }
+            }
+            Some((_, kind)) if subject(kind).is_some_and(|id| gone.contains(id)) => {
+                raw(&mut moved, line);
+            }
+            _ => raw(&mut kept, line),
+        }
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&archive)
+        .and_then(|mut file| {
+            file.write_all(&moved)?;
+            file.sync_all()
+        })
+        .map_err(io_error(&archive))?;
+    let temp = dir.join(format!("{REVIEW_FILE}.{}.tmp", std::process::id()));
+    let written = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(&kept)?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temp, &path));
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        io_error(&path)(error)
+    })?;
+    Ok(done)
 }
 
 #[cfg(test)]
@@ -1528,5 +1726,256 @@ mod tests {
         assert!(chunk.restarted);
         assert_eq!(chunk.events.len(), 1);
         assert!(read_events(&temp_dir("none"), 5).unwrap().restarted);
+    }
+
+    /// A review directory whose log holds `events`.
+    fn seeded(name: &str, events: &[Event]) -> PathBuf {
+        let dir = temp_dir(name);
+        ensure_dir(&dir).unwrap();
+        let lines = events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(dir.join(REVIEW_FILE), lines).unwrap();
+        dir
+    }
+
+    fn archived(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(ARCHIVE_FILE)).unwrap_or_default()
+    }
+
+    fn events_of(text: &str) -> Vec<Event> {
+        text.lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn roots(review: &Review) -> Vec<&str> {
+        review.threads.iter().map(|t| t.root.id.as_str()).collect()
+    }
+
+    #[test]
+    fn resolved_threads_leave_the_log_and_their_events_are_in_the_archive() {
+        let user = Author::User;
+        let dir = seeded(
+            "archive",
+            &[
+                root(&user, "u1"),
+                root(&user, "u2"),
+                reply(&agent(), "a1", "u1"),
+                sent(&["u1", "u2"], "b1"),
+                resolve(&user, "u1"),
+            ],
+        );
+        let done = archive(&dir, "now").unwrap();
+        assert_eq!(
+            done,
+            Archived {
+                threads: 1,
+                unsent: 0
+            }
+        );
+        let review = read(&dir).unwrap();
+        assert_eq!(roots(&review), ["u2"]);
+        // The send carried both threads. The part that stays still marks u2 sent.
+        assert_eq!(thread(&review, "u2").root.sent_batch, BatchId::parse("b1"));
+        assert_eq!(review.skipped_lines, 0);
+        let moved = fold(&events_of(&archived(&dir)));
+        assert_eq!(roots(&moved), ["u1"]);
+        let u1 = thread(&moved, "u1");
+        assert_eq!(u1.replies.len(), 1);
+        assert_eq!(u1.root.at, "2026-10-04T00:00:00Z");
+        assert_eq!(u1.root.sent_batch, BatchId::parse("b1"));
+        assert!(!u1.is_open());
+        let mode = std::fs::metadata(dir.join(ARCHIVE_FILE)).unwrap();
+        assert_eq!(mode.permissions().mode() & 0o777, 0o600);
+        assert!(
+            !dir.join(format!("{REVIEW_FILE}.{}.tmp", std::process::id()))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn open_threads_and_new_resolved_threads_stay_and_nothing_is_written() {
+        let dir = seeded(
+            "archive-none",
+            &[
+                root(&Author::User, "u1"),
+                root(&Author::User, "u2"),
+                resolve(&agent(), "u2"),
+            ],
+        );
+        let before = log(&dir);
+        assert_eq!(archive(&dir, "now"), Ok(Archived::default()));
+        assert_eq!(log(&dir), before);
+        assert!(!dir.join(ARCHIVE_FILE).exists());
+        // An empty review has nothing to archive either.
+        let empty = temp_dir("archive-empty");
+        assert_eq!(archive(&empty, "now"), Ok(Archived::default()));
+        assert!(!empty.join(REVIEW_FILE).exists());
+    }
+
+    #[test]
+    fn an_agent_s_resolve_is_archived_once_it_was_seen() {
+        let seen = event(&Author::User, Kind::Seen { id: id("u1") });
+        let dir = seeded(
+            "archive-seen",
+            &[root(&Author::User, "u1"), resolve(&agent(), "u1"), seen],
+        );
+        assert_eq!(archive(&dir, "now").unwrap().threads, 1);
+        assert_eq!(archived(&dir).lines().count(), 3);
+    }
+
+    #[test]
+    fn an_unsent_resolved_thread_is_archived_and_counted() {
+        let user = Author::User;
+        let dir = seeded(
+            "archive-unsent",
+            &[
+                root(&user, "u1"),
+                resolve(&user, "u1"),
+                root(&user, "u2"),
+                sent(&["u2"], "b1"),
+                resolve(&user, "u2"),
+            ],
+        );
+        let done = archive(&dir, "now").unwrap();
+        assert_eq!(
+            done,
+            Archived {
+                threads: 2,
+                unsent: 1
+            }
+        );
+        assert!(read(&dir).unwrap().threads.is_empty());
+    }
+
+    #[test]
+    fn the_next_ids_after_an_archive_are_above_every_archived_one() {
+        let user = Author::User;
+        let mut events = Vec::new();
+        for n in 1..=5 {
+            events.push(root(&user, &format!("u{n}")));
+            events.push(resolve(&user, &format!("u{n}")));
+        }
+        events.extend([
+            root(&agent(), "a1"),
+            reply(&agent(), "a2", "a1"),
+            resolve(&user, "a1"),
+            sent(&["u1"], "b1"),
+            sent(&["u2"], "b2"),
+        ]);
+        let dir = seeded("archive-ids", &events);
+        assert_eq!(archive(&dir, "now").unwrap().threads, 6);
+        // What is left is one line, which carries the counters.
+        assert_eq!(log(&dir).lines().count(), 1, "{}", log(&dir));
+        // `read` is what a pane does when it starts again.
+        let mut ids = read(&dir).unwrap().ids;
+        assert_eq!(ids.comment(&user).as_str(), "u6");
+        assert_eq!(ids.comment(&agent()).as_str(), "a3");
+        assert_eq!(ids.batch().as_str(), "b3");
+        assert_eq!(write(&dir, "t", add_root), Ok(id("u6")));
+        // A second archive carries them on, in one line that replaces the first.
+        write(&dir, "t", |_, _| {
+            Ok::<_, ()>((vec![resolve(&user, "u6")], ()))
+        })
+        .unwrap();
+        assert_eq!(archive(&dir, "later").unwrap().threads, 1);
+        assert_eq!(log(&dir).lines().count(), 1, "{}", log(&dir));
+        assert!(log(&dir).contains("\"at\":\"later\""));
+        let mut ids = read(&dir).unwrap().ids;
+        assert_eq!(ids.comment(&user).as_str(), "u7");
+        assert_eq!(ids.comment(&agent()).as_str(), "a3");
+        assert_eq!(ids.batch().as_str(), "b3");
+    }
+
+    #[test]
+    fn a_second_archive_appends_to_the_archive() {
+        let user = Author::User;
+        let dir = seeded("archive-twice", &[root(&user, "u1"), resolve(&user, "u1")]);
+        archive(&dir, "now").unwrap();
+        let first = archived(&dir);
+        write(&dir, "t", |_, _| {
+            Ok::<_, ()>((vec![root(&user, "u2"), resolve(&user, "u2")], ()))
+        })
+        .unwrap();
+        archive(&dir, "now").unwrap();
+        assert!(archived(&dir).starts_with(&first));
+        assert_eq!(roots(&fold(&events_of(&archived(&dir)))), ["u1", "u2"]);
+    }
+
+    #[test]
+    fn a_deleted_reply_goes_with_its_thread_and_a_line_that_does_not_parse_stays() {
+        let user = Author::User;
+        let dir = seeded(
+            "archive-lines",
+            &[
+                root(&user, "u1"),
+                reply(&user, "u2", "u1"),
+                event(&user, Kind::Delete { id: id("u2") }),
+                resolve(&user, "u1"),
+            ],
+        );
+        let mut text = log(&dir);
+        text.push_str("not json\n{\"cut");
+        std::fs::write(dir.join(REVIEW_FILE), text).unwrap();
+        assert_eq!(archive(&dir, "now").unwrap().threads, 1);
+        assert_eq!(archived(&dir).lines().count(), 4);
+        let left = log(&dir);
+        assert_eq!(left.lines().count(), 3, "{left}");
+        assert!(left.ends_with("not json\n{\"cut\n"), "{left}");
+        assert_eq!(read(&dir).unwrap().skipped_lines, 2);
+    }
+
+    #[test]
+    fn an_archive_under_a_held_lock_is_busy_and_changes_neither_file() {
+        let user = Author::User;
+        let dir = seeded("archive-busy", &[root(&user, "u1"), resolve(&user, "u1")]);
+        let before = log(&dir);
+        let held = lock(&dir).unwrap();
+        assert_eq!(archive(&dir, "now"), Err(StoreError::Busy));
+        assert_eq!(log(&dir), before);
+        assert!(!dir.join(ARCHIVE_FILE).exists());
+        drop(held);
+        assert_eq!(archive(&dir, "now").unwrap().threads, 1);
+    }
+
+    #[test]
+    fn an_archive_that_cannot_be_appended_to_leaves_the_log_as_it_was() {
+        let user = Author::User;
+        let dir = seeded("archive-io", &[root(&user, "u1"), resolve(&user, "u1")]);
+        let before = log(&dir);
+        std::fs::create_dir(dir.join(ARCHIVE_FILE)).unwrap();
+        let error = archive(&dir, "now").unwrap_err();
+        assert!(matches!(error, StoreError::Io { path, .. } if path.ends_with(ARCHIVE_FILE)));
+        assert_eq!(log(&dir), before);
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_the_log_as_it_was_and_the_thread_in_both_files() {
+        let user = Author::User;
+        let dir = seeded("archive-rename", &[root(&user, "u1"), resolve(&user, "u1")]);
+        let before = log(&dir);
+        // The lock, the archive and the temp file exist, so each opens in a directory that
+        // takes no new name. Only the rename needs to write the directory.
+        drop(lock(&dir).unwrap());
+        std::fs::write(dir.join(ARCHIVE_FILE), "").unwrap();
+        let temp = dir.join(format!("{REVIEW_FILE}.{}.tmp", std::process::id()));
+        std::fs::write(&temp, "").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let error = archive(&dir, "now").unwrap_err();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(error, StoreError::Io { path, .. } if path.ends_with(REVIEW_FILE)));
+        assert_eq!(log(&dir), before);
+        assert_eq!(roots(&read(&dir).unwrap()), ["u1"]);
+        assert_eq!(archived(&dir).lines().count(), 2);
+        // The next archive moves it for good. The archive then holds its events twice, and a
+        // fold of them is still one thread.
+        assert_eq!(archive(&dir, "now").unwrap().threads, 1);
+        assert!(read(&dir).unwrap().threads.is_empty());
+        assert_eq!(archived(&dir).lines().count(), 4);
+        let moved = fold(&events_of(&archived(&dir)));
+        assert_eq!(roots(&moved), ["u1"]);
+        assert!(!thread(&moved, "u1").is_open());
     }
 }

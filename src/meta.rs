@@ -1,6 +1,6 @@
 //! `meta.json`: the spec, base, target agent and review pane of one review.
 //!
-//! The only file that is rewritten, by `open`, the TUI and the `send` action. A save takes the
+//! It is rewritten on every save, by `open`, the TUI and the `send` action. A save takes the
 //! store lock, reads the current file, changes the caller's fields and renames a temp file over it.
 
 use std::fs::{self, OpenOptions};

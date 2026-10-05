@@ -20,9 +20,10 @@ The core loop, and nothing else:
 6. The agent can also start a review by adding its own comments and opening the pane.
 
 In v1: both diff specs, replies, resolve and reopen by either side, the `new` marker, the `outdated`
-tag, resend, the quit prompt, edit and delete of your own comments.
+tag, resend, the quit prompt, edit and delete of your own comments. Archive was built after v1, with the
+third round of feedback.
 
-After v1, in this order: paste mode, archive, side-by-side view, word-level diff, syntax highlighting,
+After v1, in this order: paste mode, side-by-side view, word-level diff, syntax highlighting,
 Codex and pi, staged and single-commit specs, a reviewer agent.
 
 Not planned: daemon, file watcher, outbox file, startup hook, generated skill, highlight marks, markup,
@@ -97,6 +98,7 @@ avoids a SHA dependency. The directory is created with mode `0700` and files wit
 | File | Content |
 |---|---|
 | `review.jsonl` | Events, one JSON object per line |
+| `archive.jsonl` | The events of archived threads, in the same form. Only `archive` writes it, and nothing reads it |
 | `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id` |
 | `lock` | Empty. Target of the exclusive lock |
 
@@ -117,6 +119,7 @@ Every event has `kind`, `at` (RFC 3339, display only) and `by` (`user`, `agent:<
 | `reopen` | `id` (a root) |
 | `sent` | `ids`, `batch` |
 | `seen` | `id` (a root) |
+| `archived` | `user`, `agent`, `batch`: the highest counter each kind of id had reached when threads were archived |
 
 Fold rules:
 
@@ -129,6 +132,8 @@ Fold rules:
   "edited since sent". The card shows that mark, and the agent sees the new text only on a resend.
 - A thread is `new` when its last `resolve` is by an agent and no `seen` follows it.
 - Deleting a root deletes its thread.
+- An `archived` event raises each id counter to at least its value and changes no thread. It is how a log
+  that no longer holds `u1` to `u5` still gives the next comment `u6`.
 
 ### 3.3 Writing
 
@@ -141,12 +146,39 @@ events, writes all lines with one `write_all` on an `O_APPEND` handle, and drops
 for the user, `a<n>` for agents, `b<n>` for send batches) are the highest counter in the folded review
 plus one. Section 12.4 has the graph.
 
+`store::archive(dir, now)` is the one operation that rewrites `review.jsonl`. It takes the same lock, so it
+cannot run beside an append. Under the lock it reads the log line by line, folds it, and takes every thread
+that is resolved and not `new`. An unsent one goes too. Then:
+
+- The events of those threads are appended to `archive.jsonl` with one `write_all`, and the file is synced.
+  These are every event that names the root or one of its replies, a deleted reply included. A `sent` event
+  that carried comments of both kinds is split in two, and each part keeps the batch id.
+- The rest is written to `review.jsonl.<pid>.tmp`, synced, and renamed over `review.jsonl`. Its first line
+  is one `archived` event with the counters of the folded log, and an earlier `archived` line is dropped,
+  so the log holds one. A line that did not parse stays as it was, and so does an event that names an id
+  no thread has.
+- With nothing to archive it writes neither file.
+
+Ids are never reused, because the counters are in the log itself and reach the disk in the same rename
+that removes the archived lines. No second file has to agree with the log.
+
+The archive is written first. A crash, or a failed write, between the two steps leaves a thread in both
+files and never in neither. `review.jsonl` decides: a thread whose root is still there is live, and the copy
+of it in `archive.jsonl` is ignored. The next archive appends that thread's events again, so `archive.jsonl`
+can hold a thread's events twice. A reader folds it with the same fold as the log: an `add` of an id it has
+seen is skipped, and the other events of the thread replay in their order and end in the same state, so the
+fold has the thread once.
+
+Every writer opens `review.jsonl` after it has the lock, so an append cannot land in the replaced file.
+
 ### 3.4 Reading
 
 Read the whole file and fold. Ignore a final line with no newline. Skip a line that does not parse and
 count it, so the TUI can show "1 unreadable event". The TUI keeps the file length it last saw and
 checks it every 250 ms on its input poll timeout. When the length differs, in either direction, it reads
 and folds the whole file again. A review log is small, and this keeps a rewrite and an append the same case.
+An archive by another pane is seen this way, because the rewritten log is always shorter: it loses at least
+one thread's `add` and `resolve` lines and gains at most one `archived` line, which is shorter than the two.
 
 ## 4. Diff
 
@@ -340,6 +372,7 @@ only in v1.
 | `reply` | `r` | Reply to the focused thread |
 | `edit`, `delete` | `e`, `d` | Edit or delete your own focused comment |
 | `resolve` | `x` | Resolve or reopen the focused thread |
+| `archive` | `shift+a` | Move the resolved threads out of the review, after asking |
 | `send` | `shift+s` | Send unsent |
 | `resend` | `s` | Resend the focused thread |
 | `reload` | `shift+r` | Reload the diff |
@@ -500,6 +533,21 @@ How comments are written (built in M5):
 - When the pane is told to end, or its terminal fails, with text in the editor, the text is written as the
   comment, reply or edit it was for.
 
+How archive behaves (built after M6):
+
+- Resolved threads leave the pane only through `archive`. Nothing is archived or hidden on its own.
+- `archive` takes every resolved thread except the ones still marked `[new]`, so an agent's resolve the
+  user has not looked at stays. A resolved thread that was never sent goes too.
+- It asks first, in a box like the quit prompt: `archive 3 resolved threads (1 never sent)?`, then
+  `[a] archive` and `[esc] stay`. The part in brackets is there only when some were never sent. These two
+  keys are not remappable, and any other key leaves the question open. The numbers are counted from the
+  review when the box is drawn.
+- With nothing to archive the status line says `nothing to archive` and no box opens.
+- After `a` the status line says `archived 3`, with the number the store moved, and the pane reads the log
+  again. The threads are gone from the pane, from the unsent count and from the agent's `comment list`.
+  A busy review or a failed write is a failure on the status line, and the threads stay.
+- There is no viewer, no unarchive and no agent command for it. Only the user archives.
+
 How send behaves (built in M6):
 
 - `send` sends the unsent threads and `resend` sends the thread under the cursor again, with the text it has
@@ -651,14 +699,14 @@ must build the binary itself.
 | `comment reply <id> "<text>"`, then `resolve` | Text from stdin, `resolve --reply -` | G8, G20 |
 | Reopen is the only way to send again | Resend key and `--all-open` | G1 |
 | Outbox file over 8 KB | Removed | Untested guess. Herdr rejects oversized pastes itself |
-| `context`, `files`, `comment add`, `rm`, `clear`, `archive` | Removed or deferred | Not needed for the core loop |
+| `context`, `files`, `comment add`, `rm`, `clear`, `archive` | Removed or deferred | Not needed for the core loop. Archive is a key of the pane and not a command |
 | `r` for reload and reply | `R` reload, `r` reply | Key conflict |
 | `prefix+r`, `prefix+shift+r` | `prefix+i`, `prefix+shift+i` | W3, decided |
 | Fixed keys in the pane | `[keys]` in `config.toml` | Decided: the user can remap review actions |
 | Config setting for placement | Not in v1, the config holds keys only | Decided |
 | Edit after sent: open question | Stays sent, marked "edited since sent", resend by hand | Decided |
 | `agent:<name>` from an unspecified source | Auto-detect through `herdr agent list`, `--name` overrides | Decided |
-| Paste mode and archive in v1 | After v1 | Decisions 2 and 7 stand, they are built later |
+| Paste mode and archive in v1 | After v1 | Decisions 2 and 7 stand. Archive is built (section 3.3), paste mode is not |
 | macOS state in `~/Library/Application Support` | `~/.local/state` on both systems | One rule |
 
 ## 10. Milestones
@@ -774,7 +822,7 @@ Checks:
 
 ### After v1
 
-Paste mode (`p`), archive (`archive.jsonl`, under the lock), side-by-side view, word diff, syntax
+Paste mode (`p`), side-by-side view, word diff, syntax
 highlighting behind a cargo feature, Codex and pi, staged and single-commit specs, reviewer agent.
 
 ## 11. Open questions and spike findings
@@ -848,7 +896,8 @@ Records:
 | `Comment` | `id`, `parent`, `author`, `at` (the time of its `add` event), `body`, `sent_batch`, `edited_since_sent` |
 | `Thread` | `root: Comment`, `anchor: Anchor`, `replies`, `status`, `is_new`, `unsent` |
 | `Anchor` | `path`, `old_path`, `target: AnchorTarget`, `spec: Spec` |
-| `Review` | `threads` in file order, `skipped_lines`. The result of the fold |
+| `Review` | `threads` in file order, `skipped_lines`, `ids` (the counters the next id comes from). The result of the fold |
+| `Archived` | `threads`, `unsent`: how many threads one archive moved, and how many of them were never sent |
 | `Meta` | `root`, `spec`, `target: Option<Target>`, `review_pane: Option<PaneId>` |
 | `Target` | `pane: PaneId`, `terminal: TerminalId`, `agent: String` |
 | `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
@@ -942,6 +991,42 @@ review pane can make the agent's own `git` commands fail while both run in one w
 
 `build` is where an operation validates against the current state. Validation and append happen under
 one lock, so a `resolve` cannot race with a `delete` of the same thread.
+
+Cardinality: one-shot.
+
+#### Archive (the one rewrite of the log)
+
+```
+-> store::archive(dir, now)
+  -> open lock file                        R: dir     E: Io -> propagate
+  -> try_lock, up to 2 s                              E: held -> retry every 2 ms, then Busy, neither file changes
+  -> read review.jsonl line by line, fold  R: dir     E: Io -> propagate
+                                                      E: bad line -> escape, the line stays in the log as it was
+  -> take the threads resolved and not new (pure)     none -> Archived { 0, 0 }, nothing written
+  -> split the lines into moved and kept   (pure)     a sent event of both kinds is split in two
+  -> append moved to archive.jsonl, sync   R: dir     E: Io -> propagate, review.jsonl as it was
+  -> write kept to a temp file, sync       R: dir     E: Io -> propagate, review.jsonl as it was, thread in both files
+  -> rename it over review.jsonl                      E: Io -> remove the temp file, propagate, review.jsonl as it was
+  -> drop guard, lock released             scope: released on every path
+```
+
+The pane's side:
+
+```
+-> Action::Archive
+  -> count the threads to take             (pure)     none -> notice "nothing to archive", no prompt
+  -> Prompt::Archive                                  esc -> nothing written
+  -> store::archive                        R: dir, now   E: Busy -> failure "review is busy, press again"
+                                                         E: Io -> failure with the file's name
+  -> read the log again, lay the stream out
+```
+
+Decisions that fall out of the graph:
+
+- The store counts under the lock, so it archives what is resolved then and not what the prompt counted.
+  A thread an agent resolved in between is `new` and stays. A comment an agent adds in between is in the
+  log the archive reads, so it is neither lost nor moved unless its thread is one the archive takes.
+- Every failure leaves `review.jsonl` as it was. Pressing the key again is always safe.
 
 Cardinality: one-shot.
 
@@ -1088,7 +1173,7 @@ Decisions that fall out of the graph:
 
 ### 12.5 Meta file
 
-`meta.json` is the only file that is rewritten, and three processes write it (`open`, the TUI, the
+`meta.json` is rewritten on every save, and three processes write it (`open`, the TUI, the
 `send` action). A save takes the same lock as the store, reads the current file, changes its own
 fields, writes a temp file and renames it. A save that fails is a warning and never blocks a review
 action.
@@ -1114,6 +1199,7 @@ Each `E:` line above is one test, and each test swaps only the parameters listed
 | Graph | Swapped | Tests |
 |---|---|---|
 | Store write | temp `dir`, fixed `now` | Lock held by another process gives `Busy` after 2 s. A killed holder frees the lock. `build` returning an error writes nothing |
+| Archive | temp `dir`, fixed `now` | A held lock gives `Busy` and changes neither file. A bad line stays. Nothing to archive writes nothing. An archive that cannot be appended to and a rename that fails each leave the log as it was. Other processes appending beside it lose nothing and get no id twice |
 | Agent CLI | fixture `git`, recording `herdr`, temp `dir` | Unknown id, a second `resolve` is a no-op, a line past the end of the file, an oversized body, a `herdr` failure does not fail the command |
 | `open` | recording `herdr`, `Env` literal | No context JSON, review pane already open, stale review pane, no agent |
 | Load diff | fixture `git` | Every row of section 4.2, and a failed reload keeps the old diff |

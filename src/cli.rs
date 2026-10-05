@@ -766,6 +766,41 @@ mod tests {
     }
 
     #[test]
+    fn an_archived_thread_is_gone_from_list_and_the_next_id_is_not_its_own() {
+        let fixture = Fixture::new("archived");
+        fixture.seed(2);
+        let resolve = Event {
+            at: "t".into(),
+            by: Author::User,
+            kind: Kind::Resolve {
+                id: CommentId::parse("u2").unwrap(),
+            },
+        };
+        write(&fixture.dir, "t", |_, _| Ok::<_, ()>((vec![resolve], ()))).unwrap();
+        assert_eq!(crate::store::archive(&fixture.dir, "t").unwrap().threads, 1);
+        let text = fixture.run("comment list", b"");
+        assert_eq!(
+            (text.code, text.stdout.as_str()),
+            (0, "u1 open, unsent a.rs:3 (R) by user\n  comment 1\n")
+        );
+        assert!(
+            !fixture
+                .run("comment list --json", b"")
+                .stdout
+                .contains("u2")
+        );
+        assert_eq!(
+            fixture.run("comment list --status resolved", b"").stdout,
+            ""
+        );
+        assert_eq!(fixture.run("comment reopen u2", b"").code, 2);
+        let next = write(&fixture.dir, "t", |review, _| {
+            Ok::<_, ()>((Vec::new(), review.ids.clone().comment(&Author::User)))
+        });
+        assert_eq!(next.unwrap().as_str(), "u3");
+    }
+
+    #[test]
     fn a_wrong_id_exits_2_and_prints_the_open_ids() {
         let fixture = Fixture::new("unknown");
         fixture.seed(2);
