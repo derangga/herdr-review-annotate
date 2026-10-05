@@ -7,6 +7,7 @@ pub mod cli;
 pub mod comment;
 pub mod diff;
 pub mod edit_keys;
+pub mod editor;
 pub mod env;
 pub mod herdr;
 pub mod keymap;

@@ -75,6 +75,7 @@ section 7.1), `chrono` with the `clock` feature. On Unix, `signal-hook` for clea
 | `edit_keys.rs`, `width.rs` | None. |
 | `termination.rs` | None. The TUI loop checks its flag on every tick (section 12.4). |
 | `editor.rs` | Keep the text buffer, cursor and key handling. Remove the popup frame, the store calls and the invocation context (`:16-26`). It becomes a widget the TUI draws inline. |
+| `layout.rs` | Not copied as a file. `layout_comment` moves into `editor.rs`, which is its only caller. |
 | `format.rs` | Copy only `sanitize_terminal_text` (`:7-21`) into `tui.rs`. |
 | `store.rs` | Not copied (ADR 0002). |
 
