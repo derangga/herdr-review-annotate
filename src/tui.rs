@@ -19,17 +19,18 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::diff::{Diff, GitError, RepoRoot, load, run_git_bytes};
+use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
 use crate::env::Env;
 use crate::keymap::{Action, Keymap};
 use crate::meta::{Meta, locate, save};
 use crate::store::{PaneId, Review, Spec, Warning, log_len, read};
 use crate::termination::Termination;
+use crate::view::{View, draw};
 use crate::width::truncate_to_width;
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -79,6 +80,7 @@ pub struct App {
     /// The length of `review.jsonl` when it was last read.
     seen_len: u64,
     pub diff: Option<Diff>,
+    pub view: View,
     pub screen: Screen,
     /// Why the last reload failed. The previous diff stays on screen.
     pub status: Option<String>,
@@ -106,6 +108,7 @@ impl App {
             review: Review::default(),
             seen_len: 0,
             diff: None,
+            view: View::default(),
             screen: Screen::Message("loading".to_owned()),
             status: None,
             pane_saved: false,
@@ -160,6 +163,8 @@ impl App {
     fn read_diff(&mut self, root: &RepoRoot, git: &mut Git) -> Result<(), String> {
         let spec = self.requested_spec();
         let diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
+        let anchor = self.diff.as_ref().and_then(|old| self.view.anchor(old));
+        self.view.rebuild(&diff, &self.review, anchor);
         self.diff = Some(diff);
         Ok(())
     }
@@ -229,11 +234,52 @@ impl App {
         match action {
             Action::Quit => self.quit = true,
             Action::Reload => self.load(git),
-            _ => {}
+            Action::SwitchSpec => self.switch_spec(git),
+            _ => {
+                self.view.apply(action);
+            }
         }
     }
 
-    /// The status line: which diff is shown and the target agent.
+    /// Show the other diff: the working tree against `HEAD`, or against the base. The choice is
+    /// kept in `meta.json`. With no base to compare with, the status line says so.
+    fn switch_spec(&mut self, git: &mut Git) {
+        let (Some(root), Some(dir)) = (self.root.clone(), self.dir.clone()) else {
+            return;
+        };
+        let (spec, base) = match self.requested_spec() {
+            Spec::Branch { base } => (Spec::WorkTree, Some(base)),
+            Spec::WorkTree => {
+                let base = match self.meta.base.clone() {
+                    Some(base) => base,
+                    None => match default_base(root.path(), &mut *git) {
+                        Ok(base) => base,
+                        Err(error) => {
+                            self.status = Some(error.to_string());
+                            return;
+                        }
+                    },
+                };
+                (Spec::Branch { base: base.clone() }, Some(base))
+            }
+        };
+        let saved = save(&dir, root.path(), |meta| {
+            meta.spec = Some(spec.clone());
+            meta.base.clone_from(&base);
+        });
+        if let Err(error) = saved {
+            self.warn(Warning::Config(format!(
+                "could not save meta.json: {error}"
+            )));
+        }
+        self.meta.spec = Some(spec);
+        self.meta.base = base;
+        if let Err(message) = self.read_diff(&root, git) {
+            self.status = Some(message);
+        }
+    }
+
+    /// The status line: which diff is shown, the target agent, and the keys that matter most.
     fn status_line(&self) -> String {
         let spec = self
             .diff
@@ -247,7 +293,16 @@ impl App {
             || "no agent".to_owned(),
             |target| format!("> {} {}", target.agent, target.pane),
         );
-        format!("{spec}  {target}")
+        let hints = [
+            (Action::SwitchPanel, "panel"),
+            (Action::SwitchSpec, "spec"),
+            (Action::Reload, "reload"),
+            (Action::Help, "help"),
+            (Action::Quit, "quit"),
+        ]
+        .map(|(action, what)| format!("{} {what}", self.keymap.label(action)))
+        .join("  ");
+        format!("{spec}  {target}   {hints}")
     }
 }
 
@@ -275,8 +330,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
         }
         Screen::Review => {
-            let files = app.diff.as_ref().map_or(0, |diff| diff.files.len());
-            frame.render_widget(Paragraph::new(format!("{files} files")), body);
+            if let Some(diff) = &app.diff {
+                draw(frame, &app.view, diff, &app.keymap);
+            }
         }
     }
     let width = usize::from(frame.area().width);
@@ -331,15 +387,23 @@ pub fn run_loop<B: Backend>(
         if terminated() {
             return Exit::Terminated;
         }
+        if let Ok(size) = terminal.size() {
+            app.view.resize(Rect::new(0, 0, size.width, size.height));
+        }
         if terminal.draw(|frame| render(frame, app)).is_err() {
             return Exit::Io;
         }
         match poll(TICK) {
             Err(_) => return Exit::Io,
             Ok(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                if let Some(action) = app.keymap.action(&key) {
+                if app.view.help {
+                    app.view.help = false;
+                } else if let Some(action) = app.keymap.action(&key) {
                     app.handle(action, git);
                 }
+            }
+            Ok(Some(Event::Mouse(mouse))) if app.screen == Screen::Review && !app.view.help => {
+                app.view.mouse(mouse);
             }
             Ok(Some(Event::FocusGained)) => app.load(git),
             Ok(_) => {}
@@ -454,6 +518,8 @@ mod tests {
         repo_ok: Cell<bool>,
         diff_error: RefCell<Option<GitError>>,
         merge_base_missing: Cell<bool>,
+        no_refs: Cell<bool>,
+        patch: RefCell<Vec<u8>>,
         diffs: Cell<usize>,
     }
 
@@ -485,6 +551,8 @@ mod tests {
                 repo_ok: Cell::new(true),
                 diff_error: RefCell::new(None),
                 merge_base_missing: Cell::new(false),
+                no_refs: Cell::new(false),
+                patch: RefCell::new(PATCH.to_vec()),
                 diffs: Cell::new(0),
             }
         }
@@ -509,12 +577,17 @@ mod tests {
                 }
                 ["rev-parse", "--show-toplevel"] => Err(GitError::NotARepo),
                 ["merge-base", ..] if self.merge_base_missing.get() => Err(failed()),
+                ["rev-parse", "--verify", "--quiet", name]
+                    if self.no_refs.get() && *name != "HEAD" =>
+                {
+                    Err(failed())
+                }
                 ["rev-parse" | "merge-base", ..] => Ok(b"abc\n".to_vec()),
                 ["-c", _, "diff", ..] => {
                     self.diffs.set(self.diffs.get() + 1);
                     match self.diff_error.borrow().clone() {
                         Some(error) => Err(error),
-                        None => Ok(PATCH.to_vec()),
+                        None => Ok(self.patch.borrow().clone()),
                     }
                 }
                 ["ls-files", ..] => Ok(Vec::new()),
@@ -899,5 +972,197 @@ mod tests {
         let _ = std::panic::take_hook();
         assert!(result.is_err());
         assert!(HOOK_RAN.load(Ordering::SeqCst));
+    }
+
+    const TWO_FILES: &str = "diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,3 @@
+ a1
+-a2
++A2
+ a3
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1 +1 @@
+-b
++B
+";
+
+    fn started_with(fixture: &Fixture, patch: &str) -> App {
+        *fixture.patch.borrow_mut() = patch.as_bytes().to_vec();
+        fixture.started()
+    }
+
+    #[test]
+    fn keys_move_the_cursor_through_the_loop_and_the_screen_follows() {
+        let fixture = Fixture::new("navigate");
+        let mut app = started_with(&fixture, TWO_FILES);
+        let events = vec![
+            Some(key('j')),
+            Some(key('j')),
+            Some(key(']')),
+            Some(key('k')),
+        ];
+        drive(&fixture, &mut app, events, |_| {});
+        // Down twice to row 2, the next hunk header is row 7, and up once.
+        assert_eq!(app.view.cursor, 6);
+        let screen = screen_of(&app);
+        assert!(screen.contains("M a.rs"));
+        assert!(screen.contains("@@ -1 +1 @@"));
+    }
+
+    #[test]
+    fn the_mouse_reaches_the_view_through_the_loop() {
+        let fixture = Fixture::new("mouse");
+        let mut app = started_with(&fixture, TWO_FILES);
+        let click = Event::Mouse(event::MouseEvent {
+            kind: event::MouseEventKind::Down(event::MouseButton::Left),
+            column: 40,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        drive(&fixture, &mut app, vec![Some(click)], |_| {});
+        assert_eq!(app.view.cursor, 3);
+    }
+
+    #[test]
+    fn rebinding_a_key_changes_the_footer_and_the_help_overlay() {
+        let fixture = Fixture::new("rebind");
+        let app = started_with(&fixture, TWO_FILES);
+        assert!(screen_of(&app).contains("R reload"));
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[keys]\nreload = \"r\"\nhelp = \"F1\"\n",
+        )
+        .unwrap();
+        let mut tall = App::new(fixture.env.clone(), None);
+        fixture.with_git(|git| tall.load(git));
+        let screen = screen_of(&tall);
+        assert!(screen.contains("r reload"), "{screen}");
+        assert!(screen.contains("f1 help"), "{screen}");
+        assert!(screen.contains("no key left for reply"), "{screen}");
+        // The overlay opens on its key, is drawn from the same map, and closes on any key.
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        let mut git = |args: &[String]| fixture.git(args);
+        let f1 = Event::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        let events = [Some(f1), None];
+        let mut events = events.into_iter();
+        let polls = Cell::new(0);
+        run_loop(
+            &mut tall,
+            &mut terminal,
+            &mut git,
+            |_| {
+                polls.set(polls.get() + 1);
+                Ok(events.next().flatten())
+            },
+            || polls.get() >= 1,
+        );
+        assert!(tall.view.help);
+        terminal.draw(|frame| render(frame, &tall)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .chunks(80)
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("r                reload the diff"), "{text}");
+        assert!(
+            text.contains("-                reply to the thread"),
+            "{text}"
+        );
+        drive(&fixture, &mut tall, vec![Some(key('q'))], |_| {});
+        assert!(!tall.view.help);
+        assert!(
+            !tall.quit,
+            "the key that closes the overlay does nothing else"
+        );
+    }
+
+    #[test]
+    fn a_file_name_with_an_escape_byte_reaches_the_backend_without_it() {
+        let fixture = Fixture::new("escape-name");
+        let patch = "diff --git \"a/e\\033[2Jvil.rs\" \"b/e\\033[2Jvil.rs\"\n--- \"a/e\\033[2Jvil.rs\"\n+++ \"b/e\\033[2Jvil.rs\"\n@@ -1 +1 @@\n-a\n+b\n";
+        let app = started_with(&fixture, patch);
+        assert!(
+            app.diff.as_ref().unwrap().files[0]
+                .path
+                .as_str()
+                .contains('\u{1b}')
+        );
+        let screen = screen_of(&app);
+        assert!(screen.contains("e[2Jvil.rs"));
+        assert!(!screen.chars().any(|c| c != '\n' && c.is_control()));
+    }
+
+    #[test]
+    fn switching_the_spec_shows_the_other_diff_and_remembers_it() {
+        let fixture = Fixture::new("switch-spec");
+        let mut app = started_with(&fixture, TWO_FILES);
+        assert!(screen_of(&app).contains("working tree"));
+        drive(&fixture, &mut app, vec![Some(key('b'))], |_| {});
+        assert_eq!(
+            app.diff.as_ref().unwrap().spec,
+            Spec::Branch {
+                base: "origin/HEAD".into()
+            }
+        );
+        assert!(screen_of(&app).contains("vs origin/HEAD"));
+        let (meta, _) = crate::meta::load(&fixture.dir());
+        assert_eq!(
+            meta.spec,
+            Some(Spec::Branch {
+                base: "origin/HEAD".into()
+            })
+        );
+        assert_eq!(fixture.diffs.get(), 2);
+        drive(&fixture, &mut app, vec![Some(key('b'))], |_| {});
+        assert_eq!(app.diff.as_ref().unwrap().spec, Spec::WorkTree);
+        let (meta, _) = crate::meta::load(&fixture.dir());
+        assert_eq!(meta.spec, Some(Spec::WorkTree));
+        // The base is remembered for the next switch.
+        assert_eq!(meta.base.as_deref(), Some("origin/HEAD"));
+    }
+
+    #[test]
+    fn switching_to_a_branch_with_no_base_says_so_and_keeps_the_diff() {
+        let fixture = Fixture::new("switch-no-base");
+        let mut app = started_with(&fixture, TWO_FILES);
+        fixture.no_refs.set(true);
+        drive(&fixture, &mut app, vec![Some(key('b'))], |_| {});
+        assert_eq!(app.diff.as_ref().unwrap().spec, Spec::WorkTree);
+        assert!(screen_of(&app).contains("no base branch found, tried origin/HEAD, main, master"));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_cursor_on_the_same_line() {
+        let fixture = Fixture::new("keep-cursor");
+        let mut app = started_with(&fixture, TWO_FILES);
+        drive(
+            &fixture,
+            &mut app,
+            vec![Some(key('j')), Some(key('j')), Some(key('j'))],
+            |_| {},
+        );
+        assert_eq!(app.view.cursor, 3);
+        drive(&fixture, &mut app, vec![Some(key('R'))], |_| {});
+        assert_eq!(app.view.cursor, 3);
+        assert_eq!(fixture.diffs.get(), 2);
+    }
+
+    #[test]
+    fn an_empty_diff_is_a_message_and_the_keys_still_work() {
+        let fixture = Fixture::new("empty");
+        let mut app = started_with(&fixture, "");
+        assert!(screen_of(&app).contains("No changes in the working tree."));
+        let events = vec![Some(key('j')), Some(key(']')), Some(key('q'))];
+        assert_eq!(drive(&fixture, &mut app, events, |_| {}), Exit::Quit);
     }
 }

@@ -703,6 +703,16 @@ fn all_added(content: &[u8]) -> Vec<Hunk> {
     vec![Hunk { header, rows }]
 }
 
+impl Diff {
+    /// The file a comment on `path` belongs to: the one with that path, or the one renamed from it
+    /// when an agent cited the old name.
+    pub fn file_index(&self, path: &RelPath) -> Option<usize> {
+        self.files
+            .iter()
+            .position(|file| file.path == *path || file.old_path.as_ref() == Some(path))
+    }
+}
+
 /// Where a thread lands in the diff on screen. Computed on every load and never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
@@ -722,9 +732,8 @@ pub enum Placement {
 pub fn place(thread: &Thread, diff: &Diff) -> Placement {
     let anchor = &thread.anchor;
     let file = diff
-        .files
-        .iter()
-        .find(|file| file.path == anchor.path || file.old_path.as_ref() == Some(&anchor.path));
+        .file_index(&anchor.path)
+        .and_then(|index| diff.files.get(index));
     let Some(file) = file.filter(|_| anchor.spec == diff.spec) else {
         return Placement::NotInDiff;
     };

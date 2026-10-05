@@ -340,6 +340,24 @@ only in v1.
 
 The mouse wheel scrolls and a click moves the cursor. These are not remappable.
 
+How the body behaves (built in M4):
+
+- The sidebar lists every file with a letter for how it changed (M modified, A added, D deleted, R renamed,
+  ? untracked, B binary, S submodule, L too large, ! unparsed) and is left out below 50 columns. It follows
+  the file under the cursor. With the sidebar focused, `up` and `down` move to the previous and next file,
+  and the page keys move by a page of files.
+- Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
+  inside a hunk, previous hunk goes to that hunk's own header. A thread is at its placed line, or at its
+  file header for a file comment. A thread not in the diff has no row.
+- A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).
+- The wheel moves three rows. A click in the stream or the sidebar moves the cursor there and focuses it.
+- The status line shows the diff that is on screen, the target, and the keys of `switch_panel`,
+  `switch_spec`, `reload`, `help` and `quit` as the keymap has them. A reload error replaces it. `help`
+  opens an overlay of every action, and any key closes it without doing anything else.
+- `switch_spec` flips between the working tree and the branch spec and saves the choice, with the base
+  (`meta.base`, else `origin/HEAD`, `main`, `master`), in `meta.json`. With no base it says so and stays.
+- A reload puts the cursor back on its row in the same file.
+
 ### 7.1 Keymap file
 
 The user can change any key in the table. The file is `config.toml` in the plugin config directory
@@ -505,6 +523,11 @@ Checks:
 
 - Opened on the `hunk/` checkout with a 50-file diff, the first frame appears with no visible delay.
   Record cold start and peak memory with `/usr/bin/time -l`.
+
+  Measured on 2026-10-05, release build, macOS, `/usr/bin/time -l`, on a local clone of `hunk/` with 50
+  `.ts` files each given two added lines (`git diff HEAD` is 20 KB), a `q` sent as the pane starts: wall time
+  0.07 s warm (0.35 s on the first, cold run), maximum resident set size 8.6 MB, peak memory footprint
+  2.4 MB. That covers `git` for the root, `HEAD`, the diff and `ls-files`, the first frame, and exit.
 - Scrolling to the end and back shows no stale rows.
 - A file whose name contains an ESC byte does not corrupt the screen.
 - Unit tests for the keymap: an override, a list of keys, an unbind, a conflict where the user's
