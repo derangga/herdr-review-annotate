@@ -13,7 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyEvent, KeyEventKind,
+    KeyCode, KeyEvent, KeyEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -22,7 +22,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::actions;
 use crate::cards::location;
@@ -30,8 +30,10 @@ use crate::comment::CommandError;
 use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
 use crate::editor::{Editor, Outcome};
 use crate::env::Env;
+use crate::herdr::run_herdr_output;
 use crate::keymap::{Action, Keymap};
-use crate::meta::{Meta, locate, save};
+use crate::meta::{Meta, Target, locate, save};
+use crate::send::{Scope, SendError, TargetError, resolve_target, save_target, send};
 use crate::store::{
     Anchor, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning, WriteError,
     log_len, read,
@@ -93,6 +95,48 @@ pub struct Compose {
     title: String,
 }
 
+/// How the pane calls the Herdr CLI: the arguments in, stdout or stderr out. Tests replace it.
+pub struct HerdrCall(Box<Call>);
+
+type Call = dyn FnMut(&[String]) -> Result<String, String>;
+
+impl HerdrCall {
+    pub fn new(call: impl FnMut(&[String]) -> Result<String, String> + 'static) -> Self {
+        Self(Box::new(call))
+    }
+
+    fn call(&mut self, args: &[String]) -> Result<String, String> {
+        (self.0)(args)
+    }
+}
+
+impl std::fmt::Debug for HerdrCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HerdrCall")
+    }
+}
+
+/// A send waiting for the loop to draw "sending" and then make the Herdr call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    scope: Scope,
+    /// The quit prompt chose "send": leave once the send went through.
+    quit_after: bool,
+}
+
+/// A question the pane asks before it goes on. It takes every key until it is answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prompt {
+    /// Several agents match. The choice is saved, and the send that asked runs again.
+    Pick {
+        found: Vec<Target>,
+        selected: usize,
+        request: Request,
+    },
+    /// Quitting with unsent comments: send, keep, or stay.
+    Quit,
+}
+
 /// The time to write into an event, as RFC 3339.
 fn real_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
@@ -130,6 +174,11 @@ pub struct App {
     /// Shown on one line under the status line until the next action.
     pub warnings: Vec<Warning>,
     pane_saved: bool,
+    /// The agent the next send goes to, as last resolved. `None` shows as "no agent".
+    pub target: Option<Target>,
+    pub herdr: HerdrCall,
+    pub prompt: Option<Prompt>,
+    pending: Option<Request>,
     pub quit: bool,
     /// The editor, while one is open. The diff is not reloaded while it is.
     pub compose: Option<Compose>,
@@ -159,6 +208,10 @@ impl App {
             screen: Screen::Message("loading".to_owned()),
             status: None,
             pane_saved: false,
+            target: None,
+            herdr: HerdrCall::new(run_herdr_output),
+            prompt: None,
+            pending: None,
             quit: false,
             compose: None,
             now: real_now,
@@ -242,6 +295,9 @@ impl App {
         let loaded = self.open(git).and_then(|(root, dir)| {
             self.read_store(&dir)?;
             self.read_diff(&root, git)?;
+            if !self.pane_saved {
+                self.refresh_target(&root, &dir);
+            }
             self.save_pane(&root, &dir);
             Ok(())
         });
@@ -255,6 +311,24 @@ impl App {
                 self.rebuild_view();
             }
             Err(message) => self.screen = Screen::Message(message),
+        }
+    }
+
+    /// Find the agent for the status line, once at start and after each send. Whatever it finds is
+    /// saved, so the `send` action, which never has this pane's environment, reaches the same agent.
+    fn refresh_target(&mut self, root: &RepoRoot, dir: &Path) {
+        let found = resolve_target(
+            &self.env,
+            &self.meta,
+            |args| self.herdr.call(args),
+            root.path(),
+        );
+        self.target = found.ok();
+        if let Some(target) = self.target.clone() {
+            if save_target(dir, root.path(), &self.meta, &target).is_err() {
+                self.warn(Warning::TargetNotSaved);
+            }
+            self.meta.target = Some(target);
         }
     }
 
@@ -306,7 +380,9 @@ impl App {
         self.warnings.clear();
         self.status = None;
         match action {
-            Action::Quit => self.quit = true,
+            Action::Quit => self.quit_or_ask(),
+            Action::Send => self.request(Scope::Unsent, false),
+            Action::Resend => self.resend(),
             Action::Reload => self.load(git),
             Action::SwitchSpec => self.switch_spec(git),
             Action::Comment => self.start_comment(),
@@ -319,6 +395,159 @@ impl App {
                 self.view.apply(action);
             }
         }
+    }
+
+    fn unsent(&self) -> usize {
+        self.review.threads.iter().filter(|t| t.unsent).count()
+    }
+
+    /// `quit`: leave, or with unsent comments ask what to do with them first.
+    fn quit_or_ask(&mut self) {
+        if self.unsent() == 0 {
+            self.quit = true;
+        } else {
+            self.prompt = Some(Prompt::Quit);
+        }
+    }
+
+    /// Queue a send. The loop draws "sending" and then runs it, because the Herdr call blocks.
+    fn request(&mut self, scope: Scope, quit_after: bool) {
+        if self.dir.is_some() {
+            self.status = Some("sending".to_owned());
+            self.pending = Some(Request { scope, quit_after });
+        }
+    }
+
+    /// `resend`: send the thread under the cursor again, with the text it has now.
+    fn resend(&mut self) {
+        let root = self
+            .view
+            .focused()
+            .and_then(|thread| self.view.thread_id(thread))
+            .cloned();
+        match root.and_then(|root| self.review.thread(&root)) {
+            None => self.status = Some("no thread here to resend".to_owned()),
+            Some(thread) if !thread.is_open() => {
+                self.status = Some("a resolved thread is not resent, reopen it first".to_owned());
+            }
+            Some(thread) => {
+                let scope = Scope::Thread(thread.root.id.clone());
+                self.request(scope, false);
+            }
+        }
+    }
+
+    /// Run the queued send. `draw` shows the frame first, which says "sending".
+    pub fn run_pending(&mut self, draw: impl FnOnce(&Self)) {
+        let Some(request) = self.pending.take() else {
+            return;
+        };
+        draw(self);
+        self.run_send(request);
+    }
+
+    fn run_send(&mut self, request: Request) {
+        let (Some(root), Some(dir)) = (self.root.clone(), self.dir.clone()) else {
+            return;
+        };
+        let now = (self.now)();
+        let result = send(&dir, root.path(), &self.env, &now, &request.scope, |args| {
+            self.herdr.call(args)
+        });
+        self.status = None;
+        match result {
+            Ok(sent) => {
+                for warning in sent.warnings {
+                    self.warn(warning);
+                }
+                if let Some(target) = sent.target {
+                    self.meta.target = Some(target.clone());
+                    self.target = Some(target);
+                }
+                self.status = Some(sent.outcome.to_string());
+                self.refold();
+                self.quit |= request.quit_after;
+            }
+            Err(SendError::Target(TargetError::Ambiguous(found))) => {
+                self.prompt = Some(Prompt::Pick {
+                    found,
+                    selected: 0,
+                    request,
+                });
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if matches!(error, SendError::Target(_)) {
+                    self.target = None;
+                }
+                let args = [
+                    "notification",
+                    "show",
+                    "review: not sent",
+                    "--body",
+                    &message,
+                ];
+                let _ = self.herdr.call(&args.map(str::to_owned));
+                self.status = Some(message);
+            }
+        }
+    }
+
+    /// A key while a prompt is open.
+    fn prompt_key(&mut self, key: KeyEvent) {
+        match (self.prompt.take(), key.code) {
+            (Some(Prompt::Quit), KeyCode::Char('s')) => self.request(Scope::Unsent, true),
+            (Some(Prompt::Quit), KeyCode::Char('k')) => self.quit = true,
+            (Some(Prompt::Quit), KeyCode::Esc | KeyCode::Char('n')) => {}
+            (
+                Some(Prompt::Pick {
+                    found,
+                    selected,
+                    request,
+                }),
+                code,
+            ) => match code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => self.choose(&found, selected, request),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.prompt = Some(Prompt::Pick {
+                        selected: selected.saturating_sub(1),
+                        found,
+                        request,
+                    });
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.prompt = Some(Prompt::Pick {
+                        selected: (selected + 1).min(found.len().saturating_sub(1)),
+                        found,
+                        request,
+                    });
+                }
+                _ => {
+                    self.prompt = Some(Prompt::Pick {
+                        found,
+                        selected,
+                        request,
+                    });
+                }
+            },
+            (prompt, _) => self.prompt = prompt,
+        }
+    }
+
+    /// Remember the agent the user picked, then run the send that asked.
+    fn choose(&mut self, found: &[Target], selected: usize, request: Request) {
+        let (Some(root), Some(dir), Some(chosen)) =
+            (self.root.clone(), self.dir.clone(), found.get(selected))
+        else {
+            return;
+        };
+        if save_target(&dir, root.path(), &self.meta, chosen).is_err() {
+            self.warn(Warning::TargetNotSaved);
+        }
+        self.meta.target = Some(chosen.clone());
+        self.target = Some(chosen.clone());
+        self.request(request.scope, request.quit_after);
     }
 
     /// Read the log again and lay the stream out, after this pane wrote to it.
@@ -501,6 +730,8 @@ impl App {
     pub fn key(&mut self, key: KeyEvent, git: &mut Git) {
         if self.compose.is_some() {
             self.compose_key(key);
+        } else if self.prompt.is_some() {
+            self.prompt_key(key);
         } else if self.view.help {
             self.view.help = false;
         } else if let Some(action) = self.keymap.action(&key) {
@@ -579,10 +810,11 @@ impl App {
             Spec::Branch { base } => format!("vs {base}"),
             Spec::WorkTree => "working tree".to_owned(),
         };
-        let target = self.meta.target.as_ref().map_or_else(
-            || "no agent".to_owned(),
+        let target = self.target.as_ref().map_or_else(
+            || "> no agent".to_owned(),
             |target| format!("> {} {}", target.agent, target.pane),
         );
+        let send = format!("{} send {}", self.keymap.label(Action::Send), self.unsent());
         let hints = [
             (Action::SwitchPanel, "panel"),
             (Action::SwitchSpec, "spec"),
@@ -592,7 +824,7 @@ impl App {
         ]
         .map(|(action, what)| format!("{} {what}", self.keymap.label(action)))
         .join("  ");
-        format!("{spec}  {target}   {hints}")
+        format!("{spec}  {send} {target}   {hints}")
     }
 }
 
@@ -634,6 +866,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
         }
     }
+    if let Some(prompt) = &app.prompt {
+        draw_prompt(frame, prompt, app.unsent());
+    }
     let width = usize::from(frame.area().width);
     let notices = app
         .diff
@@ -660,6 +895,53 @@ pub fn render(frame: &mut Frame, app: &App) {
         Paragraph::new(truncate_to_width(&sanitize_terminal_text(&line), width))
             .style(Style::new().add_modifier(Modifier::REVERSED)),
         status,
+    );
+}
+
+/// The question the pane is waiting on, in a box over the middle of the pane.
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize) {
+    let (title, lines) = match prompt {
+        Prompt::Quit => (
+            " unsent comments ".to_owned(),
+            vec![
+                Line::from(format!("{unsent} unsent")),
+                Line::from("s  send, then quit"),
+                Line::from("k  quit and keep them unsent"),
+                Line::from("esc  stay"),
+            ],
+        ),
+        Prompt::Pick {
+            found, selected, ..
+        } => (
+            " several agents match, pick one ".to_owned(),
+            found
+                .iter()
+                .enumerate()
+                .map(|(at, target)| {
+                    let text = format!("> {} {}", target.agent, target.pane);
+                    let line = Line::from(sanitize_terminal_text(&text));
+                    if at == *selected {
+                        line.style(Style::new().add_modifier(Modifier::REVERSED))
+                    } else {
+                        line
+                    }
+                })
+                .collect(),
+        ),
+    };
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(44);
+    let height = (u16::try_from(lines.len()).unwrap_or(0) + 2).min(area.height);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        popup,
     );
 }
 
@@ -703,7 +985,10 @@ pub fn run_loop<B: Backend>(
             }
             Ok(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => app.key(key, git),
             Ok(Some(Event::Mouse(mouse)))
-                if app.screen == Screen::Review && !app.view.help && app.compose.is_none() =>
+                if app.screen == Screen::Review
+                    && !app.view.help
+                    && app.compose.is_none()
+                    && app.prompt.is_none() =>
             {
                 app.view.mouse(mouse);
             }
@@ -713,6 +998,9 @@ pub fn run_loop<B: Backend>(
         if input {
             app.mark_seen();
         }
+        app.run_pending(|app| {
+            let _ = terminal.draw(|frame| render(frame, app));
+        });
         if app.quit {
             return Exit::Quit;
         }
@@ -803,6 +1091,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use ratatui::backend::TestBackend;
@@ -817,6 +1106,51 @@ mod tests {
     const PATCH: &[u8] =
         b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 
+    /// The Herdr the pane talks to in a test: the agents it lists, and every call it got.
+    #[derive(Default)]
+    struct FakeHerdr {
+        /// `(pane, terminal, status)`, all named claude and working in the repository root.
+        agents: Vec<(&'static str, &'static str, &'static str)>,
+        cwd: String,
+        calls: Vec<String>,
+        prompt_fails: bool,
+    }
+
+    impl FakeHerdr {
+        fn agent(&self, (pane, term, status): (&str, &str, &str)) -> String {
+            format!(
+                r#"{{"agent":"claude","agent_status":"{status}","cwd":"{}","pane_id":"{pane}","terminal_id":"{term}","workspace_id":"w1"}}"#,
+                self.cwd
+            )
+        }
+
+        fn answer(&mut self, args: &[String]) -> Result<String, String> {
+            let call = args.join(" ");
+            self.calls.push(call.clone());
+            if call == "agent list" {
+                let agents = self
+                    .agents
+                    .iter()
+                    .map(|a| self.agent(*a))
+                    .collect::<Vec<_>>();
+                return Ok(format!(
+                    r#"{{"result":{{"agents":[{}]}}}}"#,
+                    agents.join(",")
+                ));
+            }
+            if let Some(pane) = call.strip_prefix("agent get ") {
+                let found = self.agents.iter().find(|a| a.0 == pane);
+                return found.map_or(Err("pane_not_found".into()), |a| {
+                    Ok(format!(r#"{{"result":{{"agent":{}}}}}"#, self.agent(*a)))
+                });
+            }
+            if call.starts_with("agent prompt ") && self.prompt_fails {
+                return Err("socket gone".into());
+            }
+            Ok("{}".into())
+        }
+    }
+
     /// A home directory with a repository root and a config directory, and a `git` to go with it.
     struct Fixture {
         home: PathBuf,
@@ -828,6 +1162,7 @@ mod tests {
         no_refs: Cell<bool>,
         patch: RefCell<Vec<u8>>,
         diffs: Cell<usize>,
+        herdr: Rc<RefCell<FakeHerdr>>,
     }
 
     impl Fixture {
@@ -851,8 +1186,14 @@ mod tests {
                 ],
                 "/work".into(),
             );
+            let root = root.canonicalize().unwrap();
+            let herdr = FakeHerdr {
+                cwd: root.display().to_string(),
+                ..FakeHerdr::default()
+            };
             Self {
-                root: root.canonicalize().unwrap(),
+                root,
+                herdr: Rc::new(RefCell::new(herdr)),
                 home,
                 env,
                 repo_ok: Cell::new(true),
@@ -871,7 +1212,23 @@ mod tests {
         fn app(&self) -> App {
             let mut app = App::new(self.env.clone(), None);
             app.now = || "2026-10-05T00:00:00Z".to_owned();
+            let herdr = Rc::clone(&self.herdr);
+            app.herdr = HerdrCall::new(move |args| herdr.borrow_mut().answer(args));
             app
+        }
+
+        /// The agents the fake Herdr lists. Set them before the pane starts.
+        fn agents(&self, agents: &[(&'static str, &'static str, &'static str)]) {
+            self.herdr.borrow_mut().agents = agents.to_vec();
+        }
+
+        fn calls_starting(&self, start: &str) -> Vec<String> {
+            let calls = self.herdr.borrow().calls.clone();
+            calls.into_iter().filter(|c| c.starts_with(start)).collect()
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.calls_starting("agent prompt ")
         }
 
         fn git(&self, args: &[String]) -> Result<Vec<u8>, GitError> {
@@ -1079,18 +1436,13 @@ mod tests {
     fn the_status_line_says_no_agent_until_a_target_is_known() {
         let fixture = Fixture::new("status");
         let app = fixture.started();
-        assert!(screen_of(&app).contains("working tree  no agent"));
-        let target = crate::meta::Target {
-            pane: PaneId::parse("w1:p2").unwrap(),
-            terminal: crate::store::TerminalId::parse("term_1").unwrap(),
-            agent: "claude".into(),
-        };
-        save(&fixture.dir(), &fixture.root, |meta| {
-            meta.target = Some(target);
-        })
-        .unwrap();
+        assert!(screen_of(&app).contains("working tree  S send 0 > no agent"));
+        fixture.agents(&[("w1:p2", "term_1", "idle")]);
         let app = fixture.started();
-        assert!(screen_of(&app).contains("working tree  > claude w1:p2"));
+        assert!(screen_of(&app).contains("working tree  S send 0 > claude w1:p2"));
+        // What was found is kept for the `send` action.
+        let saved = crate::meta::load(&fixture.dir()).0.target.unwrap();
+        assert_eq!(saved.pane.as_str(), "w1:p2");
     }
 
     #[test]
@@ -1519,6 +1871,7 @@ diff --git a/b.rs b/b.rs
         for event in events {
             if let Event::Key(key) = event {
                 fixture.with_git(|git| app.key(key, git));
+                app.run_pending(|_| {});
             }
         }
     }
@@ -2070,5 +2423,236 @@ diff --git a/b.rs b/b.rs
         // And the user can still act on it from there.
         press(&fixture, &mut app, [key('n'), key('x')]);
         assert!(!app.review.threads[0].is_open());
+    }
+
+    // Send, resend, the picker and the quit prompt.
+
+    fn two_user_threads(
+        name: &str,
+        agents: &[(&'static str, &'static str, &'static str)],
+    ) -> (Fixture, App) {
+        let fixture = Fixture::new(name);
+        fixture.agents(agents);
+        write_log(
+            &fixture,
+            &[
+                thread_event("u1", Author::User, "fix"),
+                thread_event("u2", Author::User, "other"),
+            ],
+        );
+        let app = opened(&fixture, patch_text());
+        (fixture, app)
+    }
+
+    const IDLE: (&str, &str, &str) = ("w1:p1", "term_1", "idle");
+
+    #[test]
+    fn send_delivers_the_unsent_comments_and_a_second_send_says_nothing() {
+        let (fixture, mut app) = two_user_threads("send", &[IDLE]);
+        assert!(screen_of(&app).contains("S send 2 > claude w1:p1"));
+        press(&fixture, &mut app, [key('S')]);
+        let prompts = fixture.prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].starts_with("agent prompt w1:p1 "));
+        assert!(prompts[0].contains("[u1]") && prompts[0].contains("[u2]"));
+        assert_eq!(app.status.as_deref(), Some("sent 2 to claude"));
+        assert!(screen_of(&app).contains("sent 2 to claude"));
+        assert_eq!(app.unsent(), 0);
+        press(&fixture, &mut app, [key('S')]);
+        assert_eq!(app.status.as_deref(), Some("nothing to send"));
+        assert_eq!(fixture.prompts().len(), 1);
+        assert!(app.status_line().contains("S send 0"));
+    }
+
+    #[test]
+    fn the_sending_frame_is_drawn_before_the_herdr_call() {
+        let (fixture, mut app) = two_user_threads("sending", &[IDLE]);
+        fixture.with_git(|git| app.key(key_event('S'), git));
+        let (mut frame, mut prompts_then) = (String::new(), usize::MAX);
+        app.run_pending(|app| {
+            frame = screen_of(app);
+            prompts_then = fixture.prompts().len();
+        });
+        assert!(frame.contains("sending"), "{frame}");
+        assert_eq!(prompts_then, 0);
+        assert_eq!(fixture.prompts().len(), 1);
+    }
+
+    fn key_event(c: char) -> KeyEvent {
+        match key(c) {
+            Event::Key(key) => key,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn resend_sends_the_focused_thread_alone() {
+        let (fixture, mut app) = two_user_threads("resend", &[IDLE]);
+        press(&fixture, &mut app, [key('S'), key('n')]);
+        assert_eq!(app.view.focused(), Some(0));
+        press(&fixture, &mut app, [key('s')]);
+        let prompts = fixture.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("[u1]") && !prompts[1].contains("[u2]"));
+        assert_eq!(app.status.as_deref(), Some("sent 1 to claude"));
+    }
+
+    #[test]
+    fn resend_needs_an_open_thread_under_the_cursor() {
+        let (fixture, mut app) = two_user_threads("resend-none", &[IDLE]);
+        press(&fixture, &mut app, [key('s')]);
+        assert_eq!(app.status.as_deref(), Some("no thread here to resend"));
+        press(&fixture, &mut app, [key('n'), key('x'), key('s')]);
+        assert!(app.status.as_deref().unwrap().contains("resolved thread"));
+        assert!(fixture.prompts().is_empty());
+    }
+
+    #[test]
+    fn several_agents_show_the_picker_once_and_the_choice_is_remembered() {
+        let two = [IDLE, ("w1:p2", "term_2", "idle")];
+        let (fixture, mut app) = two_user_threads("picker", &two);
+        press(&fixture, &mut app, [key('S')]);
+        assert!(fixture.prompts().is_empty());
+        let screen = screen_of(&app);
+        assert!(screen.contains("several agents match") && screen.contains("> claude w1:p2"));
+        press(&fixture, &mut app, [key('j')]);
+        press(
+            &fixture,
+            &mut app,
+            [Event::Key(KeyEvent::from(KeyCode::Enter))],
+        );
+        assert!(app.prompt.is_none());
+        assert!(fixture.prompts()[0].starts_with("agent prompt w1:p2 "));
+        let saved = crate::meta::load(&fixture.dir()).0.target.unwrap();
+        assert_eq!(saved.pane.as_str(), "w1:p2");
+        assert_eq!(app.target.as_ref().map(|t| t.pane.as_str()), Some("w1:p2"));
+        // A new comment goes to the same agent without asking.
+        let anchor = line_anchor(Side::New, 1, "new");
+        actions::comment(&fixture.dir(), "t", &anchor, "later").unwrap();
+        fixture.with_git(|git| app.check_store(git));
+        press(&fixture, &mut app, [key('S')]);
+        assert!(app.prompt.is_none());
+        assert!(fixture.prompts()[1].starts_with("agent prompt w1:p2 "));
+    }
+
+    #[test]
+    fn escape_closes_the_picker_and_sends_nothing() {
+        let two = [IDLE, ("w1:p2", "term_2", "idle")];
+        let (fixture, mut app) = two_user_threads("picker-esc", &two);
+        press(&fixture, &mut app, [key('S'), esc()]);
+        assert!(app.prompt.is_none() && fixture.prompts().is_empty());
+        assert_eq!(app.unsent(), 2);
+    }
+
+    #[test]
+    fn quitting_with_nothing_unsent_quits() {
+        let (fixture, mut app) = two_user_threads("quit-clean", &[IDLE]);
+        press(&fixture, &mut app, [key('S'), key('q')]);
+        assert!(app.quit && app.prompt.is_none());
+    }
+
+    #[test]
+    fn quitting_with_unsent_comments_asks_and_stay_keeps_the_pane_open() {
+        let (fixture, mut app) = two_user_threads("quit-stay", &[IDLE]);
+        press(&fixture, &mut app, [key('q')]);
+        assert!(!app.quit);
+        let screen = screen_of(&app);
+        assert!(
+            screen.contains("2 unsent") && screen.contains("send, then quit"),
+            "{screen}"
+        );
+        press(&fixture, &mut app, [key('x')]);
+        assert!(app.prompt.is_some(), "an unrelated key answers nothing");
+        press(&fixture, &mut app, [esc()]);
+        assert!(!app.quit && app.prompt.is_none());
+        assert_eq!(app.unsent(), 2);
+    }
+
+    #[test]
+    fn quitting_with_keep_leaves_the_comments_unsent() {
+        let (fixture, mut app) = two_user_threads("quit-keep", &[IDLE]);
+        press(&fixture, &mut app, [key('q'), key('k')]);
+        assert!(app.quit);
+        assert!(fixture.prompts().is_empty());
+        assert_eq!(
+            read(&fixture.dir())
+                .unwrap()
+                .threads
+                .iter()
+                .filter(|t| t.unsent)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn quitting_with_send_delivers_first_and_a_refusal_keeps_the_pane_open() {
+        let (fixture, mut app) = two_user_threads("quit-send", &[IDLE]);
+        press(&fixture, &mut app, [key('q'), key('s')]);
+        assert!(app.quit);
+        assert_eq!(fixture.prompts().len(), 1);
+        let (fixture, mut app) =
+            two_user_threads("quit-refused", &[("w1:p1", "term_1", "blocked")]);
+        press(&fixture, &mut app, [key('q'), key('s')]);
+        assert!(!app.quit, "the comments were not delivered");
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("waiting on a prompt")
+        );
+        assert_eq!(app.unsent(), 2);
+    }
+
+    #[test]
+    fn a_refusal_is_shown_and_notified_and_marks_nothing() {
+        let (fixture, mut app) = two_user_threads("refused", &[("w1:p1", "term_1", "blocked")]);
+        press(&fixture, &mut app, [key('S')]);
+        let status = app.status.clone().unwrap();
+        assert!(status.contains("waiting on a prompt") && status.contains("still unsent"));
+        assert!(screen_of(&app).contains("waiting on a prompt"));
+        let notes = fixture.calls_starting("notification show review: not sent");
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("waiting on a prompt"));
+        assert!(fixture.prompts().is_empty());
+        assert_eq!(app.unsent(), 2);
+    }
+
+    #[test]
+    fn no_agent_is_a_refusal_with_the_reason() {
+        let (fixture, mut app) = two_user_threads("no-agent", &[]);
+        press(&fixture, &mut app, [key('S')]);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("No agent found for this review.")
+        );
+        assert!(app.target.is_none());
+    }
+
+    #[test]
+    fn an_edited_sent_comment_says_so_and_goes_out_on_resend_only() {
+        let (fixture, mut app) = two_user_threads("edited", &[IDLE]);
+        press(&fixture, &mut app, [key('S')]);
+        let id = CommentId::parse("u1").unwrap();
+        actions::edit(&fixture.dir(), "t", &id, "changed text").unwrap();
+        fixture.with_git(|git| app.check_store(git));
+        assert!(screen_of(&app).contains("edited since sent"));
+        press(&fixture, &mut app, [key('S')]);
+        assert_eq!(app.status.as_deref(), Some("nothing to send"));
+        assert_eq!(fixture.prompts().len(), 1);
+        app.view.focus_thread(&id);
+        press(&fixture, &mut app, [key('s')]);
+        let prompts = fixture.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("changed text"));
+        assert!(!screen_of(&app).contains("edited since sent"));
+    }
+
+    #[test]
+    fn the_loop_runs_a_queued_send_and_a_prompt_blocks_the_mouse() {
+        let (fixture, mut app) = two_user_threads("loop-send", &[IDLE]);
+        drive(&fixture, &mut app, vec![Some(key('S')), None], |_| {});
+        assert_eq!(fixture.prompts().len(), 1);
+        assert_eq!(app.status.as_deref(), Some("sent 2 to claude"));
     }
 }

@@ -295,6 +295,8 @@ impl fmt::Display for SendOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sent {
     pub outcome: SendOutcome,
+    /// The agent that got the prompt. `None` when there was nothing to send.
+    pub target: Option<Target>,
     pub warnings: Vec<Warning>,
 }
 
@@ -354,8 +356,19 @@ fn is_working(agent_get: &Result<String, String>) -> bool {
         .unwrap_or(false)
 }
 
-/// Deliver the unsent threads to the target agent as one prompt (PLAN.md section 6.3), or every
-/// open thread with `all_open`, then record the send.
+/// Which threads a send carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// The unsent ones.
+    Unsent,
+    /// The unsent ones and every open thread, sent before or not.
+    AllOpen,
+    /// This one thread again, whatever it was sent before.
+    Thread(CommentId),
+}
+
+/// Deliver the threads `scope` names to the target agent as one prompt (PLAN.md section 6.3), then
+/// record the send.
 ///
 /// Nothing is retried. A second `herdr agent prompt` after an unclear failure could deliver the
 /// batch twice, so the user presses the key again. Once Herdr accepts the prompt the send is a
@@ -365,19 +378,24 @@ pub fn send(
     root: &Path,
     env: &Env,
     now: &str,
-    all_open: bool,
+    scope: &Scope,
     mut herdr: impl FnMut(&[String]) -> Result<String, String>,
 ) -> Result<Sent, SendError> {
     let review = read(dir).map_err(SendError::Store)?;
     let threads = review
         .threads
         .iter()
-        .filter(|thread| thread.unsent || (all_open && thread.is_open()))
+        .filter(|thread| match scope {
+            Scope::Unsent => thread.unsent,
+            Scope::AllOpen => thread.unsent || thread.is_open(),
+            Scope::Thread(id) => thread.root.id == *id,
+        })
         .collect::<Vec<_>>();
     let mut warnings = Vec::new();
     if threads.is_empty() {
         return Ok(Sent {
             outcome: SendOutcome::Nothing,
+            target: None,
             warnings,
         });
     }
@@ -394,9 +412,10 @@ pub fn send(
         got
     })
     .map_err(SendError::Refused)?;
+    let resend = *scope != Scope::Unsent;
     let ids = threads
         .iter()
-        .flat_map(|thread| carried(thread, all_open))
+        .flat_map(|thread| carried(thread, resend))
         .collect::<Vec<_>>();
     let recorded = write(dir, now, |review, now| {
         let batch = review.ids.clone().batch();
@@ -414,13 +433,17 @@ pub fn send(
     if save_target(dir, root, &meta, &target).is_err() {
         warnings.push(Warning::TargetNotSaved);
     }
-    let (n, agent) = (threads.len(), target.agent);
+    let (n, agent) = (threads.len(), target.agent.clone());
     let outcome = if working {
         SendOutcome::Queued { n, agent }
     } else {
         SendOutcome::Sent { n, agent }
     };
-    Ok(Sent { outcome, warnings })
+    Ok(Sent {
+        outcome,
+        target: Some(target),
+        warnings,
+    })
 }
 
 /// The `send` action's edge: every outcome and warning becomes a notification, since an action has
@@ -460,7 +483,12 @@ pub fn run(env: &Env, repo: Option<&Path>, all_open: bool) -> ExitCode {
     let result = match located {
         Ok((dir, root)) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            send(&dir, root.path(), env, &now, all_open, run_herdr_output)
+            let scope = if all_open {
+                Scope::AllOpen
+            } else {
+                Scope::Unsent
+            };
+            send(&dir, root.path(), env, &now, &scope, run_herdr_output)
         }
         Err(message) => Err(SendError::Refused(message)),
     };
@@ -962,12 +990,17 @@ Comments on the diff (L = line in the original file, R = in the changed file):
     }
 
     fn run_send(dir: &Path, herdr: &Herdr, all_open: bool) -> Result<Sent, SendError> {
+        let scope = if all_open {
+            Scope::AllOpen
+        } else {
+            Scope::Unsent
+        };
         send(
             dir,
             Path::new(ROOT),
             &env(&PLUGIN_ENV),
             "t",
-            all_open,
+            &scope,
             |args| herdr.ask(args),
         )
     }
@@ -1044,6 +1077,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
                     n: 2,
                     agent: "claude".into()
                 },
+                target: Some(target("w1:p1", "term_1")),
                 warnings: vec![]
             }
         );
@@ -1148,7 +1182,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
             Path::new(ROOT),
             &env(&PLUGIN_ENV),
             "t",
-            false,
+            &Scope::Unsent,
             |args| {
                 if args.get(1).is_some_and(|word| word == "prompt") {
                     std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o400)).unwrap();
@@ -1265,6 +1299,36 @@ Comments on the diff (L = line in the original file, R = in the changed file):
     }
 
     #[test]
+    fn one_thread_can_be_sent_again_on_its_own() {
+        let dir = fresh("one-thread");
+        put(
+            &dir,
+            vec![user_comment("u1", "one"), user_comment("u2", "two")],
+        );
+        run_send(&dir, &agent_ready_in("idle"), false).unwrap();
+        let herdr = agent_ready_in("idle");
+        let scope = Scope::Thread(CommentId::parse("u2").unwrap());
+        let sent = send(
+            &dir,
+            Path::new(ROOT),
+            &env(&PLUGIN_ENV),
+            "t",
+            &scope,
+            |args| herdr.ask(args),
+        )
+        .unwrap();
+        assert_eq!(
+            sent.outcome,
+            SendOutcome::Sent {
+                n: 1,
+                agent: "claude".into()
+            }
+        );
+        let prompt = &prompts(&herdr)[0];
+        assert!(prompt.contains("[u2]") && !prompt.contains("[u1]"));
+    }
+
+    #[test]
     fn the_action_reports_every_outcome_as_a_notification() {
         let note = |result: &Result<Sent, SendError>| {
             let mut seen = Vec::new();
@@ -1278,6 +1342,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
                 n: 2,
                 agent: "claude".into(),
             },
+            target: None,
             warnings: vec![Warning::SentNotRecorded],
         });
         let (code, seen) = note(&ok);
@@ -1295,6 +1360,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
         );
         let (code, seen) = note(&Ok(Sent {
             outcome: SendOutcome::Nothing,
+            target: None,
             warnings: vec![],
         }));
         assert_eq!(

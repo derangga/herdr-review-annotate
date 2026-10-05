@@ -404,6 +404,19 @@ How comments are written (built in M5):
 - When the pane is told to end, or its terminal fails, with text in the editor, the text is written as the
   comment, reply or edit it was for.
 
+How send behaves (built in M6):
+
+- `send` sends the unsent threads and `resend` sends the thread under the cursor again, with the text it has
+  now. A resolved thread is not resent. Both draw "sending" before the Herdr call, since the call blocks the
+  pane.
+- Several matching agents open a picker (`up`, `down` or `k`, `j`, then `enter`, `esc` cancels). The choice is
+  saved in `meta.json`, so the next send does not ask, and the send that asked runs at once.
+- A refusal is on the status line and in a notification, and nothing is marked sent.
+- `quit` with unsent comments asks: `s` sends and then quits (a refusal keeps the pane open), `k` quits and
+  keeps them unsent, `esc` stays. These keys are not remappable.
+- The status line reads `S send 3 > claude w1:p2`, or `> no agent`. The target is resolved when the pane
+  starts and after each send, and what is found is saved for the `send` action.
+
 ### 7.1 Keymap file
 
 The user can change any key in the table. The file is `config.toml` in the plugin config directory
