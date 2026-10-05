@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -19,6 +19,7 @@ use crate::cards::{Card, card, indent};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
 use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
+use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, truncate_to_width};
 
@@ -325,7 +326,13 @@ fn sidebar_rows(diff: &Diff) -> Vec<SideRow> {
 
 impl Stream {
     /// Lay out `diff` and the threads of `review` for a stream `width` cells wide.
-    pub fn build(diff: &Diff, review: &Review, width: usize, layout: DiffLayout) -> Self {
+    pub fn build(
+        diff: &Diff,
+        review: &Review,
+        width: usize,
+        layout: DiffLayout,
+        theme: &Theme,
+    ) -> Self {
         let files = diff
             .files
             .iter()
@@ -340,7 +347,7 @@ impl Stream {
             .threads
             .iter()
             .zip(&placements)
-            .map(|(thread, placement)| card(thread, *placement, width))
+            .map(|(thread, placement)| card(thread, *placement, width, theme))
             .collect::<Vec<_>>();
         let mut stream = Self {
             card_rows: vec![0; cards.len()],
@@ -924,8 +931,8 @@ impl View {
 
     /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
     /// the same card, else its row in the same file.
-    pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>) {
-        self.stream = Stream::build(diff, review, self.stream_width(), self.layout());
+    pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, theme: &Theme) {
+        self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), theme);
         self.select = None;
         let stream = &self.stream;
         let on_card = |spot: &Spot| {
@@ -1156,28 +1163,19 @@ fn tail_to_width(text: &str, width: usize) -> String {
     kept.into_iter().rev().collect()
 }
 
-fn dim() -> Style {
-    Style::new().add_modifier(Modifier::DIM)
-}
-
-const REMOVED_BG: Color = Color::Rgb(58, 31, 39);
-const ADDED_BG: Color = Color::Rgb(30, 52, 40);
-const FILLER_BG: Color = Color::Rgb(42, 44, 56);
-const HEAD_BG: Color = Color::Rgb(38, 42, 58);
-
 /// The sign of a code row, the colour of its text, and the tint behind it.
-fn code_style(kind: RowKind) -> (char, Style, Style) {
+fn code_style(kind: RowKind, theme: &Theme) -> (char, Style, Style) {
     match kind {
         RowKind::Context => (' ', Style::new(), Style::new()),
         RowKind::Added => (
             '+',
-            Style::new().fg(Color::Green),
-            Style::new().bg(ADDED_BG),
+            Style::new().fg(theme.added),
+            Style::new().bg(theme.added_bg),
         ),
         RowKind::Removed => (
             '-',
-            Style::new().fg(Color::Red),
-            Style::new().bg(REMOVED_BG),
+            Style::new().fg(theme.removed),
+            Style::new().bg(theme.removed_bg),
         ),
     }
 }
@@ -1191,11 +1189,14 @@ fn fitted(text: &str, width: usize) -> String {
 
 /// One half of a split row: the line number, the sign and the text on `side`, or an empty half
 /// when the other side has a line and this one does not.
-fn half_spans(row: Option<&Row>, side: Side, width: usize) -> Vec<Span<'static>> {
+fn half_spans(row: Option<&Row>, side: Side, width: usize, theme: &Theme) -> Vec<Span<'static>> {
     let Some(row) = row else {
-        return vec![Span::styled(" ".repeat(width), Style::new().bg(FILLER_BG))];
+        return vec![Span::styled(
+            " ".repeat(width),
+            Style::new().bg(theme.filler),
+        )];
     };
-    let (sign, text_style, tint) = code_style(row.kind);
+    let (sign, text_style, tint) = code_style(row.kind, theme);
     let number = row
         .line(side)
         .map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
@@ -1206,13 +1207,13 @@ fn half_spans(row: Option<&Row>, side: Side, width: usize) -> Vec<Span<'static>>
     }
     let room = width.saturating_sub(gutter.len());
     vec![
-        Span::styled(truncate_to_width(&gutter, width), dim().patch(tint)),
+        Span::styled(truncate_to_width(&gutter, width), theme.dim().patch(tint)),
         Span::styled(fitted(&text, room), text_style.patch(tint)),
     ]
 }
 
 /// A file's header: its name on the left, the added and removed counts on the right.
-fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
+fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
     let mut text = format!(
         "{} {}",
         glyph(file.change),
@@ -1233,7 +1234,7 @@ fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
     };
     let room = width.saturating_sub(string_width(&counts) + 1);
     let head = fitted(&text, room);
-    let bold = Style::new().bg(HEAD_BG).add_modifier(Modifier::BOLD);
+    let bold = Style::new().bg(theme.header).add_modifier(Modifier::BOLD);
     let mut spans = vec![Span::styled(head, bold)];
     let counts_width = string_width(&counts);
     spans.push(Span::styled(
@@ -1241,18 +1242,18 @@ fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
         bold,
     ));
     if added > 0 {
-        spans.push(Span::styled(format!("+{added}"), bold.fg(Color::Green)));
+        spans.push(Span::styled(format!("+{added}"), bold.fg(theme.added)));
         if removed > 0 {
             spans.push(Span::styled(" ", bold));
         }
     }
     if removed > 0 {
-        spans.push(Span::styled(format!("-{removed}"), bold.fg(Color::Red)));
+        spans.push(Span::styled(format!("-{removed}"), bold.fg(theme.removed)));
     }
     Line::from(spans)
 }
 
-fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
+fn row_line(stream: &Stream, row: RowRef, width: usize, theme: &Theme) -> Line<'static> {
     match row {
         RowRef::BlockHeader(count) => Line::styled(
             truncate_to_width(&format!("Comments not in this diff ({count})"), width),
@@ -1265,36 +1266,36 @@ fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
             .cloned()
             .unwrap_or_default(),
         RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
-        RowRef::File(file) => file_header(file, width),
-        RowRef::Note(file) => Line::styled(format!("  {}", note(file)), dim()),
+        RowRef::File(file) => file_header(file, width, theme),
+        RowRef::Note(file) => Line::styled(format!("  {}", note(file)), theme.dim()),
         RowRef::Hunk(hunk) => Line::styled(
             truncate_to_width(&sanitize_terminal_text(&hunk.header), width),
-            Style::new().fg(Color::Cyan),
+            Style::new().fg(theme.accent),
         ),
         RowRef::Gap(count) => {
             let noun = if count == 1 { "line" } else { "lines" };
             let text = format!("▾ {count} unchanged {noun}");
-            Line::styled(fitted(&text, width), dim().bg(HEAD_BG))
+            Line::styled(fitted(&text, width), theme.dim().bg(theme.header))
         }
         RowRef::Pair { old, new } => {
             let (left, right) = split_widths(width);
-            let mut spans = half_spans(old, Side::Old, left);
-            spans.push(Span::styled("│", dim()));
-            spans.extend(half_spans(new, Side::New, right));
+            let mut spans = half_spans(old, Side::Old, left, theme);
+            spans.push(Span::styled("│", Style::new().fg(theme.border)));
+            spans.extend(half_spans(new, Side::New, right, theme));
             Line::from(spans)
         }
         RowRef::Line(row) => {
             let number =
                 |line: Option<u32>| line.map_or_else(|| "     ".to_owned(), |n| format!("{n:>5}"));
             let gutter = format!("{}{} ", number(row.old), number(row.new));
-            let (sign, style, tint) = code_style(row.kind);
+            let (sign, style, tint) = code_style(row.kind, theme);
             let mut text = format!("{sign}{}", sanitize_terminal_text(&row.text));
             if row.no_newline {
                 text.push_str("  [no newline at end of file]");
             }
             let room = width.saturating_sub(gutter.len());
             Line::from(vec![
-                Span::styled(gutter, dim().patch(tint)),
+                Span::styled(gutter, theme.dim().patch(tint)),
                 Span::styled(fitted(&text, room), style.patch(tint)),
             ])
         }
@@ -1315,14 +1316,14 @@ fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
 
 /// Draw the sidebar and the stream, and the help overlay when it is open. Only the rows in the
 /// window are built.
-pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
+pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap, theme: &Theme) {
     let areas = areas(frame.area());
-    let cursor_style = Style::new().bg(Color::DarkGray);
+    let cursor_style = Style::new().bg(theme.cursor);
     let height = usize::from(areas.stream.height);
     let width = usize::from(areas.stream.width);
     let lines = (view.scroll..view.scroll + height)
         .filter_map(|row| view.stream.locate(diff, row))
-        .map(|row| row_line(&view.stream, row, width))
+        .map(|row| row_line(&view.stream, row, width, theme))
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
     frame.render_widget(Paragraph::new(lines), areas.stream);
@@ -1333,7 +1334,7 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
                 frame.buffer_mut(),
                 areas.stream,
                 row - view.scroll,
-                Style::new().bg(Color::Blue),
+                Style::new().bg(theme.selection),
             );
         }
     }
@@ -1341,7 +1342,7 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
         let style = if view.panel == Panel::Stream {
             cursor_style
         } else {
-            dim()
+            theme.dim()
         };
         highlight(
             frame.buffer_mut(),
@@ -1356,17 +1357,17 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
             let x = areas.stream.x + u16::try_from(plus.col).unwrap_or(0);
             let y = areas.stream.y + u16::try_from(plus.row - view.scroll).unwrap_or(0);
             let style = Style::new()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(theme.base)
+                .bg(theme.accent)
                 .add_modifier(Modifier::BOLD);
             frame.buffer_mut().set_string(x, y, "[+]", style);
         }
     }
     if let Some(sidebar) = areas.sidebar {
-        draw_sidebar(frame, sidebar, view, diff);
+        draw_sidebar(frame, sidebar, view, diff, theme);
     }
     if view.help {
-        draw_help(frame, keymap);
+        draw_help(frame, keymap, theme);
     }
 }
 
@@ -1395,13 +1396,13 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
 
 /// One file of the sidebar: a mark for unsent comments, the letter, the name, and the counts
 /// pushed to the right edge. The name gives way first.
-fn side_file_line(file: &DiffFile, unsent: bool, width: usize) -> Line<'static> {
+fn side_file_line(file: &DiffFile, unsent: bool, width: usize, theme: &Theme) -> Line<'static> {
     let (added, removed) = file.stat();
     let mut counts = Vec::new();
     if added > 0 {
         counts.push(Span::styled(
             format!("+{added}"),
-            Style::new().fg(Color::Green),
+            Style::new().fg(theme.added),
         ));
     }
     if removed > 0 {
@@ -1410,7 +1411,7 @@ fn side_file_line(file: &DiffFile, unsent: bool, width: usize) -> Line<'static> 
         }
         counts.push(Span::styled(
             format!("-{removed}"),
-            Style::new().fg(Color::Red),
+            Style::new().fg(theme.removed),
         ));
     }
     let counts_width: usize = counts.iter().map(|span| string_width(&span.content)).sum();
@@ -1433,8 +1434,10 @@ fn side_file_line(file: &DiffFile, unsent: bool, width: usize) -> Line<'static> 
     Line::from(spans)
 }
 
-fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff) {
-    let block = Block::new().borders(Borders::RIGHT).border_style(dim());
+fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff, theme: &Theme) {
+    let block = Block::new()
+        .borders(Borders::RIGHT)
+        .border_style(Style::new().fg(theme.border));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -1449,16 +1452,16 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff) {
         .skip(top)
         .take(height)
         .map(|row| match row {
-            SideRow::Heading(text) => Line::styled(tail_to_width(text, width), dim()),
+            SideRow::Heading(text) => Line::styled(tail_to_width(text, width), theme.dim()),
             SideRow::File(index) => diff.files.get(*index).map_or_else(Line::default, |file| {
                 let unsent = view.stream.unsent.get(*index).copied().unwrap_or(false);
-                side_file_line(file, unsent, width)
+                side_file_line(file, unsent, width, theme)
             }),
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);
     let style = if view.panel == Panel::Sidebar {
-        Style::new().bg(Color::DarkGray)
+        Style::new().bg(theme.cursor)
     } else {
         Style::new().add_modifier(Modifier::BOLD)
     };
@@ -1467,8 +1470,13 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff) {
     }
 }
 
+/// The border of the help overlay and the prompts.
+pub fn popup_block(theme: &Theme) -> Block<'static> {
+    Block::bordered().border_style(Style::new().fg(theme.border))
+}
+
 /// Every action with its current keys, drawn from the effective keymap.
-fn draw_help(frame: &mut Frame, keymap: &Keymap) {
+fn draw_help(frame: &mut Frame, keymap: &Keymap, theme: &Theme) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(64);
     let height =
@@ -1491,7 +1499,9 @@ fn draw_help(frame: &mut Frame, keymap: &Keymap) {
         .collect::<Vec<_>>();
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" keys, any key closes ")),
+        Paragraph::new(lines)
+            .block(popup_block(theme).title(" keys, any key closes "))
+            .style(Style::new().bg(theme.popup)),
         popup,
     );
 }
@@ -1588,7 +1598,7 @@ Binary files a/img.png and b/img.png differ
     fn view(diff: &Diff, review: &Review, width: u16, height: u16) -> View {
         let mut view = View::default();
         view.resize(Rect::new(0, 0, width, height));
-        view.rebuild(diff, review, None);
+        view.rebuild(diff, review, None, &Theme::default());
         view
     }
 
@@ -1619,7 +1629,7 @@ Binary files a/img.png and b/img.png differ
         keymap: &Keymap,
     ) -> String {
         terminal
-            .draw(|frame| draw(frame, view, diff, keymap))
+            .draw(|frame| draw(frame, view, diff, keymap, &Theme::default()))
             .unwrap();
         screen(terminal)
     }
@@ -1823,11 +1833,11 @@ Binary files a/img.png and b/img.png differ
         view.move_to(10);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &view, &diff, &Keymap::default()))
+            .draw(|frame| draw(frame, &view, &diff, &Keymap::default(), &Theme::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(30, 10)].bg, Color::DarkGray);
-        assert_ne!(buffer[(30, 9)].bg, Color::DarkGray);
+        assert_eq!(buffer[(30, 10)].bg, Theme::default().cursor);
+        assert_ne!(buffer[(30, 9)].bg, Theme::default().cursor);
     }
 
     #[test]
@@ -2103,14 +2113,14 @@ Binary files a/img.png and b/img.png differ
         let anchor = view.spot(&diff);
         // The first file lost its second hunk, so b.rs starts earlier.
         let smaller = diff_of(&PATCH.replace("@@ -10,2 +10,3 @@\n a10\n+a11\n a12\n", ""));
-        view.rebuild(&smaller, &Review::default(), anchor);
+        view.rebuild(&smaller, &Review::default(), anchor, &Theme::default());
         assert_eq!(view.cursor, 8);
         assert!(
             matches!(view.stream.locate(&smaller, 8), Some(RowRef::Line(row)) if row.text == "b1")
         );
         // The file is gone: the cursor stays on the nearest row that exists.
         let anchor = view.spot(&smaller);
-        view.rebuild(&diff_of(""), &Review::default(), anchor);
+        view.rebuild(&diff_of(""), &Review::default(), anchor, &Theme::default());
         assert_eq!(view.cursor, 0);
     }
 
@@ -2124,7 +2134,7 @@ Binary files a/img.png and b/img.png differ
         // A new thread above it pushes everything down by its rows.
         review.threads.push(thread("u5", "a.rs", line(1, "a1")));
         let spot = view.spot(&diff);
-        view.rebuild(&diff, &review, spot);
+        view.rebuild(&diff, &review, spot, &Theme::default());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Card { thread: 2, line: 1 })
@@ -2133,7 +2143,7 @@ Binary files a/img.png and b/img.png differ
         // The thread is deleted: the cursor goes to the line it hung under.
         review.threads.remove(2);
         let spot = view.spot(&diff);
-        view.rebuild(&diff, &review, spot);
+        view.rebuild(&diff, &review, spot, &Theme::default());
         assert!(
             matches!(view.stream.locate(&diff, view.cursor), Some(RowRef::Line(row)) if row.text == "A2")
         );
@@ -2197,7 +2207,7 @@ Binary files a/img.png and b/img.png differ
         // Upwards is the same range.
         let mut upwards = View::default();
         upwards.resize(Rect::new(0, 0, 80, 12));
-        upwards.rebuild(&diff, &Review::default(), None);
+        upwards.rebuild(&diff, &Review::default(), None, &Theme::default());
         upwards.move_to(5);
         upwards.toggle_select();
         assert_eq!(
@@ -2207,7 +2217,7 @@ Binary files a/img.png and b/img.png differ
         // Starting on a removed row, the range is on the old side.
         let mut old = View::default();
         old.resize(Rect::new(0, 0, 80, 12));
-        old.rebuild(&diff, &Review::default(), None);
+        old.rebuild(&diff, &Review::default(), None, &Theme::default());
         old.move_to(3);
         old.toggle_select();
         assert_eq!(
@@ -2246,7 +2256,7 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(view.select, None);
         view.toggle_select();
         assert_eq!(view.select, Some(1));
-        view.rebuild(&diff, &Review::default(), None);
+        view.rebuild(&diff, &Review::default(), None, &Theme::default());
         assert_eq!(view.select, None);
     }
 
@@ -2338,15 +2348,15 @@ Binary files a/img.png and b/img.png differ
         view.move_to(4);
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &view, &diff, &Keymap::default()))
+            .draw(|frame| draw(frame, &view, &diff, &Keymap::default(), &Theme::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         // The stream starts at column 20. Rows 2 and 3 are selected, and row 4 is the cursor.
-        assert_eq!(buffer[(40, 1)].bg, Color::Reset);
-        assert_eq!(buffer[(40, 2)].bg, Color::Blue);
-        assert_eq!(buffer[(40, 3)].bg, Color::Blue);
-        assert_eq!(buffer[(40, 4)].bg, Color::DarkGray);
-        assert_eq!(buffer[(40, 5)].bg, Color::Reset);
+        assert_ne!(buffer[(40, 1)].bg, Theme::default().selection);
+        assert_eq!(buffer[(40, 2)].bg, Theme::default().selection);
+        assert_eq!(buffer[(40, 3)].bg, Theme::default().selection);
+        assert_eq!(buffer[(40, 4)].bg, Theme::default().cursor);
+        assert_ne!(buffer[(40, 5)].bg, Theme::default().cursor);
     }
 
     const TREE: &str = "diff --git a/app/a.js b/app/a.js
@@ -2523,7 +2533,7 @@ diff --git a/top.md b/top.md
         view.toggle_layout();
         assert_eq!(view.layout(), DiffLayout::Unified);
         assert!(view.needs_rebuild());
-        view.rebuild(&diff, &Review::default(), None);
+        view.rebuild(&diff, &Review::default(), None, &Theme::default());
         assert!(!view.needs_rebuild());
         view.resize(Rect::new(0, 0, 200, 14));
         assert_eq!(view.layout(), DiffLayout::Unified);
@@ -2677,14 +2687,14 @@ diff --git a/top.md b/top.md
         ));
         let spot = view.spot(&diff);
         view.toggle_layout();
-        view.rebuild(&diff, &review, spot);
+        view.rebuild(&diff, &review, spot, &Theme::default());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Line(row)) if row.text == "add21"
         ));
         let spot = view.spot(&diff);
         view.toggle_layout();
-        view.rebuild(&diff, &review, spot);
+        view.rebuild(&diff, &review, spot, &Theme::default());
         assert!(matches!(
             view.stream.locate(&diff, view.cursor),
             Some(RowRef::Pair { new: Some(row), .. }) if row.text == "add21"

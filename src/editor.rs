@@ -7,11 +7,11 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::edit_keys::{EditAction, line_end, line_start, resolve_edit_key, word_end, word_start};
+use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width};
 
@@ -65,7 +65,7 @@ impl Editor {
     }
 
     /// Draw the editor in `area` under `title`. The terminal cursor goes where the text cursor is.
-    pub fn draw(&self, frame: &mut Frame, area: Rect, title: &str) {
+    pub fn draw(&self, frame: &mut Frame, area: Rect, title: &str, theme: &Theme) {
         let footer = if self.status.is_empty() {
             "Ctrl+S save  ·  Esc cancel  ·  Enter new line"
         } else {
@@ -73,10 +73,7 @@ impl Editor {
         };
         let block = Block::bordered()
             .title(sanitize_terminal_text(title))
-            .title_bottom(Line::styled(
-                sanitize_terminal_text(footer),
-                Style::new().add_modifier(Modifier::DIM),
-            ));
+            .title_bottom(Line::styled(sanitize_terminal_text(footer), theme.dim()));
         let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
@@ -404,7 +401,12 @@ mod tests {
             .draw(|frame| {
                 let fill = vec![Line::from("x".repeat(30)); 10];
                 frame.render_widget(Paragraph::new(fill), frame.area());
-                editor.draw(frame, Rect::new(2, 3, 20, 4), " Comment ");
+                editor.draw(
+                    frame,
+                    Rect::new(2, 3, 20, 4),
+                    " Comment ",
+                    &Theme::default(),
+                );
             })
             .unwrap();
         let rows = (0..10)
@@ -433,7 +435,7 @@ mod tests {
         type_text(&mut editor, "l1\nl2\nl3\nl4\nl5");
         let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
         terminal
-            .draw(|frame| editor.draw(frame, frame.area(), "c"))
+            .draw(|frame| editor.draw(frame, frame.area(), "c", &Theme::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let text = |y| {

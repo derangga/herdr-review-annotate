@@ -18,6 +18,7 @@ pub mod open;
 pub mod send;
 pub mod spike;
 pub mod store;
+pub mod theme;
 pub mod tui;
 pub mod view;
 pub mod width;

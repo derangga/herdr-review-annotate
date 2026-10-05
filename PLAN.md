@@ -445,7 +445,7 @@ How send behaves (built in M6):
 ### 7.1 Keymap file
 
 The user can change any key in the table. The file is `config.toml` in the plugin config directory
-(`HERDR_PLUGIN_CONFIG_DIR`, printed by `herdr plugin config-dir review`). In v1 it holds only `[keys]`.
+(`HERDR_PLUGIN_CONFIG_DIR`, printed by `herdr plugin config-dir review`). It holds `[keys]` and `[theme]`.
 
 ```toml
 [keys]
@@ -467,6 +467,25 @@ switch_spec = ""                # unbound
 - Keys inside the comment editor (cursor movement, save, cancel) are not in `[keys]`. They stay as
   `edit_keys.rs` defines them.
 - The agent CLI, `open` and `send` do not read the file.
+
+The same file chooses the pane's colours:
+
+```toml
+[theme]
+name = "catppuccin-latte"
+```
+
+- The names are `catppuccin-mocha` (the default), `catppuccin-macchiato`, `catppuccin-frappe` and
+  `catppuccin-latte`. A `config.toml` with no `[theme]`, or a `[theme]` with no `name`, is mocha.
+- A name that is not one of the four, a `name` that is not a string, and a `theme` that is not a table are
+  each one `Warning::Config`, and the pane starts in mocha.
+- The table is read once when the pane starts, with `[keys]`.
+- `theme.rs` is the only module that names a colour. Every other module draws with a role of `Theme`: base,
+  text, subtle text, border, accent, agent, cursor, selection, added, removed, their two tints, filler,
+  header, popup, warning and success. The tint behind an added or a removed row is the flavor's green or red
+  mixed 15 parts in a hundred into its base, so it follows the flavor.
+- The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
+  show the terminal's own background. The colours are 24-bit. A terminal without truecolor is not handled.
 
 ### 7.2 Rules
 
@@ -747,6 +766,7 @@ Records:
 | `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
 | `Diff` | `files`, `spec`, `notices` (cap reached, base missing, and so on) |
 | `Keymap` | Key to `Action`, plus `warnings` |
+| `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |
 | `Env` | Every `HERDR_*` and `REVIEW_*` value, read once in `main.rs` |
 
 Variants:
@@ -788,7 +808,7 @@ boundary never sees a raw string or `serde_json::Value`.
 |---|---|---|
 | `review.jsonl` line | `Event` | `Warning::SkippedLine`, the read continues |
 | `meta.json` | `Meta` | `Warning::MetaUnreadable`, an empty `Meta` is used and rewritten on the next save |
-| `config.toml` | `Keymap` | `Warning::Config`, defaults are used |
+| `config.toml` | `Keymap`, `Theme` | `Warning::Config`, defaults are used |
 | `git` stdout | `Diff` | `Change::Unparsed` for that file |
 | `herdr` stdout and stderr | `Target`, `AgentStatus`, `HerdrError` | `Refusal::AgentGone` or the raw message |
 | Environment | `Env` | A missing value is `None`. A pane id is trusted only after `agent get` confirms it |
@@ -883,6 +903,7 @@ send. An action has no terminal, so every failure of `open` is shown with `herdr
 
 ```
 -> load keymap                             R: env (config dir)   E: any -> escape, defaults + warning
+-> load theme                              R: env (config dir)   E: unknown name, bad table -> escape, mocha + warning
 -> find root, load meta                    R: git, dir           E: NotARepo -> message screen
 -> enter raw mode and alternate screen     R: term    scope: restored by a guard on exit, panic, SIGTERM, SIGHUP
 -> store read, fold                        R: dir     E: Io -> message screen with the path

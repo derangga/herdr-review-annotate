@@ -22,7 +22,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::actions;
 use crate::cards::location;
@@ -39,7 +39,8 @@ use crate::store::{
     log_len, read,
 };
 use crate::termination::Termination;
-use crate::view::{View, areas, draw, editor_rect};
+use crate::theme::Theme;
+use crate::view::{View, areas, draw, editor_rect, popup_block};
 use crate::width::truncate_to_width;
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -160,6 +161,7 @@ pub struct App {
     pub env: Env,
     repo: Option<PathBuf>,
     pub keymap: Keymap,
+    pub theme: Theme,
     pub root: Option<RepoRoot>,
     dir: Option<PathBuf>,
     pub meta: Meta,
@@ -187,17 +189,21 @@ pub struct App {
 }
 
 impl App {
-    /// Read the keymap. Nothing else is read until `load`.
+    /// Read the keymap and the theme. Nothing else is read until `load`.
     pub fn new(env: Env, repo: Option<PathBuf>) -> Self {
         let config = env
             .get("HERDR_PLUGIN_CONFIG_DIR")
             .map(|dir| Path::new(dir).join("config.toml"));
         let keymap = Keymap::load(config.as_deref());
+        let (theme, theme_warnings) = Theme::load(config.as_deref());
+        let mut warnings = keymap.warnings.clone();
+        warnings.extend(theme_warnings);
         Self {
-            warnings: keymap.warnings.clone(),
+            warnings,
             env,
             repo,
             keymap,
+            theme,
             root: None,
             dir: None,
             meta: Meta::default(),
@@ -266,7 +272,7 @@ impl App {
         let spec = self.requested_spec();
         let diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
         let spot = self.diff.as_ref().and_then(|old| self.view.spot(old));
-        self.view.rebuild(&diff, &self.review, spot);
+        self.view.rebuild(&diff, &self.review, spot, &self.theme);
         self.diff = Some(diff);
         Ok(())
     }
@@ -276,7 +282,7 @@ impl App {
     fn rebuild_view(&mut self) {
         if let Some(diff) = &self.diff {
             let spot = self.view.spot(diff);
-            self.view.rebuild(diff, &self.review, spot);
+            self.view.rebuild(diff, &self.review, spot, &self.theme);
         }
     }
 
@@ -861,27 +867,30 @@ pub fn render(frame: &mut Frame, app: &App) {
             let text = Text::from(vec![
                 Line::from(sanitize_terminal_text(message)),
                 Line::default(),
-                Line::styled(hint, Style::new().add_modifier(Modifier::DIM)),
+                Line::styled(hint, app.theme.dim()),
             ]);
             frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
         }
         Screen::Review => {
             if let Some(diff) = &app.diff {
-                draw(frame, &app.view, diff, &app.keymap);
+                draw(frame, &app.view, diff, &app.keymap, &app.theme);
             }
             if let Some(compose) = &app.compose {
                 let stream = areas(frame.area()).stream;
                 let at = app.view.cursor.saturating_sub(app.view.scroll);
                 let room = editor_rect(stream, at, 1).width;
                 let height = compose.editor.height(room, (stream.height * 2 / 3).max(3));
-                compose
-                    .editor
-                    .draw(frame, editor_rect(stream, at, height), &compose.title);
+                compose.editor.draw(
+                    frame,
+                    editor_rect(stream, at, height),
+                    &compose.title,
+                    &app.theme,
+                );
             }
         }
     }
     if let Some(prompt) = &app.prompt {
-        draw_prompt(frame, prompt, app.unsent());
+        draw_prompt(frame, prompt, app.unsent(), &app.theme);
     }
     let width = usize::from(frame.area().width);
     let notices = app
@@ -910,10 +919,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             .style(Style::new().add_modifier(Modifier::REVERSED)),
         status,
     );
+    app.theme.paint(frame.buffer_mut());
 }
 
 /// The question the pane is waiting on, in a box over the middle of the pane.
-fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize) {
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize, theme: &Theme) {
     let (title, lines) = match prompt {
         Prompt::Quit => (
             format!(
@@ -956,7 +966,9 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, unsent: usize) {
     );
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(title)),
+        Paragraph::new(lines)
+            .block(popup_block(theme).title(title))
+            .style(Style::new().bg(theme.popup)),
         popup,
     );
 }
@@ -2727,5 +2739,49 @@ diff --git a/b.rs b/b.rs
         });
         assert!(app.compose.is_none());
         assert_eq!(app.view.cursor, 3);
+    }
+
+    #[test]
+    fn the_pane_is_painted_in_the_flavor_the_config_names() {
+        let fixture = Fixture::new("theme");
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[theme]\nname = \"catppuccin-latte\"\n",
+        )
+        .unwrap();
+        let app = fixture.started();
+        let latte = Theme::named("catppuccin-latte").unwrap();
+        assert_eq!(app.theme, latte);
+        assert!(app.warnings.is_empty(), "{:?}", app.warnings);
+        let mut terminal = terminal();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Rows of the stream: the file header under the cursor, the hunk header, `-old`, `+new`.
+        assert_eq!(buffer[(40, 0)].bg, latte.cursor);
+        assert_eq!(buffer[(40, 2)].bg, latte.removed_bg);
+        assert_eq!(buffer[(40, 3)].bg, latte.added_bg);
+        // An empty row of the stream, the sidebar, and the warning line have the base behind them.
+        for at in [(40, 8), (2, 8), (40, 10)] {
+            assert_eq!(buffer[at].bg, latte.base, "{at:?}");
+            assert_eq!(buffer[at].fg, latte.text, "{at:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_theme_is_a_warning_and_the_pane_starts_in_mocha() {
+        let fixture = Fixture::new("theme-unknown");
+        std::fs::write(
+            fixture.home.join("config/config.toml"),
+            "[keys]\nsend = \"ctrl+s\"\n[theme]\nname = \"nord\"\n",
+        )
+        .unwrap();
+        let app = fixture.started();
+        assert_eq!(app.theme, Theme::default());
+        assert_eq!(app.keymap.label(Action::Send), "ctrl+s");
+        assert!(
+            screen_of(&app).contains("unknown theme 'nord', using catppuccin-mocha"),
+            "{}",
+            screen_of(&app)
+        );
     }
 }

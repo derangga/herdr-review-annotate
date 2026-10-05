@@ -3,11 +3,12 @@
 //! The height of a card is its number of lines, so the stream can number its rows before
 //! anything is drawn. Every string from the store passes through `sanitize_terminal_text`.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::diff::Placement;
 use crate::store::{Anchor, AnchorTarget, Author, Side, Status, Thread};
+use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, truncate_to_width};
 
@@ -35,10 +36,6 @@ impl Card {
         self.lines.push(line);
         self.owners.push(owner);
     }
-}
-
-fn dim() -> Style {
-    Style::new().add_modifier(Modifier::DIM)
 }
 
 /// `text` cut into lines of at most `width` cells. It breaks at newlines, then after spaces, and
@@ -114,7 +111,8 @@ fn was(anchor: &Anchor) -> Option<&str> {
 /// an agent's resolve has not been looked at. An open thread is its
 /// header, the body, and each reply indented under it. The `outdated` tag is on open threads only,
 /// and a thread that is not in the diff says where it pointed.
-pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
+pub fn card(thread: &Thread, placement: Placement, width: usize, theme: &Theme) -> Card {
+    let dim = || theme.dim();
     let indent = indent(width);
     let pad = " ".repeat(indent);
     let id = thread.root.id.to_string();
@@ -141,7 +139,7 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
                 Span::styled(head, dim()),
                 Span::styled(
                     tag,
-                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::new().fg(theme.success).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(truncate_to_width(&rest, left), dim()),
             ]),
@@ -151,9 +149,9 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
     }
     let room = width.saturating_sub(indent + 2).max(8);
     let color = if thread.root.author.is_user() {
-        Color::Cyan
+        theme.accent
     } else {
-        Color::Magenta
+        theme.agent
     };
     let bar = Style::new().fg(color);
     let row = |spans: Vec<Span<'static>>| {
@@ -166,7 +164,7 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
         Style::new().add_modifier(Modifier::BOLD),
     )];
     if outdated {
-        header.push(Span::styled(" [outdated]", Style::new().fg(Color::Yellow)));
+        header.push(Span::styled(" [outdated]", Style::new().fg(theme.warning)));
     }
     if thread.root.edited_since_sent {
         header.push(Span::styled(" (edited since sent)", dim()));
@@ -277,7 +275,12 @@ mod tests {
             Author::Agent(Some("claude".into())),
             "done, one two three four five six",
         ));
-        let lines = card(&thread, Placement::Matched { line: Some(7) }, 40);
+        let lines = card(
+            &thread,
+            Placement::Matched { line: Some(7) },
+            40,
+            &Theme::default(),
+        );
         assert_eq!(
             text(&lines),
             [
@@ -292,7 +295,12 @@ mod tests {
 
     #[test]
     fn a_wide_stream_lines_the_card_up_under_the_code() {
-        let lines = card(&thread("x"), Placement::Matched { line: Some(7) }, 60);
+        let lines = card(
+            &thread("x"),
+            Placement::Matched { line: Some(7) },
+            60,
+            &Theme::default(),
+        );
         assert_eq!(text(&lines)[1], format!("{}│ x", " ".repeat(GUTTER)));
     }
 
@@ -300,7 +308,7 @@ mod tests {
     fn the_outdated_tag_and_the_old_line_text_show_on_an_open_thread_only() {
         let mut open = thread("fix");
         let placement = Placement::Outdated { near: Some(3) };
-        let lines = text(&card(&open, placement, 40));
+        let lines = text(&card(&open, placement, 40, &Theme::default()));
         assert_eq!(lines[0], "  │ u1 user [outdated]");
         assert_eq!(lines[1], "  │ was: let x = 1;");
         open.status = Status::Resolved {
@@ -308,7 +316,7 @@ mod tests {
         };
         open.replies
             .push(comment("a1", Author::Agent(None), "Added with_capacity"));
-        let lines = text(&card(&open, placement, 80));
+        let lines = text(&card(&open, placement, 80, &Theme::default()));
         assert_eq!(lines.len(), 1);
         assert!(!lines[0].contains("outdated"), "{}", lines[0]);
         assert!(
@@ -329,26 +337,31 @@ mod tests {
             .push(comment("a1", Author::Agent(None), "Added with_capacity"));
         thread.is_new = true;
         let placement = Placement::Matched { line: Some(7) };
-        let new = text(&card(&thread, placement, 80));
+        let new = text(&card(&thread, placement, 80, &Theme::default()));
         assert_eq!(
             new,
             ["           ✓ u1 [new] resolved by agent:claude: Added with_capacity"]
         );
         thread.is_new = false;
-        let seen = text(&card(&thread, placement, 80));
+        let seen = text(&card(&thread, placement, 80, &Theme::default()));
         assert_eq!(
             seen,
             ["           ✓ u1 resolved by agent:claude: Added with_capacity"]
         );
         // The tag survives a cut: it is before what gets truncated.
         thread.is_new = true;
-        assert!(text(&card(&thread, placement, 30))[0].contains("[new]"));
-        assert!(string_width(&text(&card(&thread, placement, 30))[0]) <= 30);
+        assert!(text(&card(&thread, placement, 30, &Theme::default()))[0].contains("[new]"));
+        assert!(string_width(&text(&card(&thread, placement, 30, &Theme::default()))[0]) <= 30);
     }
 
     #[test]
     fn a_thread_not_in_the_diff_says_where_it_pointed() {
-        let lines = text(&card(&thread("fix"), Placement::NotInDiff, 40));
+        let lines = text(&card(
+            &thread("fix"),
+            Placement::NotInDiff,
+            40,
+            &Theme::default(),
+        ));
         assert_eq!(
             lines,
             [
@@ -366,17 +379,17 @@ mod tests {
             text: "x".into(),
         };
         assert_eq!(
-            text(&card(&range, Placement::NotInDiff, 40))[1],
+            text(&card(&range, Placement::NotInDiff, 40, &Theme::default()))[1],
             "  │ src/a.rs:3-5 (L)"
         );
         let mut file = thread("fix");
         file.anchor.target = AnchorTarget::File;
-        let lines = text(&card(&file, Placement::NotInDiff, 40));
+        let lines = text(&card(&file, Placement::NotInDiff, 40, &Theme::default()));
         assert_eq!(lines[1], "  │ src/a.rs (file)");
         assert_eq!(lines.len(), 3, "a file comment has no line text to show");
         file.status = Status::Resolved { by: Author::User };
         assert_eq!(
-            text(&card(&file, Placement::NotInDiff, 60))[0],
+            text(&card(&file, Placement::NotInDiff, 60, &Theme::default()))[0],
             format!(
                 "{}✓ u1 src/a.rs (file) resolved by user: fix",
                 " ".repeat(GUTTER)
@@ -391,7 +404,12 @@ mod tests {
         let mut reply = comment("a1", Author::Agent(Some("e\u{1b}vil".into())), "x\u{9b}y");
         reply.edited_since_sent = true;
         thread.replies.push(reply);
-        let lines = text(&card(&thread, Placement::Matched { line: Some(7) }, 80));
+        let lines = text(&card(
+            &thread,
+            Placement::Matched { line: Some(7) },
+            80,
+            &Theme::default(),
+        ));
         assert!(
             lines[0].ends_with("u1 user (edited since sent)"),
             "{}",
@@ -408,7 +426,12 @@ mod tests {
 
     #[test]
     fn a_narrow_stream_still_gets_a_card() {
-        let card = card(&thread("a long comment body here"), Placement::NotInDiff, 4);
+        let card = card(
+            &thread("a long comment body here"),
+            Placement::NotInDiff,
+            4,
+            &Theme::default(),
+        );
         assert!(card.lines.len() >= 4);
     }
 
@@ -421,9 +444,12 @@ mod tests {
         thread.replies.push(comment("u2", Author::User, "two"));
         let placement = Placement::Outdated { near: Some(1) };
         // Header, old text, two body lines, then a line per reply.
-        assert_eq!(card(&thread, placement, 40).owners, [0, 0, 0, 0, 1, 2]);
+        assert_eq!(
+            card(&thread, placement, 40, &Theme::default()).owners,
+            [0, 0, 0, 0, 1, 2]
+        );
         // A resolved thread is one line, which shows its last comment.
         thread.status = Status::Resolved { by: Author::User };
-        assert_eq!(card(&thread, placement, 40).owners, [2]);
+        assert_eq!(card(&thread, placement, 40, &Theme::default()).owners, [2]);
     }
 }
