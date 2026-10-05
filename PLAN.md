@@ -174,6 +174,11 @@ it and the choice is saved in `meta.json`.
 | CRLF | `\r` stripped for display and for anchor comparison |
 | Deleted then recreated | Whatever `git` reports. No special handling |
 
+Paths come from the `---`, `+++` and `rename` lines. A section with none of them (a binary file, a mode
+change alone) has no other source, so the parser reads its `diff --git a/P b/P` line, and only when
+both halves are the same path. A section it cannot read at all is `Unparsed`, listed under that path or
+under a placeholder name.
+
 ### 4.3 Anchor matching (ADR 0008)
 
 For each root comment whose `spec` equals the current spec:
