@@ -1,6 +1,11 @@
 //! The store with several processes. Each test starts copies of this test binary, which run the
 //! `child_*` tests below when their environment variable is set and do nothing otherwise.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -52,7 +57,9 @@ fn agent_comment(by: &Author, id: herdr_review::store::CommentId, now: &str) -> 
 
 #[test]
 fn child_appends() {
-    let Some(dir) = std::env::var_os(DIR) else { return };
+    let Some(dir) = std::env::var_os(DIR) else {
+        return;
+    };
     let by = Author::Agent(Some("child".into()));
     for _ in 0..APPENDS {
         let result = write(Path::new(&dir), "t", |review, now| {
@@ -65,9 +72,14 @@ fn child_appends() {
 
 #[test]
 fn child_holds_the_lock() {
-    let Some(dir) = std::env::var_os(DIR) else { return };
+    let Some(dir) = std::env::var_os(DIR) else {
+        return;
+    };
     let result = write(Path::new(&dir), "t", |_, _| {
-        #[allow(clippy::print_stdout, reason = "tells the parent test the lock is held")]
+        #[allow(
+            clippy::print_stdout,
+            reason = "tells the parent test the lock is held"
+        )]
         {
             println!("locked");
         }
@@ -94,7 +106,10 @@ fn eight_processes_appending_200_events_each_leave_1600_valid_lines_and_no_dupli
     assert_eq!(text.lines().count(), PROCESSES * APPENDS);
     assert_eq!(ids.len(), PROCESSES * APPENDS);
     let review = read(&dir).unwrap();
-    assert_eq!((review.threads.len(), review.skipped_lines), (PROCESSES * APPENDS, 0));
+    assert_eq!(
+        (review.threads.len(), review.skipped_lines),
+        (PROCESSES * APPENDS, 0)
+    );
 }
 
 fn wait_for_lock(holder: &mut Child) {
@@ -138,7 +153,10 @@ fn appends_from_other_processes_during_archives_lose_nothing_and_reuse_no_id() {
         .collect::<Vec<_>>();
     let mut archives = 0;
     // While the children append, resolve whatever is open and archive it, over and over.
-    while children.iter_mut().any(|child| child.try_wait().unwrap().is_none()) {
+    while children
+        .iter_mut()
+        .any(|child| child.try_wait().unwrap().is_none())
+    {
         let resolved = write(&dir, "t", |review, now| {
             let resolve = |id: &herdr_review::store::CommentId| Event {
                 at: now.into(),
@@ -147,7 +165,10 @@ fn appends_from_other_processes_during_archives_lose_nothing_and_reuse_no_id() {
             };
             Ok::<_, ()>((review.open_ids().into_iter().map(resolve).collect(), ()))
         });
-        assert!(matches!(resolved, Ok(()) | Err(WriteError::Store(StoreError::Busy))), "{resolved:?}");
+        assert!(
+            matches!(resolved, Ok(()) | Err(WriteError::Store(StoreError::Busy))),
+            "{resolved:?}"
+        );
         match archive(&dir, "t") {
             Ok(done) => archives += usize::from(done.threads > 0),
             Err(StoreError::Busy) => {}

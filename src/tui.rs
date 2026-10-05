@@ -596,8 +596,7 @@ impl App {
         match (self.prompt.take(), key.code) {
             (Some(Prompt::Quit), KeyCode::Char('s')) => self.request(Scope::Unsent, true),
             (Some(Prompt::Quit), KeyCode::Char('k')) => self.quit = true,
-            (Some(Prompt::Quit), KeyCode::Esc | KeyCode::Char('n'))
-            | (Some(Prompt::Archive), KeyCode::Esc | KeyCode::Char('n')) => {}
+            (Some(Prompt::Quit | Prompt::Archive), KeyCode::Esc | KeyCode::Char('n')) => {}
             (Some(Prompt::Archive), KeyCode::Char('y')) => self.run_archive(),
             (
                 Some(Prompt::Pick {

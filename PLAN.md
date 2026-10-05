@@ -1,10 +1,10 @@
 # herdr-review: technical implementation plan
 
-Date: 2026-10-04. Sources: `RESEARCH.md` (design and the 16 decisions), `RESEARCH.review.md` (the fixes
-referenced below as B1 to B4, G1 to G20, W1 to W24), `docs/adr/` (the decisions that are hard to
-reverse), `CONTEXT.md` (terms).
+Date: 2026-10-04. Sources: `docs/adr/` (the decisions that are hard to reverse), `CONTEXT.md` (terms).
+`RESEARCH.md` and `RESEARCH.review.md` were removed; they stay in git history. The fixes they listed
+are referenced below as B1 to B4, G1 to G20 and W1 to W24.
 
-Where this plan and `RESEARCH.md` disagree, this plan wins. Section 9 lists every difference.
+Section 9 lists every difference from `RESEARCH.md`.
 Section 12 is the design pass: the types, the call graph of every operation, how each step fails, and
 what each step needs. Read it before writing code for a milestone.
 
@@ -355,8 +355,7 @@ the TUI saved.
 
 ## 7. TUI
 
-One thread, one loop: `event::poll(250 ms)`, then the store length check. Layout as in section 4.5 of
-`RESEARCH.md`: file sidebar, one stream of all files, comment cards under their lines, unified view
+One thread, one loop: `event::poll(250 ms)`, then the store length check. Layout: file sidebar, one stream of all files, comment cards under their lines, unified view
 only in v1.
 
 | Action name | Default keys | What it does |

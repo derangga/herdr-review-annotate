@@ -23,9 +23,9 @@ Commit only when the user asks.
 | `PLAN.md`, the sections a bead names | Before starting that bead. The plan is the source of truth, the bead only points at it |
 | `docs/adr/` | When a bead cites an ADR, or when a design choice looks odd |
 | `CONTEXT.md` | For the meaning of thread, anchor, outdated, unsent, resend, target agent |
-| `RESEARCH.review.md` | When a bead cites a finding such as B3, G8 or W13 |
 
-`RESEARCH.md` is superseded by `PLAN.md`. Read it only for the 16 decisions in its section 9.
+A finding such as B3, G8 or W13 comes from `RESEARCH.review.md`, removed from the tree. Read it with
+`git show c1fb97a^:RESEARCH.review.md`. `PLAN.md` supersedes `RESEARCH.md`.
 
 ## Rules the code follows
 
