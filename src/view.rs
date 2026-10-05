@@ -156,6 +156,42 @@ pub struct Stream {
     ids: Vec<CommentId>,
     /// The width the cards were wrapped for.
     width: usize,
+    /// The sidebar's rows: a heading for each directory, and the files under it.
+    side: Vec<SideRow>,
+    /// Per file, whether a thread hung in it has not been sent.
+    unsent: Vec<bool>,
+}
+
+/// One row of the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SideRow {
+    Heading(String),
+    File(usize),
+}
+
+/// Group the files by directory, in the diff's order. A directory that comes again later, as
+/// untracked files do, gets a second heading.
+fn sidebar_rows(diff: &Diff) -> Vec<SideRow> {
+    let mut rows = Vec::new();
+    let mut last = None;
+    for (index, file) in diff.files.iter().enumerate() {
+        let dir = file
+            .path
+            .as_str()
+            .rsplit_once('/')
+            .map_or("./", |(dir, _)| dir);
+        if last != Some(dir) {
+            let shown = if dir == "./" {
+                dir.to_owned()
+            } else {
+                format!("{dir}/")
+            };
+            rows.push(SideRow::Heading(sanitize_terminal_text(&shown)));
+            last = Some(dir);
+        }
+        rows.push(SideRow::File(index));
+    }
+    rows
 }
 
 impl Stream {
@@ -180,6 +216,8 @@ impl Stream {
                 .map(|thread| thread.root.id.clone())
                 .collect(),
             width,
+            side: sidebar_rows(diff),
+            unsent: vec![false; diff.files.len()],
             ..Self::default()
         };
         let mut block = Vec::new();
@@ -195,6 +233,9 @@ impl Stream {
                 block.push(index);
                 continue;
             };
+            if let Some(mark) = stream.unsent.get_mut(file) {
+                *mark |= thread.unsent;
+            }
             let side = match &thread.anchor.target {
                 AnchorTarget::Line { side, .. } | AnchorTarget::Range { side, .. } => *side,
                 AnchorTarget::File => Side::New,
@@ -279,6 +320,14 @@ impl Stream {
 
     pub const fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    /// The sidebar row that holds `file`.
+    fn side_row_of(&self, file: usize) -> usize {
+        self.side
+            .iter()
+            .position(|row| *row == SideRow::File(file))
+            .unwrap_or(0)
     }
 
     pub const fn files(&self) -> usize {
@@ -791,15 +840,16 @@ impl View {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(sidebar) = areas.sidebar.filter(|rect| at(*rect)) {
+                    let selected = self.stream.side_row_of(self.stream.file_at(self.cursor));
                     let top = sidebar_top(
-                        self.stream.file_at(self.cursor),
+                        selected,
                         usize::from(sidebar.height),
-                        self.stream.files(),
+                        self.stream.side.len(),
                     );
-                    let file = top + usize::from(event.row - sidebar.y);
-                    if file < self.stream.files() {
+                    let row = top + usize::from(event.row - sidebar.y);
+                    if let Some(SideRow::File(file)) = self.stream.side.get(row) {
                         self.panel = Panel::Sidebar;
-                        self.move_to_file(file);
+                        self.move_to_file(*file);
                     }
                 }
             }
@@ -814,6 +864,16 @@ fn sidebar_top(selected: usize, height: usize, files: usize) -> usize {
     selected
         .saturating_sub(height / 2)
         .min(files.saturating_sub(height))
+}
+
+/// The first `width` cells of `text`, with a trailing `…` when something was cut.
+fn head_to_width(text: &str, width: usize) -> String {
+    if string_width(text) <= width {
+        return text.to_owned();
+    }
+    let mut kept = truncate_to_width(text, width.saturating_sub(1));
+    kept.push('…');
+    kept
 }
 
 /// The last `width` cells of `text`, with a leading `…` when something was cut.
@@ -975,24 +1035,67 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
     )
 }
 
+/// One file of the sidebar: a mark for unsent comments, the letter, the name, and the counts
+/// pushed to the right edge. The name gives way first.
+fn side_file_line(file: &DiffFile, unsent: bool, width: usize) -> Line<'static> {
+    let (added, removed) = file.stat();
+    let mut counts = Vec::new();
+    if added > 0 {
+        counts.push(Span::styled(
+            format!("+{added}"),
+            Style::new().fg(Color::Green),
+        ));
+    }
+    if removed > 0 {
+        if !counts.is_empty() {
+            counts.push(Span::raw(" "));
+        }
+        counts.push(Span::styled(
+            format!("-{removed}"),
+            Style::new().fg(Color::Red),
+        ));
+    }
+    let counts_width: usize = counts.iter().map(|span| string_width(&span.content)).sum();
+    let name = file
+        .path
+        .as_str()
+        .rsplit_once('/')
+        .map_or(file.path.as_str(), |(_, name)| name);
+    let mark = if unsent { '•' } else { ' ' };
+    let head = format!(
+        "{mark}{} {}",
+        glyph(file.change),
+        sanitize_terminal_text(name)
+    );
+    let room = width.saturating_sub(counts_width + usize::from(counts_width > 0));
+    let head = head_to_width(&head, room);
+    let pad = width.saturating_sub(string_width(&head) + counts_width);
+    let mut spans = vec![Span::raw(head), Span::raw(" ".repeat(pad))];
+    spans.extend(counts);
+    Line::from(spans)
+}
+
 fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff) {
     let block = Block::new().borders(Borders::RIGHT).border_style(dim());
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    let selected = view.stream.file_at(view.cursor);
+    let selected = view.stream.side_row_of(view.stream.file_at(view.cursor));
     let height = usize::from(inner.height);
-    let top = sidebar_top(selected, height, diff.files.len());
+    let top = sidebar_top(selected, height, view.stream.side.len());
     let width = usize::from(inner.width);
-    let lines = diff
-        .files
+    let lines = view
+        .stream
+        .side
         .iter()
         .skip(top)
         .take(height)
-        .map(|file| {
-            let name = sanitize_terminal_text(file.path.as_str());
-            let text = tail_to_width(&format!("{} {name}", glyph(file.change)), width);
-            Line::from(text)
+        .map(|row| match row {
+            SideRow::Heading(text) => Line::styled(tail_to_width(text, width), dim()),
+            SideRow::File(index) => diff.files.get(*index).map_or_else(Line::default, |file| {
+                let unsent = view.stream.unsent.get(*index).copied().unwrap_or(false);
+                side_file_line(file, unsent, width)
+            }),
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -1515,10 +1618,11 @@ Binary files a/img.png and b/img.png differ
             stream.y + 5,
         ));
         assert_eq!((view.cursor, view.panel), (8, Panel::Stream));
-        // A click in the sidebar on the second file.
-        view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 1));
+        // A click in the sidebar on the second file. Row 0 is the directory heading.
+        view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 2));
         assert_eq!((view.cursor, view.panel), (10, Panel::Sidebar));
-        // A click below the last file does nothing.
+        // A click on the heading, or below the last file, does nothing.
+        view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0));
         view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 6));
         assert_eq!(view.cursor, 10);
     }
@@ -1586,7 +1690,7 @@ Binary files a/img.png and b/img.png differ
     }
 
     #[test]
-    fn a_long_path_keeps_its_tail_in_the_sidebar_and_long_lines_are_cut() {
+    fn a_long_name_is_cut_at_its_end_in_the_sidebar_and_long_lines_are_cut() {
         let long = "x".repeat(60);
         let patch = format!(
             "diff --git a/dir/{long}.rs b/dir/{long}.rs\n--- a/dir/{long}.rs\n+++ b/dir/{long}.rs\n@@ -1 +1 @@\n-{long}{long}\n+new\n"
@@ -1594,7 +1698,11 @@ Binary files a/img.png and b/img.png differ
         let diff = diff_of(&patch);
         let view = view_of(&diff);
         let screen = fresh(&view, &diff);
-        assert!(screen.contains("…x") && screen.contains(".rs│"), "{screen}");
+        assert!(screen.contains("dir/"), "{screen}");
+        assert!(
+            screen.contains(" M xx") && screen.contains("… +1 -1│"),
+            "{screen}"
+        );
         assert!(screen.lines().all(|row| string_width(row) <= 80));
     }
 
@@ -1879,5 +1987,97 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(buffer[(40, 3)].bg, Color::Blue);
         assert_eq!(buffer[(40, 4)].bg, Color::DarkGray);
         assert_eq!(buffer[(40, 5)].bg, Color::Reset);
+    }
+
+    const TREE: &str = "diff --git a/app/a.js b/app/a.js
+--- a/app/a.js
++++ b/app/a.js
+@@ -1,2 +1,3 @@
+ keep
+-gone
++one
++two
+diff --git a/app/b.js b/app/b.js
+--- a/app/b.js
++++ b/app/b.js
+@@ -1 +1 @@
+-x
++y
+diff --git a/top.md b/top.md
+--- a/top.md
++++ b/top.md
+@@ -1 +1,2 @@
+ t
++u
+";
+
+    #[test]
+    fn the_sidebar_groups_files_under_their_directory_with_letters_and_counts() {
+        let diff = diff_of(TREE);
+        let view = view(&diff, &Review::default(), 80, 12);
+        assert_eq!(
+            view.stream.side,
+            [
+                SideRow::Heading("app/".into()),
+                SideRow::File(0),
+                SideRow::File(1),
+                SideRow::Heading("./".into()),
+                SideRow::File(2),
+            ]
+        );
+        let screen = fresh(&view, &diff);
+        let rows = screen
+            .lines()
+            .map(|row| row.split('│').next().unwrap_or("").to_owned());
+        let rows = rows.take(5).collect::<Vec<_>>();
+        assert_eq!(rows[0].trim_end(), "app/");
+        assert_eq!(rows[1], format!("{:<14}+2 -1", " M a.js"));
+        assert_eq!(rows[2], format!("{:<14}+1 -1", " M b.js"));
+        assert_eq!(rows[3].trim_end(), "./");
+        assert_eq!(rows[4], format!("{:<17}+1", " M top.md"));
+    }
+
+    #[test]
+    fn a_directory_that_comes_back_gets_a_second_heading() {
+        let patch = format!(
+            "{TREE}diff --git a/app/z.js b/app/z.js\n--- a/app/z.js\n+++ b/app/z.js\n@@ -1 +1 @@\n-1\n+2\n"
+        );
+        let diff = diff_of(&patch);
+        let headings = sidebar_rows(&diff)
+            .into_iter()
+            .filter(|row| matches!(row, SideRow::Heading(_)))
+            .count();
+        assert_eq!(headings, 3);
+    }
+
+    #[test]
+    fn a_file_with_an_unsent_thread_carries_a_mark_and_the_others_do_not() {
+        let diff = diff_of(TREE);
+        let mut review = Review {
+            threads: vec![thread("u1", "app/b.js", line(1, "y"))],
+            ..Review::default()
+        };
+        review.threads[0].unsent = true;
+        let view = view(&diff, &review, 80, 12);
+        assert_eq!(view.stream.unsent, [false, true, false]);
+        let screen = fresh(&view, &diff);
+        assert!(
+            screen.contains("•M b.js") && screen.contains(" M a.js"),
+            "{screen}"
+        );
+        review.threads[0].unsent = false;
+        let sent = self::view(&diff, &review, 80, 12);
+        assert_eq!(sent.stream.unsent, [false, false, false]);
+    }
+
+    #[test]
+    fn the_sidebar_follows_the_cursor_through_headings() {
+        let diff = diff_of(TREE);
+        let mut view = view(&diff, &Review::default(), 80, 4);
+        view.apply(Action::SwitchPanel);
+        view.apply(Action::Down);
+        view.apply(Action::Down);
+        assert_eq!(view.stream.file_at(view.cursor), 2);
+        assert!(fresh(&view, &diff).contains("M top.md"));
     }
 }

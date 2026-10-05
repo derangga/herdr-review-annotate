@@ -174,6 +174,16 @@ pub struct DiffFile {
 }
 
 impl DiffFile {
+    /// The added and removed lines of the file, for the sidebar. A file with no hunks has none.
+    pub fn stat(&self) -> (usize, usize) {
+        let rows = self.hunks.iter().flat_map(|hunk| &hunk.rows);
+        rows.fold((0, 0), |(added, removed), row| match row.kind {
+            RowKind::Added => (added + 1, removed),
+            RowKind::Removed => (added, removed + 1),
+            RowKind::Context => (added, removed),
+        })
+    }
+
     fn listed(path: RelPath, change: Change) -> Self {
         Self {
             path,

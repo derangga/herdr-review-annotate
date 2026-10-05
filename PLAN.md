@@ -343,10 +343,13 @@ The mouse wheel scrolls and a click moves the cursor. These are not remappable.
 
 How the body behaves (built in M4):
 
-- The sidebar lists every file with a letter for how it changed (M modified, A added, D deleted, R renamed,
-  ? untracked, B binary, S submodule, L too large, ! unparsed) and is left out below 50 columns. It follows
-  the file under the cursor. With the sidebar focused, `up` and `down` move to the previous and next file,
-  and the page keys move by a page of files.
+- The sidebar groups the files under a heading for their directory (`./` for the repository root), in the
+  diff's order, so a directory that comes again later gets a second heading. A file row is a `•` when a thread
+  hung in it is unsent, a letter for how it changed (M modified, A added, D deleted, R renamed, ? untracked,
+  B binary, S submodule, L too large, ! unparsed), the file's name, and its added and removed line counts
+  against the right edge. The name is cut with `…` before the counts. The sidebar is left out below 50
+  columns and follows the file under the cursor. With the sidebar focused, `up` and `down` move to the
+  previous and next file, and the page keys move by a page of files. A click on a heading does nothing.
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
   inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).
