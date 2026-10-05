@@ -191,6 +191,11 @@ For each root comment whose `spec` equals the current spec:
 3. Else, if the file is in the diff: outdated, drawn at the stored line or the closest hunk.
 4. Else: listed in "comments not in this diff".
 
+Step 1 and step 2 are one search: the row on that side with equal text nearest the stored line, the earlier
+one on a tie. The stored line itself is distance 0. A file is found by `path`, or by `old_path` when an agent
+cited the old name. A file comment is matched whenever its file is in the diff. `Outdated.near` is the row on
+that side nearest the stored line, in any hunk.
+
 Comments written against the other spec go to the same list. Ranges match on their first line.
 
 ### 4.4 Reload
@@ -645,7 +650,7 @@ Variants:
 | `AnchorTarget` | `Line { side, line, text }`, `Range { side, start, end, text }`, `File` |
 | `Status` | `Open`, `Resolved { by: Author }` |
 | `Spec` | `WorkTree`, `Branch { base: String }` |
-| `Placement` | `Matched { line }`, `Outdated { near }`, `NotInDiff`. Computed, never stored |
+| `Placement` | `Matched { line: Option<u32> }` (no line for a file comment), `Outdated { near: Option<u32> }` (no line when the file has no rows on that side), `NotInDiff`. Computed, never stored |
 | `Change` | `Modified`, `Added`, `Deleted`, `Renamed`, `Untracked`, `Binary`, `Submodule`, `TooLarge`, `Unparsed` |
 | `AgentStatus` | `Idle`, `Working`, `Blocked`, `Done`, `Unknown` |
 | `Action` | The action names in section 7 |

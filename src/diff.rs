@@ -5,7 +5,7 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::store::{RelPath, Side, Spec};
+use crate::store::{AnchorTarget, RelPath, Side, Spec, Thread};
 
 /// `git` could not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -703,6 +703,57 @@ fn all_added(content: &[u8]) -> Vec<Hunk> {
     vec![Hunk { header, rows }]
 }
 
+/// Where a thread lands in the diff on screen. Computed on every load and never stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// The anchored text is on `line`, on the anchor's side. A file comment has no line.
+    Matched { line: Option<u32> },
+    /// The file is in the diff but its anchored text is not. `near` is the line on the anchor's
+    /// side, in a hunk, closest to where the comment was written.
+    Outdated { near: Option<u32> },
+    /// The file is not in the diff, or the comment was written against the other spec.
+    NotInDiff,
+}
+
+/// Place one thread (ADR 0008). A comment written against another spec is `NotInDiff`. Otherwise,
+/// in the thread's file: the row holding the anchored text nearest the anchored line, which is the
+/// anchored line itself while it still holds that text, else `Outdated`. A range is placed by its
+/// first line.
+pub fn place(thread: &Thread, diff: &Diff) -> Placement {
+    let anchor = &thread.anchor;
+    let file = diff
+        .files
+        .iter()
+        .find(|file| file.path == anchor.path || file.old_path.as_ref() == Some(&anchor.path));
+    let Some(file) = file.filter(|_| anchor.spec == diff.spec) else {
+        return Placement::NotInDiff;
+    };
+    let (side, line, text) = match &anchor.target {
+        AnchorTarget::File => return Placement::Matched { line: None },
+        AnchorTarget::Line { side, line, text }
+        | AnchorTarget::Range {
+            side,
+            start: line,
+            text,
+            ..
+        } => (*side, *line, text.trim_end_matches('\r')),
+    };
+    let distance = |(number, _): &(u32, &Row)| (number.abs_diff(line), *number);
+    let same = file
+        .rows(side)
+        .filter(|(_, row)| row.text == text)
+        .min_by_key(distance);
+    match same {
+        Some((number, _)) => Placement::Matched { line: Some(number) },
+        None => Placement::Outdated {
+            near: file
+                .rows(side)
+                .min_by_key(distance)
+                .map(|(number, _)| number),
+        },
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -1293,5 +1344,241 @@ mod tests {
             default_base(root, |args| fake.call(args)),
             Err(GitError::NotInstalled)
         );
+    }
+
+    use crate::store::{Anchor, Author, Comment, CommentId, Status};
+
+    const A_RS: &str = "diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,5 +1,6 @@
+ one
+ two
+-three
++THREE
++three and a half
+ four
+ five
+";
+
+    fn diff_of(patch: &str, spec: Spec) -> Diff {
+        Diff {
+            files: parse(patch.as_bytes(), MAX_PATCH),
+            spec,
+            notices: Vec::new(),
+        }
+    }
+
+    fn thread(path: &str, spec: Spec, target: AnchorTarget) -> Thread {
+        Thread {
+            root: Comment {
+                id: CommentId::parse("u1").unwrap(),
+                parent: None,
+                author: Author::User,
+                body: "fix".into(),
+                sent_batch: None,
+                edited_since_sent: false,
+            },
+            anchor: Anchor {
+                path: RelPath::parse(path).unwrap(),
+                old_path: None,
+                target,
+                spec,
+            },
+            replies: Vec::new(),
+            status: Status::Open,
+            is_new: false,
+            reopened: false,
+            unsent: true,
+        }
+    }
+
+    fn line(side: Side, line: u32, text: &str) -> AnchorTarget {
+        AnchorTarget::Line {
+            side,
+            line,
+            text: text.into(),
+        }
+    }
+
+    fn placed(target: AnchorTarget) -> Placement {
+        let diff = diff_of(A_RS, Spec::WorkTree);
+        place(&thread("a.rs", Spec::WorkTree, target), &diff)
+    }
+
+    #[test]
+    fn a_line_with_the_same_text_at_the_same_place_is_matched_there() {
+        assert_eq!(
+            placed(line(Side::New, 3, "THREE")),
+            Placement::Matched { line: Some(3) }
+        );
+        assert_eq!(
+            placed(line(Side::Old, 3, "three")),
+            Placement::Matched { line: Some(3) }
+        );
+    }
+
+    #[test]
+    fn a_line_that_moved_is_matched_at_its_new_line() {
+        assert_eq!(
+            placed(line(Side::New, 2, "four")),
+            Placement::Matched { line: Some(5) }
+        );
+    }
+
+    #[test]
+    fn of_two_lines_with_the_same_text_the_nearer_one_wins_and_a_tie_goes_to_the_earlier() {
+        let patch = "diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,5 +1,5 @@
+ x
+ a
+ x
+ b
+ x
+";
+        let diff = diff_of(patch, Spec::WorkTree);
+        let at = |n| {
+            place(
+                &thread("a.rs", Spec::WorkTree, line(Side::New, n, "x")),
+                &diff,
+            )
+        };
+        assert_eq!(at(1), Placement::Matched { line: Some(1) });
+        assert_eq!(at(4), Placement::Matched { line: Some(3) });
+        assert_eq!(at(2), Placement::Matched { line: Some(1) });
+        assert_eq!(at(40), Placement::Matched { line: Some(5) });
+    }
+
+    #[test]
+    fn text_that_is_gone_is_outdated_near_where_it_was() {
+        assert_eq!(
+            placed(line(Side::New, 3, "the old text")),
+            Placement::Outdated { near: Some(3) }
+        );
+        assert_eq!(
+            placed(line(Side::New, 40, "the old text")),
+            Placement::Outdated { near: Some(6) }
+        );
+    }
+
+    #[test]
+    fn a_side_only_sees_its_own_rows() {
+        // THREE was added, so the old side never held it.
+        assert_eq!(
+            placed(line(Side::Old, 3, "THREE")),
+            Placement::Outdated { near: Some(3) }
+        );
+        assert_eq!(
+            placed(line(Side::New, 3, "three")),
+            Placement::Outdated { near: Some(3) }
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_in_the_diff_is_not_in_the_diff() {
+        let diff = diff_of(A_RS, Spec::WorkTree);
+        let other = thread("b.rs", Spec::WorkTree, line(Side::New, 3, "THREE"));
+        assert_eq!(place(&other, &diff), Placement::NotInDiff);
+        let empty = diff_of("", Spec::WorkTree);
+        let same = thread("a.rs", Spec::WorkTree, line(Side::New, 3, "THREE"));
+        assert_eq!(place(&same, &empty), Placement::NotInDiff);
+    }
+
+    #[test]
+    fn a_thread_written_against_the_other_spec_is_not_in_the_diff() {
+        let branch = Spec::Branch {
+            base: "main".into(),
+        };
+        let thread = thread("a.rs", branch.clone(), line(Side::New, 3, "THREE"));
+        let on_tree = diff_of(A_RS, Spec::WorkTree);
+        assert_eq!(place(&thread, &on_tree), Placement::NotInDiff);
+        let on_branch = diff_of(A_RS, branch);
+        assert_eq!(
+            place(&thread, &on_branch),
+            Placement::Matched { line: Some(3) }
+        );
+        let other_base = diff_of(
+            A_RS,
+            Spec::Branch {
+                base: "develop".into(),
+            },
+        );
+        assert_eq!(place(&thread, &other_base), Placement::NotInDiff);
+    }
+
+    #[test]
+    fn a_range_is_placed_by_its_first_line() {
+        let range = |text: &str| AnchorTarget::Range {
+            side: Side::New,
+            start: 3,
+            end: 5,
+            text: text.into(),
+        };
+        assert_eq!(placed(range("THREE")), Placement::Matched { line: Some(3) });
+        assert_eq!(
+            placed(range("something else")),
+            Placement::Outdated { near: Some(3) }
+        );
+    }
+
+    #[test]
+    fn editing_the_line_above_a_commented_line_leaves_the_thread_matched() {
+        let target = line(Side::New, 5, "four");
+        assert_eq!(placed(target.clone()), Placement::Matched { line: Some(5) });
+        let edited = A_RS.replace("+three and a half", "+an edit");
+        let diff = diff_of(&edited, Spec::WorkTree);
+        assert_ne!(edited, A_RS);
+        assert_eq!(
+            place(&thread("a.rs", Spec::WorkTree, target), &diff),
+            Placement::Matched { line: Some(5) }
+        );
+    }
+
+    #[test]
+    fn a_file_comment_is_matched_while_the_file_is_in_the_diff() {
+        let diff = diff_of(A_RS, Spec::WorkTree);
+        let on = |path| place(&thread(path, Spec::WorkTree, AnchorTarget::File), &diff);
+        assert_eq!(on("a.rs"), Placement::Matched { line: None });
+        assert_eq!(on("b.rs"), Placement::NotInDiff);
+    }
+
+    #[test]
+    fn a_renamed_file_is_found_by_either_path() {
+        let diff = Diff {
+            files: parse(MIXED, MAX_PATCH),
+            spec: Spec::WorkTree,
+            notices: Vec::new(),
+        };
+        let on =
+            |path, side, n, text| place(&thread(path, Spec::WorkTree, line(side, n, text)), &diff);
+        assert_eq!(
+            on("new_name.txt", Side::New, 5, "CHANGED"),
+            Placement::Matched { line: Some(5) }
+        );
+        assert_eq!(
+            on("old_name.txt", Side::Old, 5, "l5"),
+            Placement::Matched { line: Some(5) }
+        );
+    }
+
+    #[test]
+    fn carriage_returns_in_the_stored_text_do_not_matter() {
+        assert_eq!(
+            placed(line(Side::New, 3, "THREE\r")),
+            Placement::Matched { line: Some(3) }
+        );
+    }
+
+    #[test]
+    fn a_line_comment_on_a_file_with_no_rows_is_outdated_with_no_line() {
+        let diff = Diff {
+            files: parse(MIXED, MAX_PATCH),
+            spec: Spec::WorkTree,
+            notices: Vec::new(),
+        };
+        let binary = thread("bin.dat", Spec::WorkTree, line(Side::New, 1, "x"));
+        assert_eq!(place(&binary, &diff), Placement::Outdated { near: None });
     }
 }
