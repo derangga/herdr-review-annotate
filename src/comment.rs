@@ -22,6 +22,8 @@ pub enum CommandError {
     InvalidBody(String),
     /// One entry of a batch is wrong, or the batch as a whole when `index` is `None`.
     InvalidBatch { index: Option<usize>, why: String },
+    /// The user asked to edit or delete a comment the agent wrote (ADR 0004).
+    NotAllowed { id: CommentId },
 }
 
 impl fmt::Display for CommandError {
@@ -39,6 +41,9 @@ impl fmt::Display for CommandError {
                 index: Some(index),
                 why,
             } => write!(f, "comments[{index}]: {why}"),
+            Self::NotAllowed { id } => {
+                write!(f, "{id} was written by the agent, you cannot change it")
+            }
             Self::InvalidBatch { index: None, why } => write!(f, "invalid batch: {why}"),
         }
     }

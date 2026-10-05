@@ -17,6 +17,26 @@ pub const GUTTER: usize = 11;
 /// A stream narrower than this draws cards with a small indent instead of lining up under the code.
 const WIDE: usize = 50;
 
+/// How far a card, and the editor, are indented in a stream `width` cells wide.
+pub fn indent(width: usize) -> usize {
+    if width >= WIDE { GUTTER } else { 2 }
+}
+
+/// The lines of a card, and which comment of the thread each line belongs to: 0 is the root and
+/// 1 is the first reply.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Card {
+    pub lines: Vec<Line<'static>>,
+    pub owners: Vec<usize>,
+}
+
+impl Card {
+    fn push(&mut self, line: Line<'static>, owner: usize) {
+        self.lines.push(line);
+        self.owners.push(owner);
+    }
+}
+
 fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
@@ -71,7 +91,7 @@ fn side_letter(side: Side) -> char {
 }
 
 /// Where a comment points, as the send prompt writes it: `src/lib.rs:42 (R)`.
-fn location(anchor: &Anchor) -> String {
+pub fn location(anchor: &Anchor) -> String {
     let path = sanitize_terminal_text(anchor.path.as_str());
     match &anchor.target {
         AnchorTarget::File => format!("{path} (file)"),
@@ -93,8 +113,8 @@ fn was(anchor: &Anchor) -> Option<&str> {
 /// The lines of one thread at `width` cells. A resolved thread is one line. An open thread is its
 /// header, the body, and each reply indented under it. The `outdated` tag is on open threads only,
 /// and a thread that is not in the diff says where it pointed.
-pub fn card(thread: &Thread, placement: Placement, width: usize) -> Vec<Line<'static>> {
-    let indent = if width >= WIDE { GUTTER } else { 2 };
+pub fn card(thread: &Thread, placement: Placement, width: usize) -> Card {
+    let indent = indent(width);
     let pad = " ".repeat(indent);
     let id = thread.root.id.to_string();
     let in_block = placement == Placement::NotInDiff;
@@ -111,7 +131,12 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Vec<Line<'st
             name(by),
             first_line(&last.body)
         );
-        return vec![Line::styled(truncate_to_width(&text, width), dim())];
+        let mut card = Card::default();
+        card.push(
+            Line::styled(truncate_to_width(&text, width), dim()),
+            thread.replies.len(),
+        );
+        return card;
     }
     let room = width.saturating_sub(indent + 2).max(8);
     let color = if thread.root.author.is_user() {
@@ -135,24 +160,25 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Vec<Line<'st
     if thread.root.edited_since_sent {
         header.push(Span::styled(" (edited since sent)", dim()));
     }
-    let mut lines = vec![row(header)];
+    let mut card = Card::default();
+    card.push(row(header), 0);
     if in_block {
         let place = truncate_to_width(&location(&thread.anchor), room);
-        lines.push(row(vec![Span::styled(place, dim())]));
+        card.push(row(vec![Span::styled(place, dim())]), 0);
     }
     if let Some(text) = was(&thread.anchor)
         && (in_block || outdated)
     {
         let text = format!("was: {}", sanitize_terminal_text(text.trim()));
-        lines.push(row(vec![Span::styled(
-            truncate_to_width(&text, room),
-            dim(),
-        )]));
+        card.push(
+            row(vec![Span::styled(truncate_to_width(&text, room), dim())]),
+            0,
+        );
     }
     for text in wrap(&sanitize_terminal_text(&thread.root.body), room) {
-        lines.push(row(vec![Span::raw(text)]));
+        card.push(row(vec![Span::raw(text)]), 0);
     }
-    for reply in &thread.replies {
+    for (owner, reply) in (1..).zip(&thread.replies) {
         let mark = if reply.edited_since_sent {
             " (edited since sent)"
         } else {
@@ -168,10 +194,10 @@ pub fn card(thread: &Thread, placement: Placement, width: usize) -> Vec<Line<'st
             .enumerate()
         {
             let lead = if index == 0 { "  ↳ " } else { "    " };
-            lines.push(row(vec![Span::raw(format!("{lead}{text}"))]));
+            card.push(row(vec![Span::raw(format!("{lead}{text}"))]), owner);
         }
     }
-    lines
+    card
 }
 
 #[cfg(test)]
@@ -212,8 +238,8 @@ mod tests {
         }
     }
 
-    fn text(lines: &[Line]) -> Vec<String> {
-        lines.iter().map(ToString::to_string).collect()
+    fn text(card: &Card) -> Vec<String> {
+        card.lines.iter().map(ToString::to_string).collect()
     }
 
     #[test]
@@ -343,7 +369,22 @@ mod tests {
 
     #[test]
     fn a_narrow_stream_still_gets_a_card() {
-        let lines = card(&thread("a long comment body here"), Placement::NotInDiff, 4);
-        assert!(lines.len() >= 4);
+        let card = card(&thread("a long comment body here"), Placement::NotInDiff, 4);
+        assert!(card.lines.len() >= 4);
+    }
+
+    #[test]
+    fn every_line_knows_which_comment_it_belongs_to() {
+        let mut thread = thread("first\nsecond");
+        thread
+            .replies
+            .push(comment("a1", Author::Agent(None), "one"));
+        thread.replies.push(comment("u2", Author::User, "two"));
+        let placement = Placement::Outdated { near: Some(1) };
+        // Header, old text, two body lines, then a line per reply.
+        assert_eq!(card(&thread, placement, 40).owners, [0, 0, 0, 0, 1, 2]);
+        // A resolved thread is one line, which shows its last comment.
+        thread.status = Status::Resolved { by: Author::User };
+        assert_eq!(card(&thread, placement, 40).owners, [2]);
     }
 }

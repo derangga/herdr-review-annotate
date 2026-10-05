@@ -13,7 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyEventKind,
+    KeyEvent, KeyEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -24,13 +24,20 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
+use crate::actions;
+use crate::cards::location;
+use crate::comment::CommandError;
 use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
+use crate::editor::{Editor, Outcome};
 use crate::env::Env;
 use crate::keymap::{Action, Keymap};
 use crate::meta::{Meta, locate, save};
-use crate::store::{PaneId, Review, Spec, Warning, log_len, read};
+use crate::store::{
+    Anchor, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning, WriteError,
+    log_len, read,
+};
 use crate::termination::Termination;
-use crate::view::{View, draw};
+use crate::view::{View, areas, draw, editor_rect};
 use crate::width::truncate_to_width;
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -67,6 +74,42 @@ pub enum Screen {
     Review,
 }
 
+/// What the editor is writing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Draft {
+    /// A new thread at an anchor captured when the key was pressed.
+    Comment(Anchor),
+    /// A reply to the thread with this root.
+    Reply(CommentId),
+    /// New text for this comment of the user's.
+    Edit(CommentId),
+}
+
+/// The editor, and what its text becomes.
+#[derive(Debug)]
+pub struct Compose {
+    pub draft: Draft,
+    pub editor: Editor,
+    title: String,
+}
+
+/// The time to write into an event, as RFC 3339.
+fn real_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Why a write did not happen, in words for the status line.
+fn failure(error: &WriteError<CommandError>) -> String {
+    match error {
+        WriteError::Store(StoreError::Busy) => "review is busy, press again".to_owned(),
+        WriteError::Store(StoreError::Io { path, kind }) => {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            format!("could not write {name}: {kind}")
+        }
+        WriteError::Build(error) => error.to_string(),
+    }
+}
+
 /// The state of the pane.
 #[derive(Debug)]
 pub struct App {
@@ -88,6 +131,10 @@ pub struct App {
     pub warnings: Vec<Warning>,
     pane_saved: bool,
     pub quit: bool,
+    /// The editor, while one is open. The diff is not reloaded while it is.
+    pub compose: Option<Compose>,
+    /// The clock, which tests replace.
+    pub now: fn() -> String,
 }
 
 impl App {
@@ -113,6 +160,8 @@ impl App {
             status: None,
             pane_saved: false,
             quit: false,
+            compose: None,
+            now: real_now,
         }
     }
 
@@ -228,9 +277,12 @@ impl App {
     /// Once per tick: when the log changed, read it and reload the diff, since an agent replying
     /// is the moment its fix landed. A failed read is a warning and the next tick tries again.
     pub fn check_store(&mut self, git: &mut Git) {
-        let (Screen::Review, Some(dir), Some(root)) =
-            (&self.screen, self.dir.clone(), self.root.clone())
-        else {
+        let (Screen::Review, Some(dir), Some(root), None) = (
+            &self.screen,
+            self.dir.clone(),
+            self.root.clone(),
+            &self.compose,
+        ) else {
             return;
         };
         match log_len(&dir) {
@@ -257,9 +309,202 @@ impl App {
             Action::Quit => self.quit = true,
             Action::Reload => self.load(git),
             Action::SwitchSpec => self.switch_spec(git),
+            Action::Comment => self.start_comment(),
+            Action::SelectRange => self.view.toggle_select(),
+            Action::Reply => self.start_reply(),
+            Action::Edit => self.start_edit(),
+            Action::Delete => self.delete(),
+            Action::Resolve => self.toggle_resolve(),
             _ => {
                 self.view.apply(action);
             }
+        }
+    }
+
+    /// Read the log again and lay the stream out, after this pane wrote to it.
+    fn refold(&mut self) {
+        let Some(dir) = self.dir.clone() else { return };
+        match self.read_store(&dir) {
+            Ok(()) => self.rebuild_view(),
+            Err(message) => self.warn(Warning::Config(message)),
+        }
+    }
+
+    /// The thread the cursor is on, and the comment of it, looked up in the review.
+    fn focused_comment(&self) -> Option<(&Thread, &Comment)> {
+        let (thread, comment) = self.view.focused_comment()?;
+        let thread = self.review.thread(self.view.thread_id(thread)?)?;
+        Some((thread, thread.comments().nth(comment)?))
+    }
+
+    /// `comment`: open the editor for a new thread. What it points at is read now, from the rows
+    /// under the cursor or the selected range, and kept until the text is saved.
+    fn start_comment(&mut self) {
+        let Some(diff) = &self.diff else { return };
+        match self.view.capture(diff) {
+            Ok(anchor) => {
+                let title = format!("Comment on {}", location(&anchor));
+                self.view.select = None;
+                self.compose = Some(Compose {
+                    draft: Draft::Comment(anchor),
+                    editor: Editor::default(),
+                    title,
+                });
+            }
+            Err(why) => self.status = Some(why.to_owned()),
+        }
+    }
+
+    /// `reply`: open the editor for a reply to the thread under the cursor.
+    fn start_reply(&mut self) {
+        let root = self
+            .view
+            .focused()
+            .and_then(|thread| self.view.thread_id(thread))
+            .cloned();
+        match root {
+            Some(root) => {
+                let title = format!("Reply to {root}");
+                self.compose = Some(Compose {
+                    draft: Draft::Reply(root),
+                    editor: Editor::default(),
+                    title,
+                });
+            }
+            None => self.status = Some("no thread here to reply to".to_owned()),
+        }
+    }
+
+    /// The user's own comment under the cursor, or why there is none.
+    fn own_comment(&self) -> Result<(CommentId, String), String> {
+        let Some((_, comment)) = self.focused_comment() else {
+            return Err("no comment here".to_owned());
+        };
+        if comment.author.is_user() {
+            Ok((comment.id.clone(), comment.body.clone()))
+        } else {
+            Err(format!(
+                "{} is the agent's, you can only change your own comments",
+                comment.id
+            ))
+        }
+    }
+
+    /// `edit`: open the editor on the text of one of the user's comments.
+    fn start_edit(&mut self) {
+        match self.own_comment() {
+            Ok((id, body)) => {
+                let title = format!("Edit {id}");
+                self.compose = Some(Compose {
+                    draft: Draft::Edit(id),
+                    editor: Editor::with_text(&body),
+                    title,
+                });
+            }
+            Err(why) => self.status = Some(why),
+        }
+    }
+
+    /// `delete`: remove one of the user's comments. A root takes its thread with it.
+    fn delete(&mut self) {
+        let (id, _) = match self.own_comment() {
+            Ok(own) => own,
+            Err(why) => return self.status = Some(why),
+        };
+        let Some(dir) = self.dir.clone() else { return };
+        match actions::delete(&dir, &(self.now)(), &id) {
+            Ok(()) => {
+                self.status = Some(format!("deleted {id}"));
+                self.refold();
+            }
+            Err(error) => self.status = Some(failure(&error)),
+        }
+    }
+
+    /// `resolve`: resolve the thread under the cursor, or reopen it when it is resolved.
+    fn toggle_resolve(&mut self) {
+        let root = self
+            .view
+            .focused()
+            .and_then(|thread| self.view.thread_id(thread))
+            .cloned();
+        let (Some(root), Some(dir)) = (root, self.dir.clone()) else {
+            self.status = Some("no thread here".to_owned());
+            return;
+        };
+        match actions::toggle(&dir, &(self.now)(), &root) {
+            Ok(resolved) => {
+                let what = if resolved { "resolved" } else { "reopened" };
+                self.status = Some(format!("{what} {root}"));
+                self.refold();
+            }
+            Err(error) => self.status = Some(failure(&error)),
+        }
+    }
+
+    /// Write what the editor holds. When it is written the editor closes and the cursor goes to the
+    /// thread. When it is not, the editor stays open with its text and says why.
+    fn commit(&mut self) {
+        let (Some(compose), Some(dir)) = (&self.compose, self.dir.clone()) else {
+            return;
+        };
+        let (text, now) = (compose.editor.text(), (self.now)());
+        let written = match &compose.draft {
+            Draft::Comment(anchor) => actions::comment(&dir, &now, anchor, &text).map(Some),
+            Draft::Reply(root) => {
+                actions::reply(&dir, &now, root, &text).map(|_| Some(root.clone()))
+            }
+            Draft::Edit(id) => actions::edit(&dir, &now, id, &text).map(|()| None),
+        };
+        match written {
+            Ok(focus) => {
+                self.compose = None;
+                self.refold();
+                if let Some(id) = focus {
+                    self.view.focus_thread(&id);
+                }
+            }
+            Err(error) => {
+                let message = failure(&error);
+                self.status = Some(message.clone());
+                if let Some(compose) = &mut self.compose {
+                    compose.editor.fail(message);
+                }
+            }
+        }
+    }
+
+    /// Apply a key press: to the editor when one is open, else to the help overlay or the keymap.
+    pub fn key(&mut self, key: KeyEvent, git: &mut Git) {
+        if self.compose.is_some() {
+            self.compose_key(key);
+        } else if self.view.help {
+            self.view.help = false;
+        } else if let Some(action) = self.keymap.action(&key) {
+            self.handle(action, git);
+        }
+    }
+
+    /// A key while the editor is open.
+    fn compose_key(&mut self, key: KeyEvent) {
+        let Some(compose) = &mut self.compose else {
+            return;
+        };
+        match compose.editor.handle_key(key) {
+            Outcome::Continue => {}
+            Outcome::Cancel => self.compose = None,
+            Outcome::Save(_) => self.commit(),
+        }
+    }
+
+    /// The pane is going away with the editor open: write what was typed, so it is not lost.
+    pub fn save_draft(&mut self) {
+        if self
+            .compose
+            .as_ref()
+            .is_some_and(|compose| !compose.editor.text().is_empty())
+        {
+            self.commit();
         }
     }
 
@@ -355,6 +600,15 @@ pub fn render(frame: &mut Frame, app: &App) {
             if let Some(diff) = &app.diff {
                 draw(frame, &app.view, diff, &app.keymap);
             }
+            if let Some(compose) = &app.compose {
+                let stream = areas(frame.area()).stream;
+                let at = app.view.cursor.saturating_sub(app.view.scroll);
+                let room = editor_rect(stream, at, 1).width;
+                let height = compose.editor.height(room, (stream.height * 2 / 3).max(3));
+                compose
+                    .editor
+                    .draw(frame, editor_rect(stream, at, height), &compose.title);
+            }
         }
     }
     let width = usize::from(frame.area().width);
@@ -407,27 +661,28 @@ pub fn run_loop<B: Backend>(
 ) -> Exit {
     loop {
         if terminated() {
+            app.save_draft();
             return Exit::Terminated;
         }
         if let Ok(size) = terminal.size() {
             app.resize(Rect::new(0, 0, size.width, size.height));
         }
         if terminal.draw(|frame| render(frame, app)).is_err() {
+            app.save_draft();
             return Exit::Io;
         }
         match poll(TICK) {
-            Err(_) => return Exit::Io,
-            Ok(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                if app.view.help {
-                    app.view.help = false;
-                } else if let Some(action) = app.keymap.action(&key) {
-                    app.handle(action, git);
-                }
+            Err(_) => {
+                app.save_draft();
+                return Exit::Io;
             }
-            Ok(Some(Event::Mouse(mouse))) if app.screen == Screen::Review && !app.view.help => {
+            Ok(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => app.key(key, git),
+            Ok(Some(Event::Mouse(mouse)))
+                if app.screen == Screen::Review && !app.view.help && app.compose.is_none() =>
+            {
                 app.view.mouse(mouse);
             }
-            Ok(Some(Event::FocusGained)) => app.load(git),
+            Ok(Some(Event::FocusGained)) if app.compose.is_none() => app.load(git),
             Ok(_) => {}
         }
         if app.quit {
@@ -527,7 +782,9 @@ mod tests {
 
     use super::*;
     use crate::diff::Change;
-    use crate::store::{Add, Author, CommentId, Event as LogEvent, Kind, RelPath, Side, state_dir};
+    use crate::store::{
+        Add, AnchorTarget, Author, CommentId, Event as LogEvent, Kind, RelPath, Side, state_dir,
+    };
 
     const PATCH: &[u8] =
         b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
@@ -584,7 +841,9 @@ mod tests {
         }
 
         fn app(&self) -> App {
-            App::new(self.env.clone(), None)
+            let mut app = App::new(self.env.clone(), None);
+            app.now = || "2026-10-05T00:00:00Z".to_owned();
+            app
         }
 
         fn git(&self, args: &[String]) -> Result<Vec<u8>, GitError> {
@@ -638,7 +897,7 @@ mod tests {
     }
 
     fn terminal() -> Terminal<TestBackend> {
-        Terminal::new(TestBackend::new(80, 8)).unwrap()
+        Terminal::new(TestBackend::new(80, 12)).unwrap()
     }
 
     fn screen_of(app: &App) -> String {
@@ -1217,5 +1476,391 @@ diff --git a/b.rs b/b.rs
         assert!(screen_of(&app).contains("No changes in the working tree."));
         let events = vec![Some(key('j')), Some(key(']')), Some(key('q'))];
         assert_eq!(drive(&fixture, &mut app, events, |_| {}), Exit::Quit);
+    }
+
+    // The rows of `PATCH`, which a test starts on: the a.rs header 0, the hunk 1, the removed
+    // `old` 2 and the added `new` 3. `TWO_FILES` has a.rs at 0 to 5 and b.rs at 6 to 9.
+
+    fn opened(fixture: &Fixture, patch: &str) -> App {
+        let mut app = started_with(fixture, patch);
+        app.resize(Rect::new(0, 0, 80, 12));
+        app
+    }
+
+    fn press(fixture: &Fixture, app: &mut App, events: impl IntoIterator<Item = Event>) {
+        for event in events {
+            if let Event::Key(key) = event {
+                fixture.with_git(|git| app.key(key, git));
+            }
+        }
+    }
+
+    fn chars(text: &str) -> Vec<Event> {
+        text.chars().map(key).collect()
+    }
+
+    fn ctrl_s() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+    }
+
+    fn esc() -> Event {
+        Event::Key(KeyEvent::from(KeyCode::Esc))
+    }
+
+    fn thread_event(id: &str, by: Author, body: &str) -> LogEvent {
+        let mut event = add_event(id);
+        event.by = by;
+        if let Kind::Add(add) = &mut event.kind {
+            add.body = body.into();
+        }
+        event
+    }
+
+    fn agent() -> Author {
+        Author::Agent(Some("claude".into()))
+    }
+
+    fn write_log(fixture: &Fixture, events: &[LogEvent]) {
+        std::fs::create_dir_all(fixture.dir()).unwrap();
+        let lines = events.iter().map(log_line).collect::<String>();
+        std::fs::write(fixture.dir().join("review.jsonl"), lines).unwrap();
+    }
+
+    fn line_anchor(side: Side, line: u32, text: &str) -> Anchor {
+        Anchor {
+            path: RelPath::parse("a.rs").unwrap(),
+            old_path: None,
+            target: AnchorTarget::Line {
+                side,
+                line,
+                text: text.into(),
+            },
+            spec: Spec::WorkTree,
+        }
+    }
+
+    /// `PATCH` as text, so a test can start on it.
+    fn patch_text() -> &'static str {
+        std::str::from_utf8(PATCH).unwrap()
+    }
+
+    #[test]
+    fn a_comment_on_a_line_is_written_and_drawn_as_a_card_under_it() {
+        let fixture = Fixture::new("comment-line");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('j'), key('j'), key('c')]);
+        assert!(screen_of(&app).contains("Comment on a.rs:1 (L)"));
+        press(&fixture, &mut app, chars("fix this"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        assert!(app.compose.is_none());
+        assert_eq!(app.review.threads.len(), 1);
+        let thread = &app.review.threads[0];
+        assert_eq!(thread.anchor, line_anchor(Side::Old, 1, "old"));
+        assert_eq!(thread.root.body, "fix this");
+        assert!(thread.unsent);
+        // The card is under the removed row, and the cursor is on it.
+        assert_eq!(app.view.cursor, 3);
+        assert_eq!(app.view.focused(), Some(0));
+        let screen = screen_of(&app);
+        assert!(
+            screen.contains("u1 user") && screen.contains("fix this"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_line_a_range_and_a_file_are_present_after_the_pane_is_closed_and_opened_again() {
+        let fixture = Fixture::new("comment-kinds");
+        let mut app = opened(&fixture, TWO_FILES);
+        // Row 2 is a1 and row 5 is a3. The removed row between them has no new line.
+        press(&fixture, &mut app, [key('j'), key('j'), key('v')]);
+        press(&fixture, &mut app, [key('j'), key('j'), key('j'), key('c')]);
+        press(&fixture, &mut app, chars("this block"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        // The file comment, from its header.
+        press(&fixture, &mut app, "k".repeat(20).chars().map(key));
+        assert_eq!(app.view.cursor, 0);
+        press(&fixture, &mut app, [key('c')]);
+        press(&fixture, &mut app, chars("the file"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        // A line, on the added row of b.rs.
+        press(&fixture, &mut app, "j".repeat(40).chars().map(key));
+        press(&fixture, &mut app, [key('c')]);
+        press(&fixture, &mut app, chars("one line"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        drop(app);
+        let mut reopened = fixture.started();
+        reopened.resize(Rect::new(0, 0, 80, 12));
+        let threads = &reopened.review.threads;
+        assert_eq!(threads.len(), 3);
+        assert_eq!(
+            threads[0].anchor.target,
+            AnchorTarget::Range {
+                side: Side::New,
+                start: 1,
+                end: 3,
+                text: "a1".into()
+            }
+        );
+        assert_eq!(threads[1].anchor.target, AnchorTarget::File);
+        assert_eq!(threads[2].anchor.path.as_str(), "b.rs");
+        let bodies = threads
+            .iter()
+            .map(|thread| thread.root.body.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(bodies, ["this block", "the file", "one line"]);
+        let screen = screen_of(&reopened);
+        assert!(screen.contains("this block"), "{screen}");
+    }
+
+    #[test]
+    fn a_hunk_header_cannot_be_commented_and_says_what_can() {
+        let fixture = Fixture::new("comment-hunk");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('j'), key('c')]);
+        assert!(app.compose.is_none());
+        assert!(screen_of(&app).contains("comment on a line or a file header"));
+    }
+
+    #[test]
+    fn cancelling_the_editor_writes_nothing() {
+        let fixture = Fixture::new("cancel");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('c')]);
+        press(&fixture, &mut app, chars("never mind"));
+        press(&fixture, &mut app, [esc()]);
+        assert!(app.compose.is_none());
+        assert!(!fixture.dir().join("review.jsonl").exists());
+        assert!(app.review.threads.is_empty());
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_editor_open_with_its_text() {
+        let fixture = Fixture::new("save-fails");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('c')]);
+        press(&fixture, &mut app, chars("keep me"));
+        std::fs::set_permissions(fixture.dir(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        press(&fixture, &mut app, [ctrl_s()]);
+        let screen = screen_of(&app);
+        assert!(screen.contains("review.jsonl"), "{screen}");
+        assert!(screen.contains("keep me"), "{screen}");
+        assert!(app.compose.is_some());
+        // The text goes out once the disk allows it.
+        std::fs::set_permissions(fixture.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        press(&fixture, &mut app, [ctrl_s()]);
+        assert!(app.compose.is_none());
+        assert_eq!(app.review.threads[0].root.body, "keep me");
+    }
+
+    #[test]
+    fn a_busy_review_keeps_the_editor_and_says_to_press_again() {
+        let fixture = Fixture::new("busy-editor");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('c')]);
+        press(&fixture, &mut app, chars("keep me"));
+        let held = crate::store::lock(&fixture.dir()).unwrap();
+        press(&fixture, &mut app, [ctrl_s()]);
+        assert!(screen_of(&app).contains("review is busy, press again"));
+        assert!(app.compose.is_some());
+        drop(held);
+        press(&fixture, &mut app, [ctrl_s()]);
+        assert!(app.compose.is_none());
+        assert_eq!(app.review.threads.len(), 1);
+    }
+
+    #[test]
+    fn a_termination_signal_with_a_draft_writes_one_comment_at_the_captured_anchor() {
+        let fixture = Fixture::new("terminated-draft");
+        let mut app = opened(&fixture, patch_text());
+        // Rows 2 and 3 are `old` and `new`. The comment is on the removed row.
+        let events = vec![
+            Some(key('j')),
+            Some(key('j')),
+            Some(key('c')),
+            Some(key('h')),
+            Some(key('i')),
+            // The agent writes while the editor is open, and the pane regains focus. Neither
+            // reloads the diff.
+            Some(Event::FocusGained),
+            None,
+        ];
+        let patch = fixture.patch.clone();
+        let exit = drive(&fixture, &mut app, events, |tick| {
+            if tick == 5 {
+                let agent_event = thread_event("a1", agent(), "from the agent");
+                write_log(&fixture, &[agent_event]);
+                *patch.borrow_mut() = b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1,2 @@\n+first\n new\n".to_vec();
+            }
+        });
+        assert_eq!(exit, Exit::Terminated);
+        assert_eq!(
+            fixture.diffs.get(),
+            1,
+            "the diff was reloaded under the editor"
+        );
+        assert!(app.compose.is_none());
+        let log = std::fs::read_to_string(fixture.dir().join("review.jsonl")).unwrap();
+        let added = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<LogEvent>(line).ok())
+            .filter_map(|event| match event.kind {
+                Kind::Add(add) if event.by == Author::User => Some(add),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].body, "hi");
+        assert_eq!(added[0].side, Some(Side::Old));
+        assert_eq!(added[0].line, Some(1));
+        assert_eq!(added[0].line_text.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn a_termination_signal_with_no_text_writes_nothing() {
+        let fixture = Fixture::new("terminated-empty");
+        let mut app = opened(&fixture, patch_text());
+        let events = vec![Some(key('c')), Some(key(' ')), None];
+        drive(&fixture, &mut app, events, |_| {});
+        assert!(!fixture.dir().join("review.jsonl").exists());
+    }
+
+    /// Two threads on the added row of `PATCH`: the user's `u1`, then the agent's `a1`. The cursor
+    /// starts on `u1`'s card, which is row 4.
+    fn with_two_threads(name: &str) -> (Fixture, App) {
+        let fixture = Fixture::new(name);
+        write_log(
+            &fixture,
+            &[
+                thread_event("u1", Author::User, "fix"),
+                thread_event("a1", agent(), "agent note"),
+            ],
+        );
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('n')]);
+        assert_eq!(app.view.cursor, 4);
+        (fixture, app)
+    }
+
+    #[test]
+    fn a_reply_joins_the_thread_under_the_cursor() {
+        let (fixture, mut app) = with_two_threads("reply");
+        press(&fixture, &mut app, [key('r')]);
+        assert!(screen_of(&app).contains("Reply to u1"));
+        press(&fixture, &mut app, chars("thanks"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        let thread = &app.review.threads[0];
+        assert_eq!(thread.replies.len(), 1);
+        assert_eq!(thread.replies[0].body, "thanks");
+        assert_eq!(thread.replies[0].id.as_str(), "u2");
+        assert!(screen_of(&app).contains("↳ user: thanks"));
+        assert_eq!(app.view.focused(), Some(0));
+    }
+
+    #[test]
+    fn a_reply_needs_a_thread_under_the_cursor() {
+        let fixture = Fixture::new("reply-nothing");
+        let mut app = opened(&fixture, patch_text());
+        press(&fixture, &mut app, [key('r')]);
+        assert!(app.compose.is_none());
+        assert!(screen_of(&app).contains("no thread here to reply to"));
+    }
+
+    #[test]
+    fn an_edit_opens_the_comment_and_saves_the_new_text() {
+        let (fixture, mut app) = with_two_threads("edit");
+        press(&fixture, &mut app, [key('e')]);
+        let screen = screen_of(&app);
+        assert!(
+            screen.contains("Edit u1") && screen.contains("fix"),
+            "{screen}"
+        );
+        press(&fixture, &mut app, chars(" it"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        assert_eq!(app.review.threads[0].root.body, "fix it");
+        assert!(app.compose.is_none());
+        // The comment was never sent, so it is not marked as edited since.
+        assert!(!app.review.threads[0].root.edited_since_sent);
+        assert_eq!(app.review.threads.len(), 2);
+    }
+
+    #[test]
+    fn delete_removes_the_users_comment_and_a_root_takes_its_thread() {
+        let (fixture, mut app) = with_two_threads("delete");
+        press(&fixture, &mut app, [key('r')]);
+        press(&fixture, &mut app, chars("a reply"));
+        press(&fixture, &mut app, [ctrl_s()]);
+        // On the reply's line, d removes only the reply.
+        let reply_row = app.view.cursor + 2;
+        press(&fixture, &mut app, [key('j'), key('j')]);
+        assert_eq!(app.view.cursor, reply_row);
+        press(&fixture, &mut app, [key('d')]);
+        assert!(screen_of(&app).contains("deleted u2"));
+        assert!(app.review.threads[0].replies.is_empty());
+        // On the root's line, d removes the thread.
+        press(&fixture, &mut app, [key('k'), key('k')]);
+        press(&fixture, &mut app, [key('d')]);
+        assert_eq!(app.review.threads.len(), 1);
+        assert_eq!(app.review.threads[0].root.id.as_str(), "a1");
+    }
+
+    #[test]
+    fn x_resolves_the_thread_and_reopens_it() {
+        let (fixture, mut app) = with_two_threads("resolve");
+        press(&fixture, &mut app, [key('x')]);
+        assert!(!app.review.threads[0].is_open());
+        assert!(screen_of(&app).contains("resolved u1"));
+        // The card is one line now, and the cursor is still in the thread.
+        assert!(screen_of(&app).contains("✓ u1 resolved by user: fix"));
+        press(&fixture, &mut app, [key('x')]);
+        assert!(app.review.threads[0].is_open());
+        assert!(screen_of(&app).contains("reopened u1"));
+    }
+
+    #[test]
+    fn either_side_may_resolve_but_the_agents_words_cannot_be_edited_or_deleted() {
+        let (fixture, mut app) = with_two_threads("rights");
+        // u1's card is rows 4 to 5, and a1's starts at 6.
+        press(&fixture, &mut app, [key('n')]);
+        assert_eq!(app.view.focused(), Some(1));
+        let before = app.review.clone();
+        for action in ['e', 'd'] {
+            press(&fixture, &mut app, [key(action)]);
+            assert!(app.compose.is_none());
+            let screen = screen_of(&app);
+            assert!(screen.contains("a1 is the agent's"), "{screen}");
+            assert_eq!(app.review, before);
+        }
+        press(&fixture, &mut app, [key('x')]);
+        assert!(!app.review.threads[1].is_open());
+    }
+
+    #[test]
+    fn resolving_and_deleting_report_a_busy_review_on_the_status_line() {
+        let (fixture, mut app) = with_two_threads("busy-actions");
+        let held = crate::store::lock(&fixture.dir()).unwrap();
+        for action in ['x', 'd'] {
+            press(&fixture, &mut app, [key(action)]);
+            assert!(
+                screen_of(&app).contains("review is busy, press again"),
+                "{action}"
+            );
+        }
+        drop(held);
+        assert!(app.review.threads[0].is_open());
+        assert_eq!(app.review.threads.len(), 2);
+    }
+
+    #[test]
+    fn a_selected_range_is_dropped_by_a_second_press_and_by_writing() {
+        let fixture = Fixture::new("select");
+        let mut app = opened(&fixture, TWO_FILES);
+        press(&fixture, &mut app, [key('j'), key('j'), key('v')]);
+        assert_eq!(app.view.select, Some(2));
+        press(&fixture, &mut app, [key('v')]);
+        assert_eq!(app.view.select, None);
+        press(&fixture, &mut app, [key('v'), key('c')]);
+        assert_eq!(app.view.select, None);
+        assert!(app.compose.is_some());
     }
 }

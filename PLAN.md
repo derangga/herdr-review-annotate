@@ -376,6 +376,28 @@ How the cards behave (built in M5):
   cursor is on. A card's height is its number of lines, so the stream is laid out again when the pane's
   width changes.
 
+How comments are written (built in M5):
+
+- `comment` reads what the comment points at when the key is pressed and keeps it until the text is saved. On
+  a diff line it is that line, on the new side, or on the old side for a removed row. On a file header, or the
+  note of a file with no rows, it is the file. A hunk header is refused. On a card it is the row the card
+  hangs under, and a card in the not-in-diff block is refused.
+- `select_range` starts a range at the cursor and a second press drops it. The range runs to the cursor, stays
+  inside one file, takes the side of its first line, ends at the last line on that side, and keeps the text of
+  its first line. A reload drops it. `comment` uses it and ends it.
+- The editor is drawn under the cursor row, or above it when there is no room, lined up with the cards. `Ctrl+S`
+  saves and `Esc` cancels. A failed save keeps the editor open with its text, and the reason is on its footer
+  and on the status line. The diff is not reloaded while the editor is open: a store change, `reload` and
+  regaining focus wait until it closes.
+- A saved comment, reply, edit, delete, resolve or reopen is written with `actions.rs`, then the pane reads the
+  log again and lays the stream out. It does not reload the diff. A new comment or reply moves the cursor to
+  its thread's card.
+- `reply` replies to the thread the cursor is on. `edit` and `delete` act on the comment whose line of the card
+  the cursor is on, or on the root when it is on the line above the card. They refuse an agent's comment.
+  Deleting a root deletes its thread and nothing asks first. `resolve` flips any thread, whoever wrote it.
+- When the pane is told to end, or its terminal fails, with text in the editor, the text is written as the
+  comment, reply or edit it was for.
+
 ### 7.1 Keymap file
 
 The user can change any key in the table. The file is `config.toml` in the plugin config directory
@@ -703,7 +725,7 @@ Errors, one enum per module:
 | Type | Cases | Meaning |
 |---|---|---|
 | `StoreError` | `Io(kind)`, `Busy` | The disk failed, or the lock was not free within 2 seconds |
-| `CommandError` | `UnknownId { id, open }`, `InvalidBody(why)`, `InvalidBatch { index, why }` | The caller asked for something the review cannot do. `NotAllowed` is not built: the `comment` subcommands never edit or delete, so no request breaks the rights rule |
+| `CommandError` | `UnknownId { id, open }`, `InvalidBody(why)`, `InvalidBatch { index, why }`, `NotAllowed { id }` | The caller asked for something the review cannot do. Only the TUI's edit and delete build `NotAllowed`, for an agent's comment: the `comment` subcommands never edit or delete, so no request of theirs breaks the rights rule |
 | `GitError` | `NotInstalled`, `NotARepo`, `NoBase { tried }`, `Failed { args, stderr }` | `git` could not answer |
 | `HerdrError` | `code`, `message` | As parsed by `agent_delivery.rs` |
 | `TargetError` | `NoAgent`, `Ambiguous(Vec<Target>)` | Resolution found zero or several agents |

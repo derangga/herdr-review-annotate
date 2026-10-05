@@ -15,10 +15,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::cards::card;
+use crate::cards::{Card, card, indent};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
-use crate::store::{AnchorTarget, CommentId, RelPath, Review, Side, Spec};
+use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, truncate_to_width};
 
@@ -150,7 +150,7 @@ pub struct Stream {
     /// The cards of each file, in row order.
     slots: Vec<Vec<Slot>>,
     /// The lines of each thread's card, in the review's order.
-    cards: Vec<Vec<Line<'static>>>,
+    cards: Vec<Card>,
     /// The first row of each thread's card, in the review's order.
     card_rows: Vec<usize>,
     ids: Vec<CommentId>,
@@ -209,7 +209,7 @@ impl Stream {
                 list.push((offset, index));
             }
         }
-        let height = |thread: usize| cards.get(thread).map_or(0, Vec::len);
+        let height = |thread: usize| cards.get(thread).map_or(0, |card| card.lines.len());
         let mut total = 0;
         if !block.is_empty() {
             total = 1;
@@ -458,6 +458,8 @@ pub struct View {
     pub panel: Panel,
     pub help: bool,
     pub area: Rect,
+    /// The row a range started at, while one is being selected.
+    pub select: Option<usize>,
 }
 
 impl Default for View {
@@ -469,6 +471,7 @@ impl Default for View {
             panel: Panel::Stream,
             help: false,
             area: Rect::default(),
+            select: None,
         }
     }
 }
@@ -505,6 +508,127 @@ impl View {
         self.stream.thread_at(self.cursor)
     }
 
+    /// The row of the diff the cursor is on, or the one the card under the cursor hangs from.
+    fn base_row(&self) -> Option<usize> {
+        match self.stream.at(self.cursor)? {
+            At::Base { .. } => Some(self.cursor),
+            At::Card {
+                owner: Some((file, at)),
+                ..
+            } => self.stream.row_of(file, at),
+            _ => None,
+        }
+    }
+
+    /// Start a range at the cursor, or drop the one being selected.
+    pub fn toggle_select(&mut self) {
+        self.select = match self.select {
+            Some(_) => None,
+            None => self.base_row(),
+        };
+    }
+
+    /// What a comment written now would point at, read from the rows under the cursor, or from the
+    /// rows between the cursor and where a range started. The result is kept by the caller, so a
+    /// reload after this cannot move it.
+    pub fn capture(&self, diff: &Diff) -> Result<Anchor, &'static str> {
+        let row = self
+            .base_row()
+            .ok_or("that thread's file is not in the diff, reply to it instead")?;
+        let start = self.select.unwrap_or(row);
+        let (low, high) = (start.min(row), start.max(row));
+        let file = self.stream.file_at(row);
+        if self.stream.file_at(low) != file || self.stream.file_at(high) != file {
+            return Err("a range stays inside one file");
+        }
+        let file = diff.files.get(file).ok_or("no file here to comment on")?;
+        let target = self.capture_target(diff, low, high)?;
+        Ok(Anchor {
+            path: file.path.clone(),
+            old_path: file.old_path.clone(),
+            target,
+            spec: diff.spec.clone(),
+        })
+    }
+
+    fn capture_target(
+        &self,
+        diff: &Diff,
+        low: usize,
+        high: usize,
+    ) -> Result<AnchorTarget, &'static str> {
+        let rows = (low..=high)
+            .filter_map(|row| match self.stream.locate(diff, row)? {
+                RowRef::Line(line) => Some(line),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let Some(first) = rows.first() else {
+            return match self.stream.locate(diff, low) {
+                Some(RowRef::File(_) | RowRef::Note(_)) if low == high => Ok(AnchorTarget::File),
+                _ if low == high => Err("comment on a line or a file header"),
+                _ => Err("select lines to comment on"),
+            };
+        };
+        let side = if first.kind == RowKind::Removed {
+            Side::Old
+        } else {
+            Side::New
+        };
+        let start = first.line(side).ok_or("no line number here")?;
+        let end = rows
+            .iter()
+            .rev()
+            .find_map(|row| row.line(side))
+            .unwrap_or(start);
+        let text = first.text.clone();
+        Ok(if end > start {
+            AnchorTarget::Range {
+                side,
+                start,
+                end,
+                text,
+            }
+        } else {
+            AnchorTarget::Line {
+                side,
+                line: start,
+                text,
+            }
+        })
+    }
+
+    /// The thread and the comment of it the cursor is on: the comment whose line of the card it is
+    /// on, or the root when it is on the line the card hangs under.
+    pub fn focused_comment(&self) -> Option<(usize, usize)> {
+        match self.stream.at(self.cursor)? {
+            At::Card { thread, line, .. } => {
+                Some((thread, *self.stream.cards.get(thread)?.owners.get(line)?))
+            }
+            At::Base { .. } => Some((self.focused()?, 0)),
+            At::BlockHeader | At::Empty => None,
+        }
+    }
+
+    /// The root id of thread `thread`, counting threads in the review's order as the stream was
+    /// laid out.
+    pub fn thread_id(&self, thread: usize) -> Option<&CommentId> {
+        self.stream.ids.get(thread)
+    }
+
+    /// Put the cursor on the first row of the card of the thread whose root is `id`.
+    pub fn focus_thread(&mut self, id: &CommentId) {
+        let row = self
+            .stream
+            .ids
+            .iter()
+            .position(|other| other == id)
+            .and_then(|thread| self.stream.card_rows.get(thread));
+        if let Some(&row) = row {
+            self.move_to(row);
+        }
+    }
+
     fn stream_width(&self) -> usize {
         usize::from(areas(self.area).stream.width)
     }
@@ -513,11 +637,12 @@ impl View {
     /// the same card, else its row in the same file.
     pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>) {
         self.stream = Stream::build(diff, review, self.stream_width());
+        self.select = None;
         let stream = &self.stream;
         let on_card = |spot: &Spot| {
             let (id, line) = spot.card.as_ref()?;
             let thread = stream.ids.iter().position(|other| other == id)?;
-            let height = stream.cards.get(thread)?.len();
+            let height = stream.cards.get(thread)?.lines.len();
             Some(stream.card_rows.get(thread)? + (*line).min(height.saturating_sub(1)))
         };
         let in_file = |spot: &Spot| {
@@ -722,7 +847,7 @@ fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
         RowRef::Card { thread, line } => stream
             .cards
             .get(thread)
-            .and_then(|lines| lines.get(line))
+            .and_then(|card| card.lines.get(line))
             .cloned()
             .unwrap_or_default(),
         RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
@@ -795,6 +920,17 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
     frame.render_widget(Paragraph::new(lines), areas.stream);
+    if let Some(start) = view.select {
+        let (low, high) = (start.min(view.cursor), start.max(view.cursor));
+        for row in low.max(view.scroll)..=high.min(view.scroll + height.saturating_sub(1)) {
+            highlight(
+                frame.buffer_mut(),
+                areas.stream,
+                row - view.scroll,
+                Style::new().bg(Color::Blue),
+            );
+        }
+    }
     if view.cursor >= view.scroll && view.cursor < view.scroll + height {
         let style = if view.panel == Panel::Stream {
             cursor_style
@@ -814,6 +950,29 @@ pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
     if view.help {
         draw_help(frame, keymap);
     }
+}
+
+/// Where an editor `height` rows tall goes in `stream` when the cursor is on row `at` of it: under
+/// the cursor, else above it, else at the bottom. It lines up with the cards.
+pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
+    let left = u16::try_from(indent(usize::from(stream.width))).unwrap_or(0);
+    let height = height.min(stream.height);
+    let at = u16::try_from(at)
+        .unwrap_or(0)
+        .min(stream.height.saturating_sub(1));
+    let y = if at + 1 + height <= stream.height {
+        at + 1
+    } else if at >= height {
+        at - height
+    } else {
+        stream.height - height
+    };
+    Rect::new(
+        stream.x + left,
+        stream.y + y,
+        stream.width.saturating_sub(left),
+        height,
+    )
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff) {
@@ -1510,5 +1669,215 @@ Binary files a/img.png and b/img.png differ
         assert!(
             matches!(view.stream.locate(&diff, view.cursor), Some(RowRef::Line(row)) if row.text == "A2")
         );
+    }
+
+    fn anchor_at(view: &mut View, diff: &Diff, row: usize) -> Result<Anchor, &'static str> {
+        view.move_to(row);
+        view.capture(diff)
+    }
+
+    fn target_at(view: &mut View, diff: &Diff, row: usize) -> Result<AnchorTarget, &'static str> {
+        anchor_at(view, diff, row).map(|anchor| anchor.target)
+    }
+
+    #[test]
+    fn a_comment_on_a_line_points_at_its_side_number_and_text() {
+        let (diff, mut view) = plain();
+        assert_eq!(target_at(&mut view, &diff, 4), Ok(line(2, "A2")));
+        let removed = AnchorTarget::Line {
+            side: Side::Old,
+            line: 2,
+            text: "a2".into(),
+        };
+        assert_eq!(target_at(&mut view, &diff, 3), Ok(removed));
+        // A context row is on the new side.
+        assert_eq!(target_at(&mut view, &diff, 2), Ok(line(1, "a1")));
+        let anchor = anchor_at(&mut view, &diff, 4).unwrap();
+        assert_eq!(anchor.path.as_str(), "a.rs");
+        assert_eq!((anchor.old_path, anchor.spec), (None, Spec::WorkTree));
+    }
+
+    #[test]
+    fn a_comment_on_a_file_header_or_its_note_points_at_the_file() {
+        let (diff, mut view) = plain();
+        assert_eq!(target_at(&mut view, &diff, 0), Ok(AnchorTarget::File));
+        let binary = anchor_at(&mut view, &diff, 15).unwrap();
+        assert_eq!(binary.target, AnchorTarget::File);
+        assert_eq!(binary.path.as_str(), "img.png");
+        assert_eq!(
+            target_at(&mut view, &diff, 1),
+            Err("comment on a line or a file header")
+        );
+    }
+
+    #[test]
+    fn a_range_runs_from_where_it_started_to_the_cursor_on_the_side_of_its_first_line() {
+        let (diff, mut view) = plain();
+        view.move_to(2);
+        view.toggle_select();
+        let range = |side, start, end, text: &str| AnchorTarget::Range {
+            side,
+            start,
+            end,
+            text: text.into(),
+        };
+        // From a1 to a3 on the new side, over the removed row, which has no new line.
+        assert_eq!(
+            target_at(&mut view, &diff, 5),
+            Ok(range(Side::New, 1, 3, "a1"))
+        );
+        // Upwards is the same range.
+        let mut upwards = View::default();
+        upwards.resize(Rect::new(0, 0, 80, 12));
+        upwards.rebuild(&diff, &Review::default(), None);
+        upwards.move_to(5);
+        upwards.toggle_select();
+        assert_eq!(
+            target_at(&mut upwards, &diff, 2),
+            Ok(range(Side::New, 1, 3, "a1"))
+        );
+        // Starting on a removed row, the range is on the old side.
+        let mut old = View::default();
+        old.resize(Rect::new(0, 0, 80, 12));
+        old.rebuild(&diff, &Review::default(), None);
+        old.move_to(3);
+        old.toggle_select();
+        assert_eq!(
+            target_at(&mut old, &diff, 5),
+            Ok(range(Side::Old, 2, 3, "a2"))
+        );
+        // Across hunks, the end is the last line on that side.
+        assert_eq!(
+            target_at(&mut old, &diff, 9),
+            Ok(range(Side::Old, 2, 11, "a2"))
+        );
+        // Where it started is where it ends: one line.
+        assert_eq!(
+            target_at(&mut old, &diff, 3).map(|t| matches!(t, AnchorTarget::Line { .. })),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn a_range_cannot_cross_files_or_hold_no_lines() {
+        let (diff, mut view) = plain();
+        view.move_to(2);
+        view.toggle_select();
+        assert_eq!(
+            target_at(&mut view, &diff, 12),
+            Err("a range stays inside one file")
+        );
+        // The file header and the hunk header under it hold no line.
+        view.select = Some(0);
+        assert_eq!(
+            target_at(&mut view, &diff, 1),
+            Err("select lines to comment on")
+        );
+        // Selecting again drops the range, and a rebuild does too.
+        view.toggle_select();
+        assert_eq!(view.select, None);
+        view.toggle_select();
+        assert_eq!(view.select, Some(1));
+        view.rebuild(&diff, &Review::default(), None);
+        assert_eq!(view.select, None);
+    }
+
+    #[test]
+    fn a_comment_written_from_a_card_points_where_the_card_hangs() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let mut view = view(&diff, &review, 80, 12);
+        // u3's card hangs under A2, and u2's under the b.rs header.
+        assert_eq!(target_at(&mut view, &diff, 11), Ok(line(2, "A2")));
+        assert_eq!(target_at(&mut view, &diff, 22), Ok(AnchorTarget::File));
+        // A thread in the block has no file in the diff to point into.
+        let block = anchor_at(&mut view, &diff, 3).unwrap_err();
+        assert!(block.contains("reply"), "{block}");
+        assert!(anchor_at(&mut view, &diff, 0).is_err());
+    }
+
+    #[test]
+    fn a_comment_on_a_renamed_file_keeps_the_old_name_and_the_spec_on_screen() {
+        let patch = "diff --git a/old.rs b/new.rs\nsimilarity index 90%\nrename from old.rs\nrename to new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let mut diff = diff_of(patch);
+        diff.spec = Spec::Branch {
+            base: "main".into(),
+        };
+        let mut view = view_of(&diff);
+        let anchor = anchor_at(&mut view, &diff, 2).unwrap();
+        assert_eq!(anchor.path.as_str(), "new.rs");
+        assert_eq!(anchor.old_path.unwrap().as_str(), "old.rs");
+        assert_eq!(anchor.spec, diff.spec);
+    }
+
+    #[test]
+    fn the_focused_comment_is_the_one_whose_line_of_the_card_the_cursor_is_on() {
+        let diff = diff_of(PATCH);
+        let mut review = review();
+        review.threads[2].replies.push(Comment {
+            id: CommentId::parse("a1").unwrap(),
+            parent: None,
+            author: Author::Agent(None),
+            body: "done".into(),
+            sent_batch: None,
+            edited_since_sent: false,
+        });
+        let mut view = view(&diff, &review, 80, 14);
+        let at = |view: &mut View, row| {
+            view.move_to(row);
+            view.focused_comment()
+        };
+        // u3's card is rows 10 to 12 now: header, body, then the reply.
+        assert_eq!(at(&mut view, 10), Some((2, 0)));
+        assert_eq!(at(&mut view, 11), Some((2, 0)));
+        assert_eq!(at(&mut view, 12), Some((2, 1)));
+        // The line the card hangs under counts as the root.
+        assert_eq!(at(&mut view, 9), Some((2, 0)));
+        assert_eq!(at(&mut view, 7), None);
+        assert_eq!(at(&mut view, 0), None);
+        assert_eq!(view.thread_id(2).unwrap().as_str(), "u3");
+    }
+
+    #[test]
+    fn focusing_a_thread_puts_the_cursor_on_its_card() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let mut view = view(&diff, &review, 80, 12);
+        view.focus_thread(&CommentId::parse("u2").unwrap());
+        assert_eq!(view.cursor, 21);
+        view.focus_thread(&CommentId::parse("u9").unwrap());
+        assert_eq!(view.cursor, 21);
+    }
+
+    #[test]
+    fn the_editor_goes_under_the_cursor_then_above_it_then_to_the_bottom() {
+        let stream = Rect::new(20, 0, 60, 20);
+        // Wide streams line it up with the code.
+        assert_eq!(editor_rect(stream, 5, 4), Rect::new(31, 6, 49, 4));
+        assert_eq!(editor_rect(stream, 17, 4), Rect::new(31, 13, 49, 4));
+        assert_eq!(editor_rect(stream, 2, 19), Rect::new(31, 1, 49, 19));
+        assert_eq!(
+            editor_rect(Rect::new(0, 3, 30, 8), 1, 20),
+            Rect::new(2, 3, 28, 8)
+        );
+    }
+
+    #[test]
+    fn a_selected_range_is_drawn_with_the_cursor_on_its_end() {
+        let (diff, mut view) = plain();
+        view.move_to(2);
+        view.toggle_select();
+        view.move_to(4);
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &view, &diff, &Keymap::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // The stream starts at column 20. Rows 2 and 3 are selected, and row 4 is the cursor.
+        assert_eq!(buffer[(40, 1)].bg, Color::Reset);
+        assert_eq!(buffer[(40, 2)].bg, Color::Blue);
+        assert_eq!(buffer[(40, 3)].bg, Color::Blue);
+        assert_eq!(buffer[(40, 4)].bg, Color::DarkGray);
+        assert_eq!(buffer[(40, 5)].bg, Color::Reset);
     }
 }
