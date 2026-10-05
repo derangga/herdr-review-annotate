@@ -1,0 +1,257 @@
+//! The `comment` subcommands an agent runs: what each one reads from the review and prints.
+
+use std::fmt::Write as _;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::store::{
+    Anchor, AnchorTarget, Comment, Side, Status, StoreError, Thread, Warning, read,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusFilter {
+    Open,
+    Resolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorFilter {
+    User,
+    Agent,
+}
+
+/// `comment list --status` and `--author`. The author is the root comment's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub status: Option<StatusFilter>,
+    pub author: Option<AuthorFilter>,
+}
+
+impl Filter {
+    fn keeps(self, thread: &Thread) -> bool {
+        let status = self.status.is_none_or(|status| match status {
+            StatusFilter::Open => thread.is_open(),
+            StatusFilter::Resolved => !thread.is_open(),
+        });
+        let author = self.author.is_none_or(|author| match author {
+            AuthorFilter::User => thread.root.author.is_user(),
+            AuthorFilter::Agent => !thread.root.author.is_user(),
+        });
+        status && author
+    }
+}
+
+/// The JSON `comment list --json` prints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    pub threads: Vec<Thread>,
+}
+
+/// The threads that pass `filter`, in file order, and a warning when the log had bad lines.
+pub fn list(dir: &Path, filter: Filter) -> Result<(Listing, Option<Warning>), StoreError> {
+    let review = read(dir)?;
+    let warning = (review.skipped_lines > 0).then_some(Warning::SkippedLine(review.skipped_lines));
+    let threads = review
+        .threads
+        .into_iter()
+        .filter(|thread| filter.keeps(thread))
+        .collect();
+    Ok((Listing { threads }, warning))
+}
+
+fn place(anchor: &Anchor) -> String {
+    let side = |side: &Side| match side {
+        Side::Old => "L",
+        Side::New => "R",
+    };
+    match &anchor.target {
+        AnchorTarget::Line { side: s, line, .. } => format!("{}:{line} ({})", anchor.path, side(s)),
+        AnchorTarget::Range {
+            side: s,
+            start,
+            end,
+            ..
+        } => format!("{}:{start}-{end} ({})", anchor.path, side(s)),
+        AnchorTarget::File => format!("{} (file)", anchor.path),
+    }
+}
+
+/// `text` with every line after the first indented by `indent`.
+fn indented(text: &str, indent: &str) -> String {
+    text.trim_end().replace('\n', &format!("\n{indent}"))
+}
+
+/// One block per thread, which a person or an agent can read:
+///
+/// ```text
+/// u7 open src/lib.rs:42 (R) by user
+///   body text
+///   > a1 agent:claude: reply text
+/// ```
+pub fn render_text(listing: &Listing) -> String {
+    let mut out = String::new();
+    for thread in &listing.threads {
+        let status = match &thread.status {
+            Status::Open => "open".to_owned(),
+            Status::Resolved { by } => format!("resolved by {by}"),
+        };
+        let tags = [(thread.is_new, ", new"), (thread.unsent, ", unsent")]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, tag)| *tag)
+            .collect::<String>();
+        let Comment {
+            id, author, body, ..
+        } = &thread.root;
+        let _ = writeln!(
+            out,
+            "{id} {status}{tags} {} by {author}\n  {}",
+            place(&thread.anchor),
+            indented(body, "  ")
+        );
+        for reply in &thread.replies {
+            let _ = writeln!(
+                out,
+                "  > {} {}: {}",
+                reply.id,
+                reply.author,
+                indented(&reply.body, "    ")
+            );
+        }
+    }
+    out
+}
+
+pub fn render_json(listing: &Listing) -> String {
+    serde_json::to_string(listing).unwrap_or_else(|_| r#"{"threads":[]}"#.to_owned())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use crate::store::{Add, Author, CommentId, Event, Kind, RelPath, Spec, fold, write};
+
+    fn add(by: &Author, id: &str, parent: Option<&str>, body: &str) -> Event {
+        let anchored = parent.is_none();
+        Event {
+            at: "t".into(),
+            by: by.clone(),
+            kind: Kind::Add(Add {
+                id: CommentId::parse(id).unwrap(),
+                parent: parent.and_then(CommentId::parse),
+                path: anchored.then(|| RelPath::parse("src/a b.rs").unwrap()),
+                old_path: None,
+                side: anchored.then_some(Side::New),
+                line: anchored.then_some(42),
+                end_line: None,
+                line_text: anchored.then(|| "let x = `1`;".to_owned()),
+                spec: anchored.then_some(Spec::WorkTree),
+                body: body.into(),
+            }),
+        }
+    }
+
+    fn resolve(by: &Author, id: &str) -> Event {
+        Event {
+            at: "t".into(),
+            by: by.clone(),
+            kind: Kind::Resolve {
+                id: CommentId::parse(id).unwrap(),
+            },
+        }
+    }
+
+    fn fixture() -> Listing {
+        let agent = Author::Agent(Some("claude".into()));
+        let events = [
+            add(&Author::User, "u1", None, "first\nsecond"),
+            add(&agent, "a1", Some("u1"), "done"),
+            resolve(&agent, "u1"),
+            add(&agent, "a2", None, "my own"),
+            add(&Author::User, "u2", None, "open one"),
+        ];
+        Listing {
+            threads: fold(&events).threads,
+        }
+    }
+
+    fn ids(listing: &Listing) -> Vec<String> {
+        listing
+            .threads
+            .iter()
+            .map(|t| t.root.id.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn filters_keep_file_order_and_combine() {
+        let all = fixture();
+        let run = |status, author| {
+            let listing = Listing {
+                threads: all
+                    .threads
+                    .iter()
+                    .filter(|t| Filter { status, author }.keeps(t))
+                    .cloned()
+                    .collect(),
+            };
+            ids(&listing)
+        };
+        assert_eq!(run(None, None), ["u1", "a2", "u2"]);
+        assert_eq!(run(Some(StatusFilter::Open), None), ["a2", "u2"]);
+        assert_eq!(run(Some(StatusFilter::Resolved), None), ["u1"]);
+        assert_eq!(run(None, Some(AuthorFilter::Agent)), ["a2"]);
+        assert_eq!(
+            run(Some(StatusFilter::Open), Some(AuthorFilter::User)),
+            ["u2"]
+        );
+    }
+
+    #[test]
+    fn list_reads_the_store_and_warns_about_bad_lines() {
+        let dir = std::env::temp_dir().join(format!("herdr-review-list2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (empty, warning) = list(&dir, Filter::default()).unwrap();
+        assert!(empty.threads.is_empty() && warning.is_none());
+        write(&dir, "t", |_, _| {
+            Ok::<_, ()>((vec![add(&Author::User, "u1", None, "x")], ()))
+        })
+        .unwrap();
+        let mut log = std::fs::read_to_string(dir.join("review.jsonl")).unwrap();
+        log.push_str("garbage\n");
+        std::fs::write(dir.join("review.jsonl"), log).unwrap();
+        let (listing, warning) = list(
+            &dir,
+            Filter {
+                status: Some(StatusFilter::Open),
+                author: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(ids(&listing), ["u1"]);
+        assert_eq!(warning, Some(Warning::SkippedLine(1)));
+    }
+
+    #[test]
+    fn json_parses_back_into_the_same_threads() {
+        let listing = fixture();
+        let json = render_json(&listing);
+        assert_eq!(serde_json::from_str::<Listing>(&json).unwrap(), listing);
+        let value = serde_json::from_str::<serde_json::Value>(&json).unwrap();
+        assert_eq!(
+            value["threads"][0]["status"]["resolved"]["by"],
+            "agent:claude"
+        );
+    }
+
+    #[test]
+    fn text_shows_place_status_body_and_replies() {
+        let text = render_text(&fixture());
+        let expected = "u1 resolved by agent:claude, new, unsent src/a b.rs:42 (R) by user\n  first\n  second\n  > a1 agent:claude: done\n";
+        assert!(text.starts_with(expected), "{text}");
+        assert!(text.contains("a2 open src/a b.rs:42 (R) by agent:claude\n  my own\n"));
+        assert!(text.contains("u2 open, unsent src/a b.rs:42 (R) by user\n  open one\n"));
+    }
+}

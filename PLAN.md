@@ -41,6 +41,9 @@ herdr-review/
     store.rs           event log: lock, append, read, fold
     meta.rs            meta.json: load, locked save, find the state directory
     diff.rs            git runner, unified diff parser, anchor matching
+    cli.rs             arguments into a Command, a Command into output and an exit code
+    comment.rs         what the `comment` subcommands read and print
+    env.rs             Env: the process variables, read once in main.rs
     send.rs            prompt format, target resolution, mark sent
     tui.rs             review pane: layout, render, actions
     keymap.rs          default keys, config.toml overrides, key parsing

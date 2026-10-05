@@ -1,7 +1,11 @@
 //! Review a diff in a Herdr pane and send the comments to an agent.
 
 pub mod agent_delivery;
+pub mod cli;
+pub mod comment;
+pub mod diff;
 pub mod edit_keys;
+pub mod env;
 pub mod herdr;
 pub mod meta;
 pub mod open;

@@ -311,7 +311,7 @@ pub struct Event {
     pub kind: Kind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: CommentId,
     pub parent: Option<CommentId>,
@@ -321,7 +321,8 @@ pub struct Comment {
     pub edited_since_sent: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AnchorTarget {
     Line {
         side: Side,
@@ -337,7 +338,7 @@ pub enum AnchorTarget {
     File,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
     pub path: RelPath,
     pub old_path: Option<RelPath>,
@@ -345,13 +346,14 @@ pub struct Anchor {
     pub spec: Spec,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Status {
     Open,
     Resolved { by: Author },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
     pub root: Comment,
     pub anchor: Anchor,

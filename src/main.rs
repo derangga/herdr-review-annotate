@@ -1,21 +1,37 @@
-//! `herdr-review`: argument parsing and dispatch.
+//! `herdr-review`: reads the process once, then dispatches. The only file that touches
+//! `std::env` besides `herdr.rs`.
 
 use std::process::ExitCode;
 
+use herdr_review::cli::{Command, Failure, Output, parse, run_comment};
+use herdr_review::diff::run_git;
+use herdr_review::env::Env;
 use herdr_review::{open, spike, tui};
+
+#[allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the command boundary prints"
+)]
+fn finish(output: &Output) -> ExitCode {
+    print!("{}", output.stdout);
+    eprint!("{}", output.stderr);
+    ExitCode::from(output.code)
+}
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    match args.first().map(String::as_str) {
-        Some("open") => open::run(),
-        Some("tui") => tui::run(),
-        Some("spike-send") => spike::send(),
-        _ => {
-            #[allow(clippy::print_stderr, reason = "the command boundary reports failures")]
-            {
-                eprintln!("usage: herdr-review <open|tui>");
-            }
-            ExitCode::from(2)
+    let env = Env::new(
+        std::env::vars(),
+        std::env::current_dir().unwrap_or_default(),
+    );
+    match parse(&args) {
+        Err(usage) => finish(&Failure::Usage(usage).output()),
+        Ok(Command::Open { .. }) => open::run(&env),
+        Ok(Command::Tui { .. }) => tui::run(&env),
+        Ok(Command::SpikeSend) => spike::send(&env),
+        Ok(Command::Comment { repo, action }) => {
+            finish(&run_comment(repo.as_deref(), &action, &env, run_git))
         }
     }
 }

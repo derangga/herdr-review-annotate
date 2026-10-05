@@ -3,13 +3,14 @@
 use std::process::ExitCode;
 
 use crate::agent_delivery::{Delivery, deliver_to_agent};
+use crate::env::Env;
 use crate::herdr::{notify, run_herdr_output};
 use crate::open::parse_context;
 
 const PROMPT: &str = "Spike prompt from herdr-review.\nReply with the single word: received.";
 
-pub fn send() -> ExitCode {
-    let context = parse_context(std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok().as_deref());
+pub fn send(env: &Env) -> ExitCode {
+    let context = parse_context(env.get("HERDR_PLUGIN_CONTEXT_JSON"));
     let result = deliver_to_agent(Delivery::Send, context.pane.as_deref(), PROMPT, |args| {
         run_herdr_output(args)
     });

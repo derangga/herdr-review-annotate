@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use crate::env::Env;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
@@ -20,12 +21,12 @@ fn report(
     writeln!(out, "\npress any key to close")
 }
 
-pub fn run() -> ExitCode {
+pub fn run(env: &Env) -> ExitCode {
     let mut out = std::io::stdout().lock();
-    if report(&mut out, std::env::vars())
-        .and_then(|()| out.flush())
-        .is_err()
-    {
+    let vars = env
+        .herdr_and_review()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()));
+    if report(&mut out, vars).and_then(|()| out.flush()).is_err() {
         return ExitCode::FAILURE;
     }
     if enable_raw_mode().is_err() {

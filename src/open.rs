@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+use crate::env::Env;
 use crate::herdr::{notify, run_herdr_output};
 
 /// What the action context says about the pane the user was in.
@@ -87,10 +88,9 @@ fn open(
     .map(drop)
 }
 
-pub fn run() -> ExitCode {
-    let context = parse_context(std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok().as_deref());
-    let cwd = std::env::current_dir().unwrap_or_default();
-    match open(&context, cwd, run_herdr_output) {
+pub fn run(env: &Env) -> ExitCode {
+    let context = parse_context(env.get("HERDR_PLUGIN_CONTEXT_JSON"));
+    match open(&context, env.cwd.clone(), run_herdr_output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             // An action has no terminal, so the failure goes to a notification.
