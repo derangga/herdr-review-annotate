@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     );
     match parse(&args) {
         Err(usage) => finish(&Failure::Usage(usage).output()),
-        Ok(Command::Open { .. }) => open::run(&env),
+        Ok(Command::Open { repo, base }) => open::run(&env, repo.as_deref(), base.as_deref()),
         Ok(Command::Tui { repo }) => tui::run(&env, repo.as_deref()),
         Ok(Command::Send { repo, all_open }) => send::run(&env, repo.as_deref(), all_open),
         Ok(Command::SpikeSend) => spike::send(&env),
