@@ -21,7 +21,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::actions;
@@ -42,7 +42,7 @@ use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
 use crate::view::{View, areas, draw, editor_rect, popup_block};
-use crate::width::truncate_to_width;
+use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
 const TICK: Duration = Duration::from_millis(250);
@@ -142,6 +142,23 @@ pub enum Prompt {
     Quit,
 }
 
+/// What a message on the status line is: something that happened, or something that went wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Notice,
+    Failure,
+}
+
+/// The keys the status line names, in the order they are drawn. They drop off from the left when
+/// the line is narrow.
+const FOOTER: [(Action, &str); 5] = [
+    (Action::Send, "send"),
+    (Action::SwitchSpec, "spec"),
+    (Action::Reload, "reload"),
+    (Action::Help, "help"),
+    (Action::Quit, "quit"),
+];
+
 /// The time to write into an event, as RFC 3339.
 fn real_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
@@ -177,8 +194,8 @@ pub struct App {
     pub diff: Option<Diff>,
     pub view: View,
     pub screen: Screen,
-    /// Why the last reload failed. The previous diff stays on screen.
-    pub status: Option<String>,
+    /// What the last action said, in place of the state on the status line.
+    pub status: Option<(Tone, String)>,
     /// Shown on one line under the status line until the next action.
     pub warnings: Vec<Warning>,
     pane_saved: bool,
@@ -229,6 +246,21 @@ impl App {
             compose: None,
             now: real_now,
         }
+    }
+
+    /// Say on the status line that something happened.
+    fn notice(&mut self, text: impl Into<String>) {
+        self.status = Some((Tone::Notice, text.into()));
+    }
+
+    /// Say on the status line that something went wrong.
+    fn fail(&mut self, text: impl Into<String>) {
+        self.status = Some((Tone::Failure, text.into()));
+    }
+
+    /// The words of the message on the status line.
+    pub fn message(&self) -> Option<&str> {
+        self.status.as_ref().map(|(_, text)| text.as_str())
     }
 
     fn warn(&mut self, warning: Warning) {
@@ -346,7 +378,7 @@ impl App {
                 self.status = None;
             }
             Err(message) if self.diff.is_some() => {
-                self.status = Some(message);
+                self.fail(message);
                 self.rebuild_view();
             }
             Err(message) => self.screen = Screen::Message(message),
@@ -406,7 +438,7 @@ impl App {
         match self.read_store(&dir) {
             Ok(()) => {
                 if let Err(message) = self.read_diff(&root, git) {
-                    self.status = Some(message);
+                    self.fail(message);
                     self.rebuild_view();
                 }
             }
@@ -456,7 +488,7 @@ impl App {
     /// Queue a send. The loop draws "sending" and then runs it, because the Herdr call blocks.
     fn request(&mut self, scope: Scope, quit_after: bool) {
         if self.dir.is_some() {
-            self.status = Some("sending".to_owned());
+            self.notice("sending");
             self.pending = Some(Request { scope, quit_after });
         }
     }
@@ -469,9 +501,9 @@ impl App {
             .and_then(|thread| self.view.thread_id(thread))
             .cloned();
         match root.and_then(|root| self.review.thread(&root)) {
-            None => self.status = Some("no thread here to resend".to_owned()),
+            None => self.notice("no thread here to resend"),
             Some(thread) if !thread.is_open() => {
-                self.status = Some("a resolved thread is not resent, reopen it first".to_owned());
+                self.notice("a resolved thread is not resent, reopen it first");
             }
             Some(thread) => {
                 let scope = Scope::Thread(thread.root.id.clone());
@@ -507,7 +539,7 @@ impl App {
                     self.meta.target = Some(target.clone());
                     self.target = Some(target);
                 }
-                self.status = Some(sent.outcome.to_string());
+                self.notice(sent.outcome.to_string());
                 self.refold();
                 self.quit |= request.quit_after;
             }
@@ -531,7 +563,7 @@ impl App {
                     &message,
                 ];
                 let _ = self.herdr.call(&args.map(str::to_owned));
-                self.status = Some(message);
+                self.fail(message);
             }
         }
     }
@@ -623,7 +655,7 @@ impl App {
                     editor: Editor::default(),
                 });
             }
-            Err(why) => self.status = Some(why.to_owned()),
+            Err(why) => self.notice(why),
         }
     }
 
@@ -644,7 +676,7 @@ impl App {
                     place: String::new(),
                 });
             }
-            None => self.status = Some("no thread here to reply to".to_owned()),
+            None => self.notice("no thread here to reply to"),
         }
     }
 
@@ -675,7 +707,7 @@ impl App {
                     place: String::new(),
                 });
             }
-            Err(why) => self.status = Some(why),
+            Err(why) => self.notice(why),
         }
     }
 
@@ -683,15 +715,15 @@ impl App {
     fn delete(&mut self) {
         let (id, _) = match self.own_comment() {
             Ok(own) => own,
-            Err(why) => return self.status = Some(why),
+            Err(why) => return self.notice(why),
         };
         let Some(dir) = self.dir.clone() else { return };
         match actions::delete(&dir, &(self.now)(), &id) {
             Ok(()) => {
-                self.status = Some(format!("deleted {id}"));
+                self.notice(format!("deleted {id}"));
                 self.refold();
             }
-            Err(error) => self.status = Some(failure(&error)),
+            Err(error) => self.fail(failure(&error)),
         }
     }
 
@@ -703,16 +735,16 @@ impl App {
             .and_then(|thread| self.view.thread_id(thread))
             .cloned();
         let (Some(root), Some(dir)) = (root, self.dir.clone()) else {
-            self.status = Some("no thread here".to_owned());
+            self.notice("no thread here");
             return;
         };
         match actions::toggle(&dir, &(self.now)(), &root) {
             Ok(resolved) => {
                 let what = if resolved { "resolved" } else { "reopened" };
-                self.status = Some(format!("{what} {root}"));
+                self.notice(format!("{what} {root}"));
                 self.refold();
             }
-            Err(error) => self.status = Some(failure(&error)),
+            Err(error) => self.fail(failure(&error)),
         }
     }
 
@@ -740,7 +772,7 @@ impl App {
             }
             Err(error) => {
                 let message = failure(&error);
-                self.status = Some(message.clone());
+                self.fail(message.clone());
                 if let Some(compose) = &mut self.compose {
                     compose.editor.fail(message);
                 }
@@ -831,7 +863,7 @@ impl App {
                     None => match default_base(root.path(), &mut *git) {
                         Ok(base) => base,
                         Err(error) => {
-                            self.status = Some(error.to_string());
+                            self.fail(error.to_string());
                             return;
                         }
                     },
@@ -851,12 +883,15 @@ impl App {
         self.meta.spec = Some(spec);
         self.meta.base = base;
         if let Err(message) = self.read_diff(&root, git) {
-            self.status = Some(message);
+            self.fail(message);
         }
     }
 
-    /// The status line: which diff is shown, the target agent, and the keys that matter most.
-    fn status_line(&self) -> String {
+    /// The left of the status line: the diff on screen as a chip, the target agent, and a chip
+    /// with the number of unsent threads when there are any.
+    fn state(&self) -> Vec<Span<'static>> {
+        let theme = &self.theme;
+        let chip = |text: String, bg| Span::styled(text, Style::new().fg(theme.base).bg(bg));
         let spec = self
             .diff
             .as_ref()
@@ -865,21 +900,71 @@ impl App {
             Spec::Branch { base } => format!("vs {base}"),
             Spec::WorkTree => "working tree".to_owned(),
         };
-        let target = self.target.as_ref().map_or_else(
-            || "> no agent".to_owned(),
-            |target| format!("> {} {}", target.agent, target.pane),
+        let spec = sanitize_terminal_text(&spec).to_uppercase();
+        let agent = self.target.as_ref().map_or_else(
+            || Span::styled("\u{2192} no agent", Style::new().fg(theme.removed)),
+            |target| {
+                let text = format!("\u{2192} {} {}", target.agent, target.pane);
+                Span::styled(sanitize_terminal_text(&text), Style::new().fg(theme.text))
+            },
         );
-        let send = format!("{} send {}", self.keymap.label(Action::Send), self.unsent());
-        let hints = [
-            (Action::SwitchPanel, "panel"),
-            (Action::SwitchSpec, "spec"),
-            (Action::Reload, "reload"),
-            (Action::Help, "help"),
-            (Action::Quit, "quit"),
-        ]
-        .map(|(action, what)| format!("{} {what}", self.keymap.label(action)))
-        .join("  ");
-        format!("{spec}  {send} {target}   {hints}")
+        let mut spans = vec![chip(format!(" {spec} "), theme.accent), " ".into(), agent];
+        let unsent = self.unsent();
+        if unsent > 0 {
+            spans.push("  ".into());
+            spans.push(chip(format!(" {unsent} unsent "), theme.warning));
+        }
+        spans
+    }
+
+    /// The status line, `width` cells wide: the state, or the message that takes its place, on the
+    /// left and the keys against the right edge. Keys that do not fit beside the left part drop off
+    /// from the left.
+    fn status_line(&self, width: usize) -> Line<'static> {
+        let theme = &self.theme;
+        let mut spans = match &self.status {
+            Some((tone, text)) => {
+                let colour = match tone {
+                    Tone::Notice => theme.warning,
+                    Tone::Failure => theme.removed,
+                };
+                let text = format!(" {}", sanitize_terminal_text(text));
+                vec![Span::styled(
+                    truncate_to_width(&text, width),
+                    Style::new().fg(colour),
+                )]
+            }
+            None => self.state(),
+        };
+        let used = spans
+            .iter()
+            .map(|span| string_width(&span.content))
+            .sum::<usize>();
+        let keys = FOOTER.map(|(action, what)| {
+            let key = sanitize_terminal_text(&self.keymap.label(action));
+            (string_width(&key) + 1 + what.len(), key, what)
+        });
+        let room = width.saturating_sub(used + 2);
+        let fits = |from: usize| {
+            let shown = keys.iter().skip(from);
+            shown.clone().map(|key| key.0).sum::<usize>() + 2 * shown.count().saturating_sub(1)
+                <= room
+        };
+        let Some(from) = (0..keys.len()).find(|from| fits(*from)) else {
+            return Line::from(spans);
+        };
+        let keys_width = keys.iter().skip(from).map(|key| key.0).sum::<usize>()
+            + 2 * (keys.len() - from).saturating_sub(1);
+        spans.push(" ".repeat(width - used - keys_width).into());
+        for (at, (_, key, what)) in keys.into_iter().enumerate().skip(from) {
+            if at > from {
+                spans.push("  ".into());
+            }
+            let bold = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(key, bold));
+            spans.push(Span::styled(format!(" {what}"), theme.dim()));
+        }
+        Line::from(spans)
     }
 }
 
@@ -953,13 +1038,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             .style(Style::new().add_modifier(Modifier::BOLD)),
         warnings,
     );
-    let line = app
-        .status
-        .as_deref()
-        .map_or_else(|| app.status_line(), ToOwned::to_owned);
     frame.render_widget(
-        Paragraph::new(truncate_to_width(&sanitize_terminal_text(&line), width))
-            .style(Style::new().add_modifier(Modifier::REVERSED)),
+        Paragraph::new(app.status_line(width))
+            .style(Style::new().fg(app.theme.text).bg(app.theme.header)),
         status,
     );
     app.theme.paint(frame.buffer_mut());
@@ -1526,13 +1607,203 @@ mod tests {
     fn the_status_line_says_no_agent_until_a_target_is_known() {
         let fixture = Fixture::new("status");
         let app = fixture.started();
-        assert!(screen_of(&app).contains("working tree  S send 0 > no agent"));
+        assert!(screen_of(&app).contains(" WORKING TREE  \u{2192} no agent  "));
         fixture.agents(&[("w1:p2", "term_1", "idle")]);
         let app = fixture.started();
-        assert!(screen_of(&app).contains("working tree  S send 0 > claude w1:p2"));
+        assert!(screen_of(&app).contains(" WORKING TREE  \u{2192} claude w1:p2  "));
         // What was found is kept for the `send` action.
         let saved = crate::meta::load(&fixture.dir()).0.target.unwrap();
         assert_eq!(saved.pane.as_str(), "w1:p2");
+    }
+
+    /// The status line of the pane drawn at `width`: its text and its cells.
+    fn status_row(app: &mut App, width: u16) -> (String, Vec<ratatui::buffer::Cell>) {
+        let (rows, buffer) = drawn(app, width);
+        let cells = buffer.content.chunks(usize::from(width)).last().unwrap();
+        (rows.last().unwrap().clone(), cells.to_vec())
+    }
+
+    /// The cells of the status line that draw `text`.
+    fn cells_of<'a>(
+        (row, cells): &'a (String, Vec<ratatui::buffer::Cell>),
+        text: &str,
+    ) -> &'a [ratatui::buffer::Cell] {
+        let at = row
+            .find(text)
+            .unwrap_or_else(|| panic!("no '{text}' in '{row}'"));
+        let start = row[..at].chars().count();
+        &cells[start..start + text.chars().count()]
+    }
+
+    #[test]
+    fn the_spec_is_a_chip_in_upper_case_on_the_accent_colour() {
+        let fixture = Fixture::new("chip-spec");
+        let mut app = fixture.started();
+        let theme = app.theme;
+        let line = status_row(&mut app, 80);
+        assert!(line.0.starts_with(" WORKING TREE  "), "{}", line.0);
+        for cell in cells_of(&line, " WORKING TREE ") {
+            assert_eq!((cell.fg, cell.bg), (theme.base, theme.accent));
+        }
+        // The cell after the chip's padding is the bar again.
+        assert_eq!(line.1[14].bg, theme.header);
+        fixture.with_git(|git| app.handle(Action::SwitchSpec, git));
+        let line = status_row(&mut app, 80);
+        assert!(line.0.starts_with(" VS ORIGIN/HEAD  "), "{}", line.0);
+        for cell in cells_of(&line, " VS ORIGIN/HEAD ") {
+            assert_eq!((cell.fg, cell.bg), (theme.base, theme.accent));
+        }
+    }
+
+    #[test]
+    fn the_agent_is_in_the_text_colour_and_no_agent_is_in_the_removed_colour() {
+        let fixture = Fixture::new("chip-agent");
+        let mut app = fixture.started();
+        let theme = app.theme;
+        let line = status_row(&mut app, 80);
+        for cell in cells_of(&line, "\u{2192} no agent") {
+            assert_eq!((cell.fg, cell.bg), (theme.removed, theme.header));
+        }
+        fixture.agents(&[("w1:p2", "term_1", "idle")]);
+        let mut app = fixture.started();
+        let line = status_row(&mut app, 80);
+        for cell in cells_of(&line, "\u{2192} claude w1:p2") {
+            assert_eq!((cell.fg, cell.bg), (theme.text, theme.header));
+        }
+    }
+
+    #[test]
+    fn the_unsent_chip_is_on_the_warning_colour_and_absent_at_zero() {
+        let fixture = Fixture::new("chip-unsent");
+        let mut app = fixture.started();
+        assert!(!status_row(&mut app, 80).0.contains("unsent"));
+        std::fs::write(
+            fixture.dir().join("review.jsonl"),
+            log_line(&add_event("u1")),
+        )
+        .unwrap();
+        let mut app = fixture.started();
+        let theme = app.theme;
+        let line = status_row(&mut app, 80);
+        assert!(line.0.contains("no agent   1 unsent  "), "{}", line.0);
+        for cell in cells_of(&line, " 1 unsent ") {
+            assert_eq!((cell.fg, cell.bg), (theme.base, theme.warning));
+        }
+    }
+
+    #[test]
+    fn the_keys_are_against_the_right_edge_with_bold_accent_keys_and_subtle_labels() {
+        let fixture = Fixture::new("footer-keys");
+        let mut app = fixture.started();
+        let theme = app.theme;
+        let line = status_row(&mut app, 80);
+        assert!(
+            line.0
+                .ends_with("  S send  b spec  R reload  ? help  q quit"),
+            "{}",
+            line.0
+        );
+        assert!(!line.0.contains("panel"));
+        for key in ["S", "b", "R", "?", "q"] {
+            let what = format!("{key} ");
+            let cell = &cells_of(&line, &what)[0];
+            assert_eq!(cell.fg, theme.accent, "{key}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "{key}");
+        }
+        for label in [" send", " spec", " reload", " help", " quit"] {
+            for cell in cells_of(&line, label) {
+                assert_eq!(cell.fg, theme.subtle, "{label}");
+                assert!(!cell.modifier.contains(Modifier::BOLD), "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn keys_drop_off_from_the_left_when_the_line_is_narrow_and_help_and_quit_go_last() {
+        let fixture = Fixture::new("footer-narrow");
+        fixture.agents(&[("w1:p2", "term_1", "idle")]);
+        std::fs::create_dir_all(fixture.dir()).unwrap();
+        std::fs::write(
+            fixture.dir().join("review.jsonl"),
+            log_line(&add_event("u1")),
+        )
+        .unwrap();
+        let mut app = fixture.started();
+        // The state is 41 cells with the unsent chip, so the five keys do not fit in 80.
+        let line = status_row(&mut app, 80).0;
+        assert!(
+            line.ends_with(" 1 unsent        b spec  R reload  ? help  q quit"),
+            "{line}"
+        );
+        assert!(!line.contains("send"), "{line}");
+        let line = status_row(&mut app, 60).0;
+        assert!(line.ends_with(" 1 unsent      ? help  q quit"), "{line}");
+        assert!(!line.contains("reload"), "{line}");
+        let line = status_row(&mut app, 49).0;
+        assert!(line.ends_with(" 1 unsent   q quit"), "{line}");
+        assert!(!line.contains("help"), "{line}");
+        // With no room beside the state no key is drawn.
+        let line = status_row(&mut app, 40).0;
+        assert!(
+            line.starts_with(" WORKING TREE  \u{2192} claude w1:p2   1 unsent"),
+            "{line}"
+        );
+        assert!(!line.contains("quit"), "{line}");
+    }
+
+    #[test]
+    fn a_notice_and_a_failure_take_the_place_of_the_state_and_the_keys_stay() {
+        let fixture = Fixture::new("status-tone");
+        let mut app = fixture.started();
+        let theme = app.theme;
+        app.notice("deleted u2");
+        let line = status_row(&mut app, 80);
+        assert!(line.0.starts_with(" deleted u2  "), "{}", line.0);
+        assert!(line.0.ends_with("S send  b spec  R reload  ? help  q quit"));
+        assert!(!line.0.contains("WORKING TREE"));
+        for cell in cells_of(&line, "deleted u2") {
+            assert_eq!((cell.fg, cell.bg), (theme.warning, theme.header));
+        }
+        app.fail("review is busy, press again");
+        let line = status_row(&mut app, 80);
+        assert!(line.0.ends_with("S send  b spec  R reload  ? help  q quit"));
+        for cell in cells_of(&line, "review is busy, press again") {
+            assert_eq!((cell.fg, cell.bg), (theme.removed, theme.header));
+        }
+    }
+
+    #[test]
+    fn each_message_says_whether_it_is_a_notice_or_a_failure() {
+        let fixture = Fixture::new("status-kinds");
+        let mut app = fixture.started();
+        fixture.with_git(|git| app.handle(Action::Resolve, git));
+        assert_eq!(app.status, Some((Tone::Notice, "no thread here".into())));
+        *fixture.diff_error.borrow_mut() = Some(GitError::Failed {
+            args: "diff".into(),
+            stderr: "fatal: index locked".into(),
+        });
+        fixture.with_git(|git| app.handle(Action::Reload, git));
+        assert_eq!(app.status.as_ref().unwrap().0, Tone::Failure);
+        fixture.with_git(|git| app.handle(Action::Send, git));
+        assert_eq!(app.status, Some((Tone::Notice, "sending".into())));
+    }
+
+    #[test]
+    fn the_status_line_is_a_bar_in_the_header_colour_with_nothing_reversed() {
+        let fixture = Fixture::new("status-bar");
+        let mut app = fixture.started();
+        let theme = app.theme;
+        for width in [40, 80, 130] {
+            let (row, cells) = status_row(&mut app, width);
+            for (cell, symbol) in cells.iter().zip(row.chars()) {
+                assert!(!cell.modifier.contains(Modifier::REVERSED), "{row}");
+                if symbol == ' ' && cell.bg != theme.accent {
+                    assert_eq!(cell.bg, theme.header, "{row}");
+                }
+            }
+            assert_eq!(cells.first().unwrap().bg, theme.accent);
+            assert_eq!(cells.last().unwrap().bg, theme.header);
+        }
     }
 
     #[test]
@@ -1889,7 +2160,7 @@ diff --git a/b.rs b/b.rs
     fn switching_the_spec_shows_the_other_diff_and_remembers_it() {
         let fixture = Fixture::new("switch-spec");
         let mut app = started_with(&fixture, TWO_FILES);
-        assert!(screen_of(&app).contains("working tree"));
+        assert!(screen_of(&app).contains("WORKING TREE"));
         drive(&fixture, &mut app, vec![Some(key('b'))], |_| {});
         assert_eq!(
             app.diff.as_ref().unwrap().spec,
@@ -1897,7 +2168,7 @@ diff --git a/b.rs b/b.rs
                 base: "origin/HEAD".into()
             }
         );
-        assert!(screen_of(&app).contains("vs origin/HEAD"));
+        assert!(screen_of(&app).contains("VS ORIGIN/HEAD"));
         let (meta, _) = crate::meta::load(&fixture.dir());
         assert_eq!(
             meta.spec,
@@ -2649,19 +2920,20 @@ diff --git a/b.rs b/b.rs
     #[test]
     fn send_delivers_the_unsent_comments_and_a_second_send_says_nothing() {
         let (fixture, mut app) = two_user_threads("send", &[IDLE]);
-        assert!(screen_of(&app).contains("S send 2 > claude w1:p1"));
+        assert!(screen_of(&app).contains("\u{2192} claude w1:p1   2 unsent "));
         press(&fixture, &mut app, [key('S')]);
         let prompts = fixture.prompts();
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].starts_with("agent prompt w1:p1 "));
         assert!(prompts[0].contains("[u1]") && prompts[0].contains("[u2]"));
-        assert_eq!(app.status.as_deref(), Some("sent 2 to claude"));
+        assert_eq!(app.message(), Some("sent 2 to claude"));
         assert!(screen_of(&app).contains("sent 2 to claude"));
         assert_eq!(app.unsent(), 0);
         press(&fixture, &mut app, [key('S')]);
-        assert_eq!(app.status.as_deref(), Some("nothing to send"));
+        assert_eq!(app.message(), Some("nothing to send"));
         assert_eq!(fixture.prompts().len(), 1);
-        assert!(app.status_line().contains("S send 0"));
+        press(&fixture, &mut app, [key('j')]);
+        assert!(!screen_of(&app).contains("unsent"));
     }
 
     #[test]
@@ -2694,16 +2966,16 @@ diff --git a/b.rs b/b.rs
         let prompts = fixture.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(prompts[1].contains("[u1]") && !prompts[1].contains("[u2]"));
-        assert_eq!(app.status.as_deref(), Some("sent 1 to claude"));
+        assert_eq!(app.message(), Some("sent 1 to claude"));
     }
 
     #[test]
     fn resend_needs_an_open_thread_under_the_cursor() {
         let (fixture, mut app) = two_user_threads("resend-none", &[IDLE]);
         press(&fixture, &mut app, [key('s')]);
-        assert_eq!(app.status.as_deref(), Some("no thread here to resend"));
+        assert_eq!(app.message(), Some("no thread here to resend"));
         press(&fixture, &mut app, [key('n'), key('x'), key('s')]);
-        assert!(app.status.as_deref().unwrap().contains("resolved thread"));
+        assert!(app.message().unwrap().contains("resolved thread"));
         assert!(fixture.prompts().is_empty());
     }
 
@@ -2795,12 +3067,7 @@ diff --git a/b.rs b/b.rs
             two_user_threads("quit-refused", &[("w1:p1", "term_1", "blocked")]);
         press(&fixture, &mut app, [key('q'), key('s')]);
         assert!(!app.quit, "the comments were not delivered");
-        assert!(
-            app.status
-                .as_deref()
-                .unwrap()
-                .contains("waiting on a prompt")
-        );
+        assert!(app.message().unwrap().contains("waiting on a prompt"));
         assert_eq!(app.unsent(), 2);
     }
 
@@ -2808,7 +3075,8 @@ diff --git a/b.rs b/b.rs
     fn a_refusal_is_shown_and_notified_and_marks_nothing() {
         let (fixture, mut app) = two_user_threads("refused", &[("w1:p1", "term_1", "blocked")]);
         press(&fixture, &mut app, [key('S')]);
-        let status = app.status.clone().unwrap();
+        let (tone, status) = app.status.clone().unwrap();
+        assert_eq!(tone, Tone::Failure);
         assert!(status.contains("waiting on a prompt") && status.contains("still unsent"));
         assert!(screen_of(&app).contains("waiting on a prompt"));
         let notes = fixture.calls_starting("notification show review: not sent");
@@ -2822,10 +3090,7 @@ diff --git a/b.rs b/b.rs
     fn no_agent_is_a_refusal_with_the_reason() {
         let (fixture, mut app) = two_user_threads("no-agent", &[]);
         press(&fixture, &mut app, [key('S')]);
-        assert_eq!(
-            app.status.as_deref(),
-            Some("No agent found for this review.")
-        );
+        assert_eq!(app.message(), Some("No agent found for this review."));
         assert!(app.target.is_none());
     }
 
@@ -2838,7 +3103,7 @@ diff --git a/b.rs b/b.rs
         fixture.with_git(|git| app.check_store(git));
         assert!(screen_of(&app).contains("edited since sent"));
         press(&fixture, &mut app, [key('S')]);
-        assert_eq!(app.status.as_deref(), Some("nothing to send"));
+        assert_eq!(app.message(), Some("nothing to send"));
         assert_eq!(fixture.prompts().len(), 1);
         app.view.focus_thread(&id);
         press(&fixture, &mut app, [key('s')]);
@@ -2853,7 +3118,7 @@ diff --git a/b.rs b/b.rs
         let (fixture, mut app) = two_user_threads("loop-send", &[IDLE]);
         drive(&fixture, &mut app, vec![Some(key('S')), None], |_| {});
         assert_eq!(fixture.prompts().len(), 1);
-        assert_eq!(app.status.as_deref(), Some("sent 2 to claude"));
+        assert_eq!(app.message(), Some("sent 2 to claude"));
     }
 
     #[test]

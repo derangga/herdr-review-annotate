@@ -362,9 +362,20 @@ How the body behaves (built in M4):
   inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).
 - The wheel moves three rows. A click in the stream or the sidebar moves the cursor there and focuses it.
-- The status line shows the diff that is on screen, the target, and the keys of `switch_panel`,
-  `switch_spec`, `reload`, `help` and `quit` as the keymap has them. A reload error replaces it. `help`
-  opens an overlay of every action, and any key closes it without doing anything else.
+- The status line is a bar in the theme's header colour across the whole line. Its left part is the state:
+  the diff on screen as a chip (` WORKING TREE ` or ` VS MAIN `, upper case, base colour on the accent
+  colour), then `→ claude w8G:p1` in the text colour or `→ no agent` in the removed colour, then a chip
+  ` 3 unsent ` on the warning colour when a thread is unsent. A chip is coloured cells with one space of
+  padding on each side and no border glyphs.
+- Against the right edge the line names the keys of `send`, `switch_spec`, `reload`, `help` and `quit` as
+  the keymap has them: `S send  b spec  R reload  ? help  q quit`. A key is bold in the accent colour and
+  its label is in the subtle colour. The keys keep two cells clear of the left part. When they do not fit,
+  they drop off from the left, so `help` and `quit` go last.
+- A message takes the place of the state and the keys stay. It is a notice in the warning colour for
+  something that happened or that the cursor's place does not allow (`sending`, `deleted u2`, `no thread
+  here`), and a failure in the removed colour for something that went wrong (a reload error, a refused
+  send, a busy review, a write that failed). The next action clears it.
+- `help` opens an overlay of every action, and any key closes it without doing anything else.
 - `switch_spec` flips between the working tree and the branch spec and saves the choice, with the base
   (`meta.base`, else `origin/HEAD`, `main`, `master`), in `meta.json`. With no base it says so and stays.
 - A reload puts the cursor back on its row in the same file, or on its line of the same card.
@@ -491,8 +502,8 @@ How send behaves (built in M6):
 - A refusal is on the status line and in a notification, and nothing is marked sent.
 - `quit` with unsent comments asks: `s` sends and then quits (a refusal keeps the pane open), `k` quits and
   keeps them unsent, `esc` stays. These keys are not remappable.
-- The status line reads `S send 3 > claude w1:p2`, or `> no agent`. The target is resolved when the pane
-  starts and after each send, and what is found is saved for the `send` action.
+- The status line names the target as `→ claude w1:p2`, or `→ no agent`. The target is resolved when the
+  pane starts and after each send, and what is found is saved for the `send` action.
 
 ### 7.1 Keymap file
 
@@ -545,8 +556,10 @@ name = "catppuccin-latte"
 - `c` captures the anchor when it is pressed. The diff is frozen while the editor is open (G16).
 - A thread is marked seen, with one `seen` event, when the cursor lands on it while it is `new`.
 - The `outdated` tag is drawn on open threads only.
-- The status line shows `S send 3 > claude w1:p2`. The target is resolved at start and after each
-  send, not on every frame.
+- The status line is the state on the left and the keys on the right, drawn in roles of `Theme` and
+  never reversed. Every message that replaces the state is a notice or a failure, and the place that
+  sets it says which.
+- The target is resolved at start and after each send, not on every frame.
 - Rendering builds rows for the visible window only. Each file keeps its row count so scrolling does
   not lay out files that are off screen.
 

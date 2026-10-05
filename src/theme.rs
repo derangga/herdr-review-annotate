@@ -459,6 +459,18 @@ mod tests {
     }
 
     #[test]
+    fn no_other_module_names_a_colour() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() != "theme.rs" {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(!text.contains("Color::"), "{}", path.display());
+            }
+        }
+    }
+
+    #[test]
     fn paint_fills_only_the_cells_nothing_coloured() {
         let theme = Theme::default();
         let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
