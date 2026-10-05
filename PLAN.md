@@ -357,6 +357,7 @@ switch_spec = ""                # unbound
 - An action that is not listed keeps its default keys.
 - When a configured key is also another action's default, the configured binding wins and the other
   action loses that key. The pane shows one warning line that names each action left with no key.
+- Two configured actions on one key: the earlier in the table above keeps it, and an action left with no key is named in the same warning line. An action whose listed keys all fail to parse keeps its defaults. `[]` unbinds like `""`.
 - An unknown action name or a key that does not parse is skipped with a warning. A file that is not
   valid TOML is ignored as a whole with a warning. The pane always starts.
 - The file is read once when the pane starts. The footer and the `help` overlay are drawn from the

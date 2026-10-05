@@ -9,6 +9,7 @@ pub mod diff;
 pub mod edit_keys;
 pub mod env;
 pub mod herdr;
+pub mod keymap;
 pub mod meta;
 pub mod open;
 pub mod spike;
