@@ -336,6 +336,7 @@ only in v1.
 | `resend` | `s` | Resend the focused thread |
 | `reload` | `shift+r` | Reload the diff |
 | `switch_spec` | `b` | Switch diff spec |
+| `toggle_layout` | `t` | Side by side or unified |
 | `help` | `?` | Show every action with its current keys |
 | `quit` | `q` | Quit. With unsent comments, ask send, keep, or stay |
 
@@ -360,6 +361,22 @@ How the body behaves (built in M4):
 - `switch_spec` flips between the working tree and the branch spec and saves the choice, with the base
   (`meta.base`, else `origin/HEAD`, `main`, `master`), in `meta.json`. With no base it says so and stays.
 - A reload puts the cursor back on its row in the same file, or on its line of the same card.
+
+How the layout behaves (built after M6):
+
+- A pane 120 columns wide or more draws the diff side by side, old on the left and new on the right, and a
+  narrower one draws it unified. `toggle_layout` forces the other layout until it is pressed again or the pane
+  restarts, and the width stops deciding. The cursor stays on its line across the change.
+- Side by side pairs a run of removed lines with the run of added lines after it, line by line. The longer
+  run's extra lines sit opposite an empty half. A context line is on both halves with its own numbers.
+- Side by side marks the lines the diff leaves out, above the first hunk and between hunks, with a row that
+  says `▾ N unchanged lines`. Unified does not, so its rows are the diff's rows.
+- A file header has its name on the left and the added and removed counts on the right. Removed and added
+  rows are tinted across the row.
+- A row of a split diff has two halves. `comment` and `select_range` use the new half, or the old half of a
+  row with no new line. A click on a half chooses it for that row until the cursor moves. A range takes the
+  side of its first row and ends at the last line on that side.
+- Cards hang under their row at the width of the whole stream, in both layouts.
 
 How the cards behave (built in M5):
 

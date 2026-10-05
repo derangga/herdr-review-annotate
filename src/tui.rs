@@ -385,6 +385,10 @@ impl App {
             Action::Resend => self.resend(),
             Action::Reload => self.load(git),
             Action::SwitchSpec => self.switch_spec(git),
+            Action::ToggleLayout => {
+                self.view.toggle_layout();
+                self.rebuild_view();
+            }
             Action::Comment => self.start_comment(),
             Action::SelectRange => self.view.toggle_select(),
             Action::Reply => self.start_reply(),
@@ -2656,5 +2660,24 @@ diff --git a/b.rs b/b.rs
         drive(&fixture, &mut app, vec![Some(key('S')), None], |_| {});
         assert_eq!(fixture.prompts().len(), 1);
         assert_eq!(app.status.as_deref(), Some("sent 2 to claude"));
+    }
+
+    #[test]
+    fn the_layout_key_switches_between_unified_and_side_by_side_and_back() {
+        let fixture = Fixture::new("layout-key");
+        let mut app = opened(&fixture, patch_text());
+        assert_eq!(app.view.layout(), crate::view::DiffLayout::Unified);
+        press(&fixture, &mut app, [key('t')]);
+        assert_eq!(app.view.layout(), crate::view::DiffLayout::Split);
+        let screen = screen_of(&app);
+        let row = screen.lines().find(|row| row.contains("old")).unwrap();
+        assert!(row.contains("new"), "old and new share a row: {row}");
+        press(&fixture, &mut app, [key('t')]);
+        assert_eq!(app.view.layout(), crate::view::DiffLayout::Unified);
+        assert!(
+            !screen_of(&app)
+                .lines()
+                .any(|row| row.contains("old") && row.contains("new"))
+        );
     }
 }

@@ -31,13 +31,14 @@ pub enum Action {
     Resend,
     Reload,
     SwitchSpec,
+    ToggleLayout,
     Help,
     Quit,
 }
 
 impl Action {
     /// In the order of the table in PLAN.md section 7, which is the order of the help overlay.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -57,6 +58,7 @@ impl Action {
         Self::Resend,
         Self::Reload,
         Self::SwitchSpec,
+        Self::ToggleLayout,
         Self::Help,
         Self::Quit,
     ];
@@ -83,6 +85,7 @@ impl Action {
             Self::Resend => "resend",
             Self::Reload => "reload",
             Self::SwitchSpec => "switch_spec",
+            Self::ToggleLayout => "toggle_layout",
             Self::Help => "help",
             Self::Quit => "quit",
         }
@@ -110,6 +113,7 @@ impl Action {
             Self::Resend => "resend the thread",
             Self::Reload => "reload the diff",
             Self::SwitchSpec => "switch diff spec",
+            Self::ToggleLayout => "side by side or unified",
             Self::Help => "show this help",
             Self::Quit => "quit",
         }
@@ -140,6 +144,7 @@ impl Action {
             Self::Resend => &["s"],
             Self::Reload => &["shift+r"],
             Self::SwitchSpec => &["b"],
+            Self::ToggleLayout => &["t"],
             Self::Help => &["?"],
             Self::Quit => &["q"],
         }

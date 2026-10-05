@@ -40,6 +40,13 @@ pub enum RowRef<'a> {
     Note(&'a DiffFile),
     Hunk(&'a Hunk),
     Line(&'a Row),
+    /// The side-by-side form of a line: the old half and the new half. A context line is both.
+    Pair {
+        old: Option<&'a Row>,
+        new: Option<&'a Row>,
+    },
+    /// Lines between two hunks, or above the first one, that the diff does not show.
+    Gap(u32),
     /// The heading of the block of threads that are not in the diff, with their number.
     BlockHeader(usize),
     /// Line `line` of the card of thread `thread`, counting threads in the review's order.
@@ -51,13 +58,123 @@ pub enum RowRef<'a> {
     Empty(&'a Spec),
 }
 
-/// How many rows a file takes: its header, and then its hunks or one note.
-fn file_len(file: &DiffFile) -> usize {
-    1 + if file.hunks.is_empty() {
-        1
-    } else {
-        file.hunks.iter().map(|hunk| 1 + hunk.rows.len()).sum()
+/// How the diff is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiffLayout {
+    /// One column, a removed line above the added one that replaced it.
+    #[default]
+    Unified,
+    /// Old on the left and new on the right.
+    Split,
+}
+
+impl DiffLayout {
+    const fn other(self) -> Self {
+        match self {
+            Self::Unified => Self::Split,
+            Self::Split => Self::Unified,
+        }
     }
+}
+
+/// A pane this wide or wider draws the diff side by side, unless the user chose.
+const SPLIT_MIN_TOTAL: u16 = 120;
+
+/// The widths of the old and the new half of a split row, with one cell between them.
+fn split_widths(width: usize) -> (usize, usize) {
+    let left = width.saturating_sub(1) / 2;
+    (left, width.saturating_sub(1 + left))
+}
+
+/// What one row inside a file is. Indices point into the file's hunks and their rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileRow {
+    Header,
+    Note,
+    Gap(u32),
+    Hunk(usize),
+    Line {
+        hunk: usize,
+        row: usize,
+    },
+    Pair {
+        hunk: usize,
+        old: Option<usize>,
+        new: Option<usize>,
+    },
+}
+
+/// Lines the diff leaves out before `hunk`: above the first one, or between it and `before`.
+fn gap(before: Option<&Hunk>, hunk: &Hunk) -> Option<u32> {
+    let first = |side| hunk.rows.iter().find_map(|row| row.line(side));
+    let Some(before) = before else {
+        let line = first(Side::New).or_else(|| first(Side::Old))?;
+        return Some(line.saturating_sub(1));
+    };
+    [Side::New, Side::Old].into_iter().find_map(|side| {
+        let last = before.rows.iter().rev().find_map(|row| row.line(side))?;
+        Some(first(side)?.saturating_sub(last + 1))
+    })
+}
+
+/// The rows of one hunk side by side. A run of removed lines pairs, line by line, with the run of
+/// added lines after it, and the longer run's extra lines sit opposite an empty half.
+fn pairs(hunk_index: usize, rows: &[Row]) -> Vec<FileRow> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(row) = rows.get(at) {
+        if row.kind == RowKind::Context {
+            out.push(FileRow::Pair {
+                hunk: hunk_index,
+                old: Some(at),
+                new: Some(at),
+            });
+            at += 1;
+            continue;
+        }
+        let mut run = |kind| {
+            let start = at;
+            while rows.get(at).is_some_and(|row| row.kind == kind) {
+                at += 1;
+            }
+            start..at
+        };
+        let removed = run(RowKind::Removed);
+        let added = run(RowKind::Added);
+        for k in 0..removed.len().max(added.len()) {
+            out.push(FileRow::Pair {
+                hunk: hunk_index,
+                old: (k < removed.len()).then(|| removed.start + k),
+                new: (k < added.len()).then(|| added.start + k),
+            });
+        }
+    }
+    out
+}
+
+/// Every row of a file, from its header: the hunks, or one note when it has none. The split
+/// layout also marks the unchanged lines between hunks.
+fn file_rows(file: &DiffFile, layout: DiffLayout) -> Vec<FileRow> {
+    let mut rows = vec![FileRow::Header];
+    if file.hunks.is_empty() {
+        rows.push(FileRow::Note);
+        return rows;
+    }
+    let mut before = None;
+    for (index, hunk) in file.hunks.iter().enumerate() {
+        if layout == DiffLayout::Split {
+            rows.extend(gap(before, hunk).filter(|n| *n > 0).map(FileRow::Gap));
+        }
+        rows.push(FileRow::Hunk(index));
+        match layout {
+            DiffLayout::Unified => {
+                rows.extend((0..hunk.rows.len()).map(|row| FileRow::Line { hunk: index, row }));
+            }
+            DiffLayout::Split => rows.extend(pairs(index, &hunk.rows)),
+        }
+        before = Some(hunk);
+    }
+    rows
 }
 
 /// Why a file has no rows.
@@ -114,19 +231,28 @@ enum At {
     },
 }
 
+/// The half of a code row on `side`, which is nothing when the row has no line there.
+fn on_side<'a>(
+    side: Side,
+    (_, old, new): (usize, Option<&'a Row>, Option<&'a Row>),
+) -> Option<&'a Row> {
+    if side == Side::Old { old } else { new }
+}
+
 /// The row inside a file where its line `line` on `side` is, counting the header as 0.
-fn offset_of(file: &DiffFile, side: Side, line: u32) -> Option<usize> {
-    let mut at = 1;
-    for hunk in &file.hunks {
-        at += 1;
-        for (offset, row) in hunk.rows.iter().enumerate() {
-            if row.line(side) == Some(line) {
-                return Some(at + offset);
-            }
+fn offset_of(file: &DiffFile, rows: &[FileRow], side: Side, line: u32) -> Option<usize> {
+    let line_of = |hunk: usize, row: Option<usize>| {
+        let row = file.hunks.get(hunk)?.rows.get(row?)?;
+        row.line(side)
+    };
+    rows.iter().position(|row| match *row {
+        FileRow::Line { hunk, row } => line_of(hunk, Some(row)) == Some(line),
+        FileRow::Pair { hunk, old, new } => {
+            let on_side = if side == Side::Old { old } else { new };
+            line_of(hunk, on_side) == Some(line)
         }
-        at += hunk.rows.len();
-    }
-    None
+        _ => false,
+    })
 }
 
 /// Where the rows of the diff start, where the cards go, and the rows the navigation keys jump to.
@@ -160,6 +286,9 @@ pub struct Stream {
     side: Vec<SideRow>,
     /// Per file, whether a thread hung in it has not been sent.
     unsent: Vec<bool>,
+    /// The rows of each file, for the layout the stream was built for.
+    files: Vec<Vec<FileRow>>,
+    layout: DiffLayout,
 }
 
 /// One row of the sidebar.
@@ -196,7 +325,12 @@ fn sidebar_rows(diff: &Diff) -> Vec<SideRow> {
 
 impl Stream {
     /// Lay out `diff` and the threads of `review` for a stream `width` cells wide.
-    pub fn build(diff: &Diff, review: &Review, width: usize) -> Self {
+    pub fn build(diff: &Diff, review: &Review, width: usize, layout: DiffLayout) -> Self {
+        let files = diff
+            .files
+            .iter()
+            .map(|file| file_rows(file, layout))
+            .collect::<Vec<_>>();
         let placements = review
             .threads
             .iter()
@@ -218,6 +352,7 @@ impl Stream {
             width,
             side: sidebar_rows(diff),
             unsent: vec![false; diff.files.len()],
+            layout,
             ..Self::default()
         };
         let mut block = Vec::new();
@@ -243,8 +378,9 @@ impl Stream {
             let offset = diff
                 .files
                 .get(file)
+                .zip(files.get(file))
                 .zip(line)
-                .and_then(|(file, line)| offset_of(file, side, line))
+                .and_then(|((file, rows), line)| offset_of(file, rows, side, line))
                 .unwrap_or(0);
             if let Some(list) = hung.get_mut(file) {
                 list.push((offset, index));
@@ -268,7 +404,7 @@ impl Stream {
         if diff.files.is_empty() {
             total += 1;
         }
-        for (file, mut list) in diff.files.iter().zip(hung) {
+        for (rows, mut list) in files.iter().zip(hung) {
             list.sort_by_key(|(offset, _)| *offset);
             let slots = list
                 .into_iter()
@@ -292,12 +428,12 @@ impl Stream {
                     .map(|slot| slot.height)
                     .sum::<usize>()
             };
-            let mut offset = 1;
-            for hunk in &file.hunks {
-                stream.hunk_rows.push(start + offset + shift(offset));
-                offset += 1 + hunk.rows.len();
+            for (offset, row) in rows.iter().enumerate() {
+                if matches!(row, FileRow::Hunk(_)) {
+                    stream.hunk_rows.push(start + offset + shift(offset));
+                }
             }
-            total = start + file_len(file) + above;
+            total = start + rows.len() + above;
             stream.slots.push(slots);
         }
         stream.total = total;
@@ -305,6 +441,7 @@ impl Stream {
         stream.thread_rows.sort_unstable();
         stream.cards = cards;
         stream.placements = placements;
+        stream.files = files;
         stream
     }
 
@@ -405,31 +542,33 @@ impl Stream {
     }
 
     pub fn locate<'a>(&self, diff: &'a Diff, row: usize) -> Option<RowRef<'a>> {
-        let (index, mut offset) = match self.at(row)? {
+        let (index, offset) = match self.at(row)? {
             At::BlockHeader => return Some(RowRef::BlockHeader(self.block.len())),
             At::Empty => return Some(RowRef::Empty(&diff.spec)),
             At::Card { thread, line, .. } => return Some(RowRef::Card { thread, line }),
             At::Base { file, offset } => (file, offset),
         };
         let file = diff.files.get(index)?;
-        if offset == 0 {
-            return Some(RowRef::File(file));
+        let row = |hunk: usize, row: Option<usize>| file.hunks.get(hunk)?.rows.get(row?);
+        Some(match *self.files.get(index)?.get(offset)? {
+            FileRow::Header => RowRef::File(file),
+            FileRow::Note => RowRef::Note(file),
+            FileRow::Gap(count) => RowRef::Gap(count),
+            FileRow::Hunk(hunk) => RowRef::Hunk(file.hunks.get(hunk)?),
+            FileRow::Line { hunk, row: at } => RowRef::Line(row(hunk, Some(at))?),
+            FileRow::Pair { hunk, old, new } => RowRef::Pair {
+                old: row(hunk, old),
+                new: row(hunk, new),
+            },
+        })
+    }
+
+    /// The kind of file row a stream row is, when it is one.
+    fn file_row(&self, row: usize) -> Option<FileRow> {
+        match self.at(row)? {
+            At::Base { file, offset } => self.files.get(file)?.get(offset).copied(),
+            _ => None,
         }
-        offset -= 1;
-        if file.hunks.is_empty() {
-            return Some(RowRef::Note(file));
-        }
-        for hunk in &file.hunks {
-            if offset == 0 {
-                return Some(RowRef::Hunk(hunk));
-            }
-            offset -= 1;
-            if let Some(line) = hunk.rows.get(offset) {
-                return Some(RowRef::Line(line));
-            }
-            offset -= hunk.rows.len();
-        }
-        None
     }
 
     /// The thread a row belongs to: the one whose card holds it, or the first one hung under it.
@@ -496,6 +635,10 @@ pub struct Spot {
     offset: usize,
     /// The thread and the line of its card, when the cursor is on a card.
     card: Option<(CommentId, usize)>,
+    /// The layout `offset` counts in, and the diff line the cursor is on, so a change of layout
+    /// can put the cursor back on that line.
+    layout: DiffLayout,
+    line: Option<(Side, u32)>,
 }
 
 /// The cursor, the scroll position, the focus, and the help overlay.
@@ -509,6 +652,10 @@ pub struct View {
     pub area: Rect,
     /// The row a range started at, while one is being selected.
     pub select: Option<usize>,
+    /// The layout the user chose with the toggle key. `None` follows the pane's width.
+    forced: Option<DiffLayout>,
+    /// The half of a split row the mouse last clicked, until the cursor moves another way.
+    half: Option<Side>,
 }
 
 impl Default for View {
@@ -521,6 +668,8 @@ impl Default for View {
             help: false,
             area: Rect::default(),
             select: None,
+            forced: None,
+            half: None,
         }
     }
 }
@@ -528,6 +677,21 @@ impl Default for View {
 impl View {
     fn height(&self) -> usize {
         usize::from(areas(self.area).stream.height).max(1)
+    }
+
+    /// How the diff is drawn: what the user chose, else side by side in a wide pane.
+    pub fn layout(&self) -> DiffLayout {
+        self.forced
+            .unwrap_or(if self.area.width >= SPLIT_MIN_TOTAL {
+                DiffLayout::Split
+            } else {
+                DiffLayout::Unified
+            })
+    }
+
+    /// Switch to the other layout until toggled again. The caller lays the stream out again.
+    pub fn toggle_layout(&mut self) {
+        self.forced = Some(self.layout().other());
     }
 
     /// Where the cursor is, so a rebuild can put it back: a row of a file, or a line of a card.
@@ -549,7 +713,23 @@ impl View {
             Some(file) => Some(diff.files.get(file)?.path.clone()),
             None => None,
         };
-        Some(Spot { path, offset, card })
+        let line = match self.stream.locate(diff, self.cursor) {
+            Some(RowRef::Line(row)) => Some(row),
+            Some(RowRef::Pair { old, new }) => new.or(old),
+            _ => None,
+        }
+        .and_then(|row| {
+            row.new
+                .map(|n| (Side::New, n))
+                .or_else(|| row.old.map(|n| (Side::Old, n)))
+        });
+        Some(Spot {
+            path,
+            offset,
+            card,
+            layout: self.stream.layout,
+            line,
+        })
     }
 
     /// The thread the cursor is on, as an index into the review's threads.
@@ -606,29 +786,37 @@ impl View {
         low: usize,
         high: usize,
     ) -> Result<AnchorTarget, &'static str> {
+        // Each code row, as the pair of halves it has. A unified row is one half or the other.
         let rows = (low..=high)
-            .filter_map(|row| match self.stream.locate(diff, row)? {
-                RowRef::Line(line) => Some(line),
+            .filter_map(|at| match self.stream.locate(diff, at)? {
+                RowRef::Line(row) => match row.kind {
+                    RowKind::Removed => Some((at, Some(row), None)),
+                    RowKind::Added => Some((at, None, Some(row))),
+                    RowKind::Context => Some((at, Some(row), Some(row))),
+                },
+                RowRef::Pair { old, new } => Some((at, old, new)),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let Some(first) = rows.first() else {
+        let Some(&(first_at, old, new)) = rows.first() else {
             return match self.stream.locate(diff, low) {
                 Some(RowRef::File(_) | RowRef::Note(_)) if low == high => Ok(AnchorTarget::File),
                 _ if low == high => Err("comment on a line or a file header"),
                 _ => Err("select lines to comment on"),
             };
         };
-        let side = if first.kind == RowKind::Removed {
-            Side::Old
-        } else {
-            Side::New
-        };
+        // The side a click chose counts for the row under the cursor, when the row has it.
+        let clicked = self
+            .half
+            .filter(|_| first_at == self.cursor)
+            .filter(|side| if *side == Side::Old { old } else { new }.is_some());
+        let side = clicked.unwrap_or(if new.is_some() { Side::New } else { Side::Old });
+        let first = on_side(side, (first_at, old, new)).ok_or("no line number here")?;
         let start = first.line(side).ok_or("no line number here")?;
         let end = rows
             .iter()
             .rev()
-            .find_map(|row| row.line(side))
+            .find_map(|row| on_side(side, *row)?.line(side))
             .unwrap_or(start);
         let text = first.text.clone();
         Ok(if end > start {
@@ -685,7 +873,7 @@ impl View {
     /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
     /// the same card, else its row in the same file.
     pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>) {
-        self.stream = Stream::build(diff, review, self.stream_width());
+        self.stream = Stream::build(diff, review, self.stream_width(), self.layout());
         self.select = None;
         let stream = &self.stream;
         let on_card = |spot: &Spot| {
@@ -699,8 +887,13 @@ impl View {
                 .files
                 .iter()
                 .position(|file| Some(&file.path) == spot.path.as_ref())?;
-            let last = file_len(diff.files.get(index)?) - 1;
-            stream.row_of(index, spot.offset.min(last))
+            let rows = stream.files.get(index)?;
+            let by_line = spot
+                .line
+                .filter(|_| spot.layout != stream.layout)
+                .and_then(|(side, line)| offset_of(diff.files.get(index)?, rows, side, line));
+            let last = rows.len().saturating_sub(1);
+            stream.row_of(index, by_line.unwrap_or_else(|| spot.offset.min(last)))
         };
         self.cursor = spot
             .and_then(|spot| on_card(&spot).or_else(|| in_file(&spot)))
@@ -717,7 +910,7 @@ impl View {
 
     /// The stream is wider or narrower than when it was laid out, so its cards wrap differently.
     pub fn needs_rebuild(&self) -> bool {
-        self.stream.width != self.stream_width()
+        self.stream.width != self.stream_width() || self.stream.layout != self.layout()
     }
 
     fn ensure_visible(&mut self) {
@@ -732,6 +925,7 @@ impl View {
     }
 
     fn move_to(&mut self, row: usize) {
+        self.half = None;
         self.cursor = row.min(self.stream.len().saturating_sub(1));
         self.ensure_visible();
     }
@@ -836,6 +1030,11 @@ impl View {
                 if row < self.stream.len() {
                     self.panel = Panel::Stream;
                     self.move_to(row);
+                    if matches!(self.stream.file_row(row), Some(FileRow::Pair { .. })) {
+                        let left = split_widths(usize::from(areas.stream.width)).0;
+                        let column = usize::from(event.column - areas.stream.x);
+                        self.half = Some(if column < left { Side::Old } else { Side::New });
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -898,6 +1097,98 @@ fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
+const REMOVED_BG: Color = Color::Rgb(58, 31, 39);
+const ADDED_BG: Color = Color::Rgb(30, 52, 40);
+const FILLER_BG: Color = Color::Rgb(42, 44, 56);
+const HEAD_BG: Color = Color::Rgb(38, 42, 58);
+
+/// The sign of a code row, the colour of its text, and the tint behind it.
+fn code_style(kind: RowKind) -> (char, Style, Style) {
+    match kind {
+        RowKind::Context => (' ', Style::new(), Style::new()),
+        RowKind::Added => (
+            '+',
+            Style::new().fg(Color::Green),
+            Style::new().bg(ADDED_BG),
+        ),
+        RowKind::Removed => (
+            '-',
+            Style::new().fg(Color::Red),
+            Style::new().bg(REMOVED_BG),
+        ),
+    }
+}
+
+/// `text` cut to `width` cells and padded with spaces to exactly `width`.
+fn fitted(text: &str, width: usize) -> String {
+    let mut text = truncate_to_width(text, width);
+    text.push_str(&" ".repeat(width.saturating_sub(string_width(&text))));
+    text
+}
+
+/// One half of a split row: the line number, the sign and the text on `side`, or an empty half
+/// when the other side has a line and this one does not.
+fn half_spans(row: Option<&Row>, side: Side, width: usize) -> Vec<Span<'static>> {
+    let Some(row) = row else {
+        return vec![Span::styled(" ".repeat(width), Style::new().bg(FILLER_BG))];
+    };
+    let (sign, text_style, tint) = code_style(row.kind);
+    let number = row
+        .line(side)
+        .map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
+    let gutter = format!("{number} {sign} ");
+    let mut text = sanitize_terminal_text(&row.text);
+    if row.no_newline {
+        text.push_str("  [no newline at end of file]");
+    }
+    let room = width.saturating_sub(gutter.len());
+    vec![
+        Span::styled(truncate_to_width(&gutter, width), dim().patch(tint)),
+        Span::styled(fitted(&text, room), text_style.patch(tint)),
+    ]
+}
+
+/// A file's header: its name on the left, the added and removed counts on the right.
+fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
+    let mut text = format!(
+        "{} {}",
+        glyph(file.change),
+        sanitize_terminal_text(file.path.as_str())
+    );
+    if let Some(old) = &file.old_path {
+        let _ = write!(text, " <- {}", sanitize_terminal_text(old.as_str()));
+    }
+    if file.flags.mode_changed && !file.hunks.is_empty() {
+        text.push_str(" (mode changed)");
+    }
+    let (added, removed) = file.stat();
+    let counts = match (added, removed) {
+        (0, 0) => String::new(),
+        (a, 0) => format!("+{a}"),
+        (0, r) => format!("-{r}"),
+        (a, r) => format!("+{a} -{r}"),
+    };
+    let room = width.saturating_sub(string_width(&counts) + 1);
+    let head = fitted(&text, room);
+    let bold = Style::new().bg(HEAD_BG).add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::styled(head, bold)];
+    let counts_width = string_width(&counts);
+    spans.push(Span::styled(
+        " ".repeat(width.saturating_sub(room + counts_width)),
+        bold,
+    ));
+    if added > 0 {
+        spans.push(Span::styled(format!("+{added}"), bold.fg(Color::Green)));
+        if removed > 0 {
+            spans.push(Span::styled(" ", bold));
+        }
+    }
+    if removed > 0 {
+        spans.push(Span::styled(format!("-{removed}"), bold.fg(Color::Red)));
+    }
+    Line::from(spans)
+}
+
 fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
     match row {
         RowRef::BlockHeader(count) => Line::styled(
@@ -911,45 +1202,37 @@ fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
             .cloned()
             .unwrap_or_default(),
         RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
-        RowRef::File(file) => {
-            let mut text = format!(
-                "{} {}",
-                glyph(file.change),
-                sanitize_terminal_text(file.path.as_str())
-            );
-            if let Some(old) = &file.old_path {
-                let _ = write!(text, " <- {}", sanitize_terminal_text(old.as_str()));
-            }
-            if file.flags.mode_changed && !file.hunks.is_empty() {
-                text.push_str(" (mode changed)");
-            }
-            Line::styled(
-                truncate_to_width(&text, width),
-                Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            )
-        }
+        RowRef::File(file) => file_header(file, width),
         RowRef::Note(file) => Line::styled(format!("  {}", note(file)), dim()),
         RowRef::Hunk(hunk) => Line::styled(
             truncate_to_width(&sanitize_terminal_text(&hunk.header), width),
             Style::new().fg(Color::Cyan),
         ),
+        RowRef::Gap(count) => {
+            let noun = if count == 1 { "line" } else { "lines" };
+            let text = format!("▾ {count} unchanged {noun}");
+            Line::styled(fitted(&text, width), dim().bg(HEAD_BG))
+        }
+        RowRef::Pair { old, new } => {
+            let (left, right) = split_widths(width);
+            let mut spans = half_spans(old, Side::Old, left);
+            spans.push(Span::styled("│", dim()));
+            spans.extend(half_spans(new, Side::New, right));
+            Line::from(spans)
+        }
         RowRef::Line(row) => {
             let number =
                 |line: Option<u32>| line.map_or_else(|| "     ".to_owned(), |n| format!("{n:>5}"));
             let gutter = format!("{}{} ", number(row.old), number(row.new));
-            let (sign, style) = match row.kind {
-                RowKind::Context => (' ', Style::new()),
-                RowKind::Added => ('+', Style::new().fg(Color::Green)),
-                RowKind::Removed => ('-', Style::new().fg(Color::Red)),
-            };
+            let (sign, style, tint) = code_style(row.kind);
             let mut text = format!("{sign}{}", sanitize_terminal_text(&row.text));
             if row.no_newline {
                 text.push_str("  [no newline at end of file]");
             }
             let room = width.saturating_sub(gutter.len());
             Line::from(vec![
-                Span::styled(gutter, dim()),
-                Span::styled(truncate_to_width(&text, room), style),
+                Span::styled(gutter, dim().patch(tint)),
+                Span::styled(fitted(&text, room), style.patch(tint)),
             ])
         }
     }
@@ -1284,7 +1567,8 @@ Binary files a/img.png and b/img.png differ
             RowRef::File(_) => "file",
             RowRef::Note(_) => "note",
             RowRef::Hunk(_) => "hunk",
-            RowRef::Line(_) => "line",
+            RowRef::Line(_) | RowRef::Pair { .. } => "line",
+            RowRef::Gap(_) => "gap",
             RowRef::BlockHeader(_) => "block",
             RowRef::Card { .. } => "card",
             RowRef::Empty(_) => "empty",
@@ -1382,6 +1666,7 @@ Binary files a/img.png and b/img.png differ
                 RowRef::File(_) => "file".to_owned(),
                 RowRef::Hunk(_) => "hunk".to_owned(),
                 RowRef::Line(row) => row.text.clone(),
+                RowRef::Pair { .. } | RowRef::Gap(_) => "split".to_owned(),
                 RowRef::Note(_) => "note".to_owned(),
                 RowRef::Empty(_) => "empty".to_owned(),
             })
@@ -2079,5 +2364,255 @@ diff --git a/top.md b/top.md
         view.apply(Action::Down);
         assert_eq!(view.stream.file_at(view.cursor), 2);
         assert!(fresh(&view, &diff).contains("M top.md"));
+    }
+
+    const SPLIT_PATCH: &str = "diff --git a/s.rs b/s.rs
+--- a/s.rs
++++ b/s.rs
+@@ -3,5 +3,4 @@
+ c3
+-old4
+-old5
++new4
+ c6
+ c7
+@@ -20,2 +19,3 @@
+ c20
++add21
+ c22
+";
+    // Split rows of s.rs: header 0, gap 1, hunk 2, c3 3, old4/new4 4, old5/- 5, c6 6, c7 7, gap 8,
+    // hunk 9, c20 10, -/add21 11, c22 12.
+
+    fn kinds_of(view: &View, diff: &Diff) -> Vec<String> {
+        (0..view.stream.len())
+            .map(|row| match view.stream.locate(diff, row).unwrap() {
+                RowRef::File(_) => "file".to_owned(),
+                RowRef::Hunk(_) => "hunk".to_owned(),
+                RowRef::Gap(n) => format!("gap{n}"),
+                RowRef::Pair { old, new } => format!(
+                    "{}|{}",
+                    old.map_or("-", |row| row.text.as_str()),
+                    new.map_or("-", |row| row.text.as_str())
+                ),
+                RowRef::Line(row) => row.text.clone(),
+                _ => "other".to_owned(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_wide_pane_pairs_removed_with_added_and_marks_the_unchanged_lines() {
+        let diff = diff_of(SPLIT_PATCH);
+        let view = view(&diff, &Review::default(), 130, 14);
+        assert_eq!(view.layout(), DiffLayout::Split);
+        assert_eq!(
+            kinds_of(&view, &diff),
+            [
+                "file",
+                "gap2",
+                "hunk",
+                "c3|c3",
+                "old4|new4",
+                "old5|-",
+                "c6|c6",
+                "c7|c7",
+                "gap12",
+                "hunk",
+                "c20|c20",
+                "-|add21",
+                "c22|c22"
+            ]
+        );
+        assert_eq!(view.stream.hunk_rows, [2, 9]);
+    }
+
+    #[test]
+    fn a_narrow_pane_stays_unified_without_gap_rows() {
+        let diff = diff_of(SPLIT_PATCH);
+        let view = view(&diff, &Review::default(), 119, 14);
+        assert_eq!(view.layout(), DiffLayout::Unified);
+        assert_eq!(
+            kinds_of(&view, &diff),
+            [
+                "file", "hunk", "c3", "old4", "old5", "new4", "c6", "c7", "hunk", "c20", "add21",
+                "c22"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_toggle_forces_the_other_layout_and_the_width_no_longer_decides() {
+        let diff = diff_of(SPLIT_PATCH);
+        let mut view = view(&diff, &Review::default(), 130, 14);
+        view.toggle_layout();
+        assert_eq!(view.layout(), DiffLayout::Unified);
+        assert!(view.needs_rebuild());
+        view.rebuild(&diff, &Review::default(), None);
+        assert!(!view.needs_rebuild());
+        view.resize(Rect::new(0, 0, 200, 14));
+        assert_eq!(view.layout(), DiffLayout::Unified);
+        view.toggle_layout();
+        assert_eq!(view.layout(), DiffLayout::Split);
+        let mut narrow = self::view(&diff, &Review::default(), 90, 14);
+        narrow.toggle_layout();
+        assert_eq!(narrow.layout(), DiffLayout::Split);
+    }
+
+    #[test]
+    fn a_split_row_draws_old_and_new_on_one_line_with_an_empty_half_opposite() {
+        let diff = diff_of(SPLIT_PATCH);
+        let view = view(&diff, &Review::default(), 130, 14);
+        let screen = fresh(&view, &diff);
+        assert!(screen.contains("▾ 2 unchanged lines"), "{screen}");
+        assert!(screen.contains("▾ 12 unchanged lines"));
+        let row = screen.lines().find(|row| row.contains("old4")).unwrap();
+        let (old, new) = row.split_once("old4").unwrap();
+        assert!(old.ends_with("4 - ") && new.contains("new4"), "{row}");
+        assert!(row.matches('│').count() >= 2, "{row}");
+        let alone = screen.lines().find(|row| row.contains("old5")).unwrap();
+        assert!(!alone.contains("new"), "{alone}");
+        assert!(screen.lines().all(|row| string_width(row) <= 130));
+        let unified = fresh(&self::view(&diff, &Review::default(), 100, 14), &diff);
+        assert!(!unified.contains("unchanged"));
+    }
+
+    #[test]
+    fn the_file_header_shows_the_counts_on_the_right() {
+        let diff = diff_of(SPLIT_PATCH);
+        let view = view(&diff, &Review::default(), 130, 14);
+        let screen = fresh(&view, &diff);
+        let header = screen.lines().find(|row| row.contains("M s.rs")).unwrap();
+        let stream = header.split('│').nth(1).unwrap_or(header);
+        assert!(stream.trim_end().ends_with("+2 -2"), "{header}");
+    }
+
+    fn click(view: &mut View, column: u16, row: u16) {
+        view.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn a_comment_on_a_split_row_takes_the_new_side_unless_a_click_chose_the_old_one() {
+        let diff = diff_of(SPLIT_PATCH);
+        let mut view = view(&diff, &Review::default(), 130, 14);
+        let line = |side, line, text: &str| AnchorTarget::Line {
+            side,
+            line,
+            text: text.into(),
+        };
+        assert_eq!(
+            target_at(&mut view, &diff, 4),
+            Ok(line(Side::New, 4, "new4"))
+        );
+        // A removed line with nothing opposite is the old side, and so is a change in a hunk's end.
+        assert_eq!(
+            target_at(&mut view, &diff, 5),
+            Ok(line(Side::Old, 5, "old5"))
+        );
+        assert_eq!(
+            target_at(&mut view, &diff, 11),
+            Ok(line(Side::New, 20, "add21"))
+        );
+        // Clicks: the left half is the old side, the right half the new side.
+        let stream = areas(view.area).stream;
+        let (left, _) = split_widths(usize::from(stream.width));
+        let y = stream.y + 4;
+        click(&mut view, stream.x + 3, y);
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            line(Side::Old, 4, "old4")
+        );
+        click(&mut view, stream.x + u16::try_from(left).unwrap() + 3, y);
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            line(Side::New, 4, "new4")
+        );
+        // A click on the empty half of a row falls back to the side that has the line.
+        click(
+            &mut view,
+            stream.x + u16::try_from(left).unwrap() + 3,
+            stream.y + 5,
+        );
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            line(Side::Old, 5, "old5")
+        );
+        // Moving the cursor forgets the click.
+        click(&mut view, stream.x + 3, y);
+        view.apply(Action::Down);
+        view.apply(Action::Up);
+        assert_eq!(
+            view.capture(&diff).unwrap().target,
+            line(Side::New, 4, "new4")
+        );
+    }
+
+    #[test]
+    fn a_range_over_split_rows_follows_the_side_of_its_first_row() {
+        let diff = diff_of(SPLIT_PATCH);
+        let mut view = view(&diff, &Review::default(), 130, 14);
+        view.move_to(5);
+        view.toggle_select();
+        let got = target_at(&mut view, &diff, 7).unwrap();
+        // Starting on a removed-only row the range is old: old5, c6 (old 6), c7 (old 7).
+        assert_eq!(
+            got,
+            AnchorTarget::Range {
+                side: Side::Old,
+                start: 5,
+                end: 7,
+                text: "old5".into()
+            }
+        );
+        let mut view = self::view(&diff, &Review::default(), 130, 14);
+        view.move_to(3);
+        view.toggle_select();
+        let got = target_at(&mut view, &diff, 7).unwrap();
+        assert_eq!(
+            got,
+            AnchorTarget::Range {
+                side: Side::New,
+                start: 3,
+                end: 6,
+                text: "c3".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_card_hangs_under_its_split_row_and_the_cursor_survives_a_layout_change() {
+        let diff = diff_of(SPLIT_PATCH);
+        let review = Review {
+            threads: vec![thread("u1", "s.rs", line(4, "new4"))],
+            ..Review::default()
+        };
+        let mut view = view(&diff, &review, 130, 14);
+        // The card sits under old4|new4, which is row 4, so its first row is 5.
+        assert_eq!(view.stream.card_rows, [5]);
+        let add21 = 11 + view.stream.cards[0].lines.len();
+        view.move_to(add21);
+        assert!(matches!(
+            view.stream.locate(&diff, view.cursor),
+            Some(RowRef::Pair { new: Some(row), .. }) if row.text == "add21"
+        ));
+        let spot = view.spot(&diff);
+        view.toggle_layout();
+        view.rebuild(&diff, &review, spot);
+        assert!(matches!(
+            view.stream.locate(&diff, view.cursor),
+            Some(RowRef::Line(row)) if row.text == "add21"
+        ));
+        let spot = view.spot(&diff);
+        view.toggle_layout();
+        view.rebuild(&diff, &review, spot);
+        assert!(matches!(
+            view.stream.locate(&diff, view.cursor),
+            Some(RowRef::Pair { new: Some(row), .. }) if row.text == "add21"
+        ));
     }
 }
