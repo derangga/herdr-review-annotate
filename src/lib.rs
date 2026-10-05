@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod agent_delivery;
 pub mod apply;
+pub mod cards;
 pub mod cli;
 pub mod comment;
 pub mod diff;

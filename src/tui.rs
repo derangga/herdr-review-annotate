@@ -163,10 +163,28 @@ impl App {
     fn read_diff(&mut self, root: &RepoRoot, git: &mut Git) -> Result<(), String> {
         let spec = self.requested_spec();
         let diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
-        let anchor = self.diff.as_ref().and_then(|old| self.view.anchor(old));
-        self.view.rebuild(&diff, &self.review, anchor);
+        let spot = self.diff.as_ref().and_then(|old| self.view.spot(old));
+        self.view.rebuild(&diff, &self.review, spot);
         self.diff = Some(diff);
         Ok(())
+    }
+
+    /// Lay the diff on screen out again, for threads that changed while the diff could not be
+    /// reloaded, or for a pane that was resized.
+    fn rebuild_view(&mut self) {
+        if let Some(diff) = &self.diff {
+            let spot = self.view.spot(diff);
+            self.view.rebuild(diff, &self.review, spot);
+        }
+    }
+
+    /// Tell the view how big the pane is. Cards wrap to the stream's width, so a new width lays
+    /// them out again.
+    pub fn resize(&mut self, area: Rect) {
+        self.view.resize(area);
+        if self.view.needs_rebuild() {
+            self.rebuild_view();
+        }
     }
 
     /// Start-up and reload: the root, the store, the diff. A failure with no diff on screen is the
@@ -183,7 +201,10 @@ impl App {
                 self.screen = Screen::Review;
                 self.status = None;
             }
-            Err(message) if self.diff.is_some() => self.status = Some(message),
+            Err(message) if self.diff.is_some() => {
+                self.status = Some(message);
+                self.rebuild_view();
+            }
             Err(message) => self.screen = Screen::Message(message),
         }
     }
@@ -221,6 +242,7 @@ impl App {
             Ok(()) => {
                 if let Err(message) = self.read_diff(&root, git) {
                     self.status = Some(message);
+                    self.rebuild_view();
                 }
             }
             Err(message) => self.warn(Warning::Config(message)),
@@ -388,7 +410,7 @@ pub fn run_loop<B: Backend>(
             return Exit::Terminated;
         }
         if let Ok(size) = terminal.size() {
-            app.view.resize(Rect::new(0, 0, size.width, size.height));
+            app.resize(Rect::new(0, 0, size.width, size.height));
         }
         if terminal.draw(|frame| render(frame, app)).is_err() {
             return Exit::Io;
@@ -868,6 +890,37 @@ mod tests {
         });
         assert_eq!(app.review.threads.len(), 1);
         assert_eq!(fixture.diffs.get(), 2);
+    }
+
+    #[test]
+    fn a_thread_in_the_log_is_drawn_as_a_card_wrapped_to_the_panes_width() {
+        let fixture = Fixture::new("cards");
+        std::fs::create_dir_all(fixture.dir()).unwrap();
+        let mut event = add_event("u1");
+        if let Kind::Add(add) = &mut event.kind {
+            add.body = "word ".repeat(20);
+        }
+        std::fs::write(fixture.dir().join("review.jsonl"), log_line(&event)).unwrap();
+        let mut app = fixture.started();
+        drive(&fixture, &mut app, vec![None], |_| {});
+        // The file header, the hunk and two lines, and a card of a header and three body rows.
+        assert_eq!(app.view.stream.len(), 8);
+        assert!(screen_of(&app).contains("u1 user"));
+        // A narrower pane wraps the body into more rows, and the loop lays the stream out again.
+        let mut git = |args: &[String]| fixture.git(args);
+        let mut narrow = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        let polls = Cell::new(0);
+        run_loop(
+            &mut app,
+            &mut narrow,
+            &mut git,
+            |_| {
+                polls.set(polls.get() + 1);
+                Ok(None)
+            },
+            || polls.get() >= 1,
+        );
+        assert_eq!(app.view.stream.len(), 9);
     }
 
     #[test]

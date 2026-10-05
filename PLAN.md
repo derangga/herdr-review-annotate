@@ -348,8 +348,7 @@ How the body behaves (built in M4):
   the file under the cursor. With the sidebar focused, `up` and `down` move to the previous and next file,
   and the page keys move by a page of files.
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
-  inside a hunk, previous hunk goes to that hunk's own header. A thread is at its placed line, or at its
-  file header for a file comment. A thread not in the diff has no row.
+  inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).
 - The wheel moves three rows. A click in the stream or the sidebar moves the cursor there and focuses it.
 - The status line shows the diff that is on screen, the target, and the keys of `switch_panel`,
@@ -357,7 +356,25 @@ How the body behaves (built in M4):
   opens an overlay of every action, and any key closes it without doing anything else.
 - `switch_spec` flips between the working tree and the branch spec and saves the choice, with the base
   (`meta.base`, else `origin/HEAD`, `main`, `master`), in `meta.json`. With no base it says so and stays.
-- A reload puts the cursor back on its row in the same file.
+- A reload puts the cursor back on its row in the same file, or on its line of the same card.
+
+How the cards behave (built in M5):
+
+- A card is drawn under the line its thread is placed at, or under the file header for a file comment. An
+  outdated thread is drawn under the nearest row, or under the file header when the file has no row on that
+  side. Several threads on one line stack in the review's order. The card is lined up under the code when the
+  stream is 50 columns wide or more, and indented by two columns below that.
+- An open card is a header (id, author, `[outdated]` on an open thread only, `(edited since sent)`), the
+  line text as it was when the comment was written for an outdated thread, the body wrapped to the stream's
+  width, and each reply indented under it. A resolved thread is one line: who resolved it and the first line
+  of its last comment, with no `outdated` tag.
+- Threads that are not in the diff, because their file is not in it or they were written against the other
+  spec, are listed in a block at the top of the stream under "Comments not in this diff". Each card there
+  also says the path and line it pointed at. With an empty diff the block is shown above the message. A
+  thread in the block is reached with next and previous thread, like any other.
+- The thread a key acts on is the one whose card holds the cursor, or the first one hung under the line the
+  cursor is on. A card's height is its number of lines, so the stream is laid out again when the pane's
+  width changes.
 
 ### 7.1 Keymap file
 

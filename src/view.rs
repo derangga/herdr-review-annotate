@@ -15,9 +15,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use crate::cards::card;
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
-use crate::store::{AnchorTarget, RelPath, Review, Side, Spec};
+use crate::store::{AnchorTarget, CommentId, RelPath, Review, Side, Spec};
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, truncate_to_width};
 
@@ -39,6 +40,15 @@ pub enum RowRef<'a> {
     Note(&'a DiffFile),
     Hunk(&'a Hunk),
     Line(&'a Row),
+    /// The heading of the block of threads that are not in the diff, with their number.
+    BlockHeader(usize),
+    /// Line `line` of the card of thread `thread`, counting threads in the review's order.
+    Card {
+        thread: usize,
+        line: usize,
+    },
+    /// The one row that says the diff has no files.
+    Empty(&'a Spec),
 }
 
 /// How many rows a file takes: its header, and then its hunks or one note.
@@ -77,64 +87,190 @@ fn glyph(change: Change) -> char {
     }
 }
 
-/// Where the rows of the diff start, and the rows the navigation keys jump to.
+/// A card hung under base row `at` of a file, counting the file's own rows from its header at 0.
+/// In the not-in-diff block `at` is unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Slot {
+    at: usize,
+    thread: usize,
+    height: usize,
+}
+
+/// What a stream row is, before it is looked up in the diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum At {
+    BlockHeader,
+    Empty,
+    /// A card line. `owner` is the file and base row it hangs from, or `None` in the block.
+    Card {
+        thread: usize,
+        line: usize,
+        owner: Option<(usize, usize)>,
+    },
+    /// Row `offset` of file `file`, not counting the cards above it in the file.
+    Base {
+        file: usize,
+        offset: usize,
+    },
+}
+
+/// The row inside a file where its line `line` on `side` is, counting the header as 0.
+fn offset_of(file: &DiffFile, side: Side, line: u32) -> Option<usize> {
+    let mut at = 1;
+    for hunk in &file.hunks {
+        at += 1;
+        for (offset, row) in hunk.rows.iter().enumerate() {
+            if row.line(side) == Some(line) {
+                return Some(at + offset);
+            }
+        }
+        at += hunk.rows.len();
+    }
+    None
+}
+
+/// Where the rows of the diff start, where the cards go, and the rows the navigation keys jump to.
+///
+/// The rows are numbered from 0: first the not-in-diff block (its heading, then one card per
+/// thread), then each file's header, its hunks, and under every line the cards of the threads
+/// placed there. Only the lines of the cards are kept. The diff rows are looked up when drawn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stream {
     /// The row each file starts at.
     starts: Vec<usize>,
     total: usize,
     hunk_rows: Vec<usize>,
-    /// The row each thread is drawn at, in row order.
+    /// The first row of each card, in row order.
     thread_rows: Vec<usize>,
     /// One per thread of the review, in the review's order.
     pub placements: Vec<Placement>,
+    /// The rows of the block of threads not in the diff. Zero when there are none.
+    top: usize,
+    block: Vec<Slot>,
+    /// The cards of each file, in row order.
+    slots: Vec<Vec<Slot>>,
+    /// The lines of each thread's card, in the review's order.
+    cards: Vec<Vec<Line<'static>>>,
+    /// The first row of each thread's card, in the review's order.
+    card_rows: Vec<usize>,
+    ids: Vec<CommentId>,
+    /// The width the cards were wrapped for.
+    width: usize,
 }
 
 impl Stream {
-    pub fn build(diff: &Diff, review: &Review) -> Self {
-        let mut stream = Self::default();
-        for file in &diff.files {
-            stream.starts.push(stream.total);
-            let mut at = stream.total + 1;
-            if file.hunks.is_empty() {
-                at += 1;
-            }
-            for hunk in &file.hunks {
-                stream.hunk_rows.push(at);
-                at += 1 + hunk.rows.len();
-            }
-            stream.total = at;
-        }
-        stream.placements = review
+    /// Lay out `diff` and the threads of `review` for a stream `width` cells wide.
+    pub fn build(diff: &Diff, review: &Review, width: usize) -> Self {
+        let placements = review
             .threads
             .iter()
             .map(|thread| place(thread, diff))
-            .collect();
-        let mut rows = review
+            .collect::<Vec<_>>();
+        let cards = review
             .threads
             .iter()
-            .zip(&stream.placements)
-            .filter_map(|(thread, placement)| {
-                let file = diff.file_index(&thread.anchor.path)?;
-                let line = match placement {
-                    Placement::Matched { line } => *line,
-                    Placement::Outdated { near } => *near,
-                    Placement::NotInDiff => return None,
-                };
-                let side = match &thread.anchor.target {
-                    AnchorTarget::Line { side, .. } | AnchorTarget::Range { side, .. } => *side,
-                    AnchorTarget::File => Side::New,
-                };
-                Some(
-                    line.and_then(|line| stream.row_of(diff, file, side, line))
-                        .unwrap_or_else(|| stream.starts.get(file).copied().unwrap_or(0)),
-                )
-            })
+            .zip(&placements)
+            .map(|(thread, placement)| card(thread, *placement, width))
             .collect::<Vec<_>>();
-        rows.sort_unstable();
-        rows.dedup();
-        stream.thread_rows = rows;
+        let mut stream = Self {
+            card_rows: vec![0; cards.len()],
+            ids: review
+                .threads
+                .iter()
+                .map(|thread| thread.root.id.clone())
+                .collect(),
+            width,
+            ..Self::default()
+        };
+        let mut block = Vec::new();
+        let mut hung = vec![Vec::<(usize, usize)>::new(); diff.files.len()];
+        for (index, (thread, placement)) in review.threads.iter().zip(&placements).enumerate() {
+            let line = match placement {
+                Placement::NotInDiff => None,
+                Placement::Matched { line } => Some(*line),
+                Placement::Outdated { near } => Some(*near),
+            };
+            let file = line.and(diff.file_index(&thread.anchor.path));
+            let Some((file, line)) = file.zip(line) else {
+                block.push(index);
+                continue;
+            };
+            let side = match &thread.anchor.target {
+                AnchorTarget::Line { side, .. } | AnchorTarget::Range { side, .. } => *side,
+                AnchorTarget::File => Side::New,
+            };
+            let offset = diff
+                .files
+                .get(file)
+                .zip(line)
+                .and_then(|(file, line)| offset_of(file, side, line))
+                .unwrap_or(0);
+            if let Some(list) = hung.get_mut(file) {
+                list.push((offset, index));
+            }
+        }
+        let height = |thread: usize| cards.get(thread).map_or(0, Vec::len);
+        let mut total = 0;
+        if !block.is_empty() {
+            total = 1;
+            for &thread in &block {
+                stream.block.push(Slot {
+                    at: 0,
+                    thread,
+                    height: height(thread),
+                });
+                stream.set_card_row(thread, total);
+                total += height(thread);
+            }
+        }
+        stream.top = total;
+        if diff.files.is_empty() {
+            total += 1;
+        }
+        for (file, mut list) in diff.files.iter().zip(hung) {
+            list.sort_by_key(|(offset, _)| *offset);
+            let slots = list
+                .into_iter()
+                .map(|(at, thread)| Slot {
+                    at,
+                    thread,
+                    height: height(thread),
+                })
+                .collect::<Vec<_>>();
+            let start = total;
+            stream.starts.push(start);
+            let mut above = 0;
+            for slot in &slots {
+                stream.set_card_row(slot.thread, start + slot.at + 1 + above);
+                above += slot.height;
+            }
+            let shift = |offset: usize| {
+                slots
+                    .iter()
+                    .filter(|slot| slot.at < offset)
+                    .map(|slot| slot.height)
+                    .sum::<usize>()
+            };
+            let mut offset = 1;
+            for hunk in &file.hunks {
+                stream.hunk_rows.push(start + offset + shift(offset));
+                offset += 1 + hunk.rows.len();
+            }
+            total = start + file_len(file) + above;
+            stream.slots.push(slots);
+        }
+        stream.total = total;
+        stream.thread_rows.clone_from(&stream.card_rows);
+        stream.thread_rows.sort_unstable();
+        stream.cards = cards;
+        stream.placements = placements;
         stream
+    }
+
+    fn set_card_row(&mut self, thread: usize, row: usize) {
+        if let Some(slot) = self.card_rows.get_mut(thread) {
+            *slot = row;
+        }
     }
 
     pub const fn len(&self) -> usize {
@@ -149,22 +285,7 @@ impl Stream {
         self.starts.len()
     }
 
-    /// The row of line `line` on `side` of file `file`.
-    fn row_of(&self, diff: &Diff, file: usize, side: Side, line: u32) -> Option<usize> {
-        let mut at = self.starts.get(file)? + 1;
-        for hunk in &diff.files.get(file)?.hunks {
-            at += 1;
-            for (offset, row) in hunk.rows.iter().enumerate() {
-                if row.line(side) == Some(line) {
-                    return Some(at + offset);
-                }
-            }
-            at += hunk.rows.len();
-        }
-        None
-    }
-
-    /// The file a row belongs to.
+    /// The file a row belongs to. Rows above the first file belong to it too.
     pub fn file_at(&self, row: usize) -> usize {
         self.starts
             .partition_point(|&start| start <= row)
@@ -175,13 +296,73 @@ impl Stream {
         self.starts.get(file).copied()
     }
 
-    pub fn locate<'a>(&self, diff: &'a Diff, row: usize) -> Option<RowRef<'a>> {
+    /// The row of base row `offset` of file `file`, with the cards above it counted.
+    fn row_of(&self, file: usize, offset: usize) -> Option<usize> {
+        let above = self
+            .slots
+            .get(file)?
+            .iter()
+            .filter(|slot| slot.at < offset)
+            .map(|slot| slot.height)
+            .sum::<usize>();
+        Some(self.starts.get(file)? + offset + above)
+    }
+
+    fn at(&self, row: usize) -> Option<At> {
         if row >= self.total {
             return None;
         }
-        let index = self.file_at(row);
+        if row < self.top {
+            if row == 0 {
+                return Some(At::BlockHeader);
+            }
+            let mut first = 1;
+            for slot in &self.block {
+                if row < first + slot.height {
+                    return Some(At::Card {
+                        thread: slot.thread,
+                        line: row - first,
+                        owner: None,
+                    });
+                }
+                first += slot.height;
+            }
+            return None;
+        }
+        if self.starts.is_empty() {
+            return Some(At::Empty);
+        }
+        let file = self.file_at(row);
+        let offset = row - self.starts.get(file)?;
+        let mut shift = 0;
+        for slot in self.slots.get(file)? {
+            let first = slot.at + 1 + shift;
+            if offset < first {
+                break;
+            }
+            if offset < first + slot.height {
+                return Some(At::Card {
+                    thread: slot.thread,
+                    line: offset - first,
+                    owner: Some((file, slot.at)),
+                });
+            }
+            shift += slot.height;
+        }
+        Some(At::Base {
+            file,
+            offset: offset - shift,
+        })
+    }
+
+    pub fn locate<'a>(&self, diff: &'a Diff, row: usize) -> Option<RowRef<'a>> {
+        let (index, mut offset) = match self.at(row)? {
+            At::BlockHeader => return Some(RowRef::BlockHeader(self.block.len())),
+            At::Empty => return Some(RowRef::Empty(&diff.spec)),
+            At::Card { thread, line, .. } => return Some(RowRef::Card { thread, line }),
+            At::Base { file, offset } => (file, offset),
+        };
         let file = diff.files.get(index)?;
-        let mut offset = row - self.starts.get(index)?;
         if offset == 0 {
             return Some(RowRef::File(file));
         }
@@ -200,6 +381,20 @@ impl Stream {
             offset -= hunk.rows.len();
         }
         None
+    }
+
+    /// The thread a row belongs to: the one whose card holds it, or the first one hung under it.
+    pub fn thread_at(&self, row: usize) -> Option<usize> {
+        match self.at(row)? {
+            At::Card { thread, .. } => Some(thread),
+            At::Base { file, offset } => self
+                .slots
+                .get(file)?
+                .iter()
+                .find(|slot| slot.at == offset)
+                .map(|slot| slot.thread),
+            At::BlockHeader | At::Empty => None,
+        }
     }
 }
 
@@ -243,6 +438,17 @@ pub fn areas(area: Rect) -> Areas {
     }
 }
 
+/// Where the cursor was, to put it back after the rows change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spot {
+    /// The file the row is in, or `None` in the block of threads not in the diff.
+    path: Option<RelPath>,
+    /// The row of the file the cursor is on, or the one the card hangs from. The header is 0.
+    offset: usize,
+    /// The thread and the line of its card, when the cursor is on a card.
+    card: Option<(CommentId, usize)>,
+}
+
 /// The cursor, the scroll position, the focus, and the help overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
@@ -272,22 +478,58 @@ impl View {
         usize::from(areas(self.area).stream.height).max(1)
     }
 
-    /// Where the cursor is, as a file and a row inside it, so a reload can put it back.
-    pub fn anchor(&self, diff: &Diff) -> Option<(RelPath, usize)> {
-        let file = diff.files.get(self.stream.file_at(self.cursor))?;
-        let start = self.stream.file_start(self.stream.file_at(self.cursor))?;
-        Some((file.path.clone(), self.cursor - start))
+    /// Where the cursor is, so a rebuild can put it back: a row of a file, or a line of a card.
+    pub fn spot(&self, diff: &Diff) -> Option<Spot> {
+        let (file, offset, card) = match self.stream.at(self.cursor)? {
+            At::Base { file, offset } => (Some(file), offset, None),
+            At::Card {
+                thread,
+                line,
+                owner,
+            } => (
+                owner.map(|(file, _)| file),
+                owner.map_or(0, |(_, at)| at),
+                self.stream.ids.get(thread).map(|id| (id.clone(), line)),
+            ),
+            At::BlockHeader | At::Empty => return None,
+        };
+        let path = match file {
+            Some(file) => Some(diff.files.get(file)?.path.clone()),
+            None => None,
+        };
+        Some(Spot { path, offset, card })
     }
 
-    /// Lay the new diff out. The cursor returns to its row in the same file when it is still there.
-    pub fn rebuild(&mut self, diff: &Diff, review: &Review, anchor: Option<(RelPath, usize)>) {
-        self.stream = Stream::build(diff, review);
-        self.cursor = anchor
-            .and_then(|(path, offset)| {
-                let index = diff.files.iter().position(|file| file.path == path)?;
-                let start = self.stream.file_start(index)?;
-                Some(start + offset.min(file_len(diff.files.get(index)?) - 1))
-            })
+    /// The thread the cursor is on, as an index into the review's threads.
+    pub fn focused(&self) -> Option<usize> {
+        self.stream.thread_at(self.cursor)
+    }
+
+    fn stream_width(&self) -> usize {
+        usize::from(areas(self.area).stream.width)
+    }
+
+    /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
+    /// the same card, else its row in the same file.
+    pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>) {
+        self.stream = Stream::build(diff, review, self.stream_width());
+        let stream = &self.stream;
+        let on_card = |spot: &Spot| {
+            let (id, line) = spot.card.as_ref()?;
+            let thread = stream.ids.iter().position(|other| other == id)?;
+            let height = stream.cards.get(thread)?.len();
+            Some(stream.card_rows.get(thread)? + (*line).min(height.saturating_sub(1)))
+        };
+        let in_file = |spot: &Spot| {
+            let index = diff
+                .files
+                .iter()
+                .position(|file| Some(&file.path) == spot.path.as_ref())?;
+            let last = file_len(diff.files.get(index)?) - 1;
+            stream.row_of(index, spot.offset.min(last))
+        };
+        self.cursor = spot
+            .and_then(|spot| on_card(&spot).or_else(|| in_file(&spot)))
             .unwrap_or(self.cursor)
             .min(self.stream.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.stream.len().saturating_sub(1));
@@ -297,6 +539,11 @@ impl View {
     pub fn resize(&mut self, area: Rect) {
         self.area = area;
         self.ensure_visible();
+    }
+
+    /// The stream is wider or narrower than when it was laid out, so its cards wrap differently.
+    pub fn needs_rebuild(&self) -> bool {
+        self.stream.width != self.stream_width()
     }
 
     fn ensure_visible(&mut self) {
@@ -466,8 +713,19 @@ fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
-fn row_line(row: RowRef, width: usize) -> Line<'static> {
+fn row_line(stream: &Stream, row: RowRef, width: usize) -> Line<'static> {
     match row {
+        RowRef::BlockHeader(count) => Line::styled(
+            truncate_to_width(&format!("Comments not in this diff ({count})"), width),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        RowRef::Card { thread, line } => stream
+            .cards
+            .get(thread)
+            .and_then(|lines| lines.get(line))
+            .cloned()
+            .unwrap_or_default(),
+        RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
         RowRef::File(file) => {
             let mut text = format!(
                 "{} {}",
@@ -528,16 +786,12 @@ fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
 /// window are built.
 pub fn draw(frame: &mut Frame, view: &View, diff: &Diff, keymap: &Keymap) {
     let areas = areas(frame.area());
-    if diff.files.is_empty() {
-        frame.render_widget(Paragraph::new(empty_message(&diff.spec)), areas.stream);
-        return;
-    }
     let cursor_style = Style::new().bg(Color::DarkGray);
     let height = usize::from(areas.stream.height);
     let width = usize::from(areas.stream.width);
     let lines = (view.scroll..view.scroll + height)
         .filter_map(|row| view.stream.locate(diff, row))
-        .map(|row| row_line(row, width))
+        .map(|row| row_line(&view.stream, row, width))
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
     frame.render_widget(Paragraph::new(lines), areas.stream);
@@ -713,8 +967,8 @@ Binary files a/img.png and b/img.png differ
 
     fn view(diff: &Diff, review: &Review, width: u16, height: u16) -> View {
         let mut view = View::default();
-        view.rebuild(diff, review, None);
         view.resize(Rect::new(0, 0, width, height));
+        view.rebuild(diff, review, None);
         view
     }
 
@@ -769,6 +1023,9 @@ Binary files a/img.png and b/img.png differ
             RowRef::Note(_) => "note",
             RowRef::Hunk(_) => "hunk",
             RowRef::Line(_) => "line",
+            RowRef::BlockHeader(_) => "block",
+            RowRef::Card { .. } => "card",
+            RowRef::Empty(_) => "empty",
         };
         let kinds = (0..16).map(kind).collect::<Vec<_>>();
         assert_eq!(
@@ -832,14 +1089,21 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(view.cursor, 0);
     }
 
+    // With `review()` at 80 columns the stream is 60 wide, so the cards line up under the code.
+    // The block of threads not in the diff is rows 0..=4: the heading, and u4's four rows.
+    // a.rs starts at 5: header 5, hunk 6, a1 7, a2 8, A2 9, then u3 (rows 10-11), a3 12, then
+    // u1 (13-15), hunk 16, a10 17, a11 18, a12 19. b.rs starts at 20, and u2 is rows 21-22.
+    // Its hunk is 23, b1 24, b2 25, img.png 26, and its note 27.
+
     #[test]
-    fn next_and_previous_thread_jump_between_the_rows_threads_are_placed_at() {
+    fn cards_take_rows_under_the_lines_they_are_placed_at() {
         let diff = diff_of(PATCH);
         let review = review();
-        let mut view = view(&diff, &review, 80, 12);
-        // u3 asked for A2 at line 3, and A2 moved to line 2, row 4. u1 is outdated, and the closest
-        // line to its line 4 is line 3, row 5. u2 is the file b.rs. u4 is not in the diff.
-        assert_eq!(view.stream.thread_rows, [4, 5, 10]);
+        let view = view(&diff, &review, 80, 12);
+        assert_eq!(view.stream.len(), 28);
+        assert_eq!(view.stream.hunk_rows, [6, 16, 23]);
+        assert_eq!(view.stream.thread_rows, [1, 10, 13, 21]);
+        assert_eq!(view.stream.file_start(1), Some(20));
         assert_eq!(
             view.stream.placements,
             [
@@ -849,18 +1113,183 @@ Binary files a/img.png and b/img.png differ
                 Placement::NotInDiff,
             ]
         );
+        let kinds = (0..28)
+            .map(|row| match view.stream.locate(&diff, row).unwrap() {
+                RowRef::BlockHeader(_) => "block".to_owned(),
+                RowRef::Card { thread, line } => format!("t{thread}.{line}"),
+                RowRef::File(_) => "file".to_owned(),
+                RowRef::Hunk(_) => "hunk".to_owned(),
+                RowRef::Line(row) => row.text.clone(),
+                RowRef::Note(_) => "note".to_owned(),
+                RowRef::Empty(_) => "empty".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds.join(" "),
+            "block t3.0 t3.1 t3.2 t3.3 file hunk a1 a2 A2 t2.0 t2.1 a3 t0.0 t0.1 t0.2 hunk \
+             a10 a11 a12 file t1.0 t1.1 hunk b1 b2 file note"
+        );
+        assert!(view.stream.locate(&diff, 28).is_none());
+    }
+
+    #[test]
+    fn next_and_previous_thread_jump_between_cards() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let mut view = view(&diff, &review, 80, 12);
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             view.apply(Action::NextThread);
             seen.push(view.cursor);
         }
-        assert_eq!(seen, [4, 5, 10, 10]);
+        assert_eq!(seen, [1, 10, 13, 21, 21]);
         let mut back = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             view.apply(Action::PrevThread);
             back.push(view.cursor);
         }
-        assert_eq!(back, [5, 4, 4, 4]);
+        assert_eq!(back, [13, 10, 1, 1, 1]);
+    }
+
+    #[test]
+    fn the_focused_thread_is_the_card_the_cursor_is_in_or_the_first_under_its_line() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let mut view = view(&diff, &review, 80, 12);
+        let focused = |view: &mut View, row| {
+            view.move_to(row);
+            view.focused()
+        };
+        // u3's card, and the A2 line it hangs under.
+        assert_eq!(focused(&mut view, 11), Some(2));
+        assert_eq!(focused(&mut view, 9), Some(2));
+        // The file header with a file comment, and the line u1 hangs under.
+        assert_eq!(focused(&mut view, 20), Some(1));
+        assert_eq!(focused(&mut view, 12), Some(0));
+        // The block, its heading, a line with no card, and a hunk header.
+        assert_eq!(focused(&mut view, 3), Some(3));
+        assert_eq!(focused(&mut view, 0), None);
+        assert_eq!(focused(&mut view, 7), None);
+        assert_eq!(focused(&mut view, 16), None);
+    }
+
+    #[test]
+    fn a_card_is_drawn_for_each_placement_case() {
+        let diff = diff_of(PATCH);
+        let review = review();
+        let mut view = view(&diff, &review, 80, 30);
+        let screen = fresh(&view, &diff);
+        let rows = screen
+            .lines()
+            .map(|row| row.split_once('│').map_or(row, |(_, rest)| rest).to_owned())
+            .collect::<Vec<_>>();
+        let at = |needle: &str| rows.iter().position(|row| row.contains(needle)).unwrap();
+        // Not in the diff: the block comes first, with where it pointed.
+        assert_eq!(at("Comments not in this diff (1)"), 0);
+        assert!(at("u4 user") < at("M a.rs"));
+        assert!(screen.contains("gone.rs:1 (R)"), "{screen}");
+        assert!(screen.contains("was: x"), "{screen}");
+        // Matched: under the line, with no tag.
+        assert_eq!(at("u3 user"), at("+A2") + 1);
+        assert!(!rows[at("u3 user")].contains("outdated"));
+        // Outdated: under the nearest line, tagged, with the old text.
+        assert_eq!(at("u1 user [outdated]"), at(" a3") + 1);
+        assert!(screen.contains("was: not there anymore"), "{screen}");
+        // A file comment: under the file header.
+        assert_eq!(at("u2 user"), at("A b.rs") + 1);
+        // The cursor row is highlighted whether it is a card or a diff row.
+        view.move_to(10);
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &view, &diff, &Keymap::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(30, 10)].bg, Color::DarkGray);
+        assert_ne!(buffer[(30, 9)].bg, Color::DarkGray);
+    }
+
+    #[test]
+    fn a_resolved_outdated_thread_is_one_line_with_no_tag() {
+        let diff = diff_of(PATCH);
+        let mut review = review();
+        review.threads[0].status = Status::Resolved {
+            by: Author::Agent(Some("claude".into())),
+        };
+        review.threads[0].replies.push(Comment {
+            id: CommentId::parse("a1").unwrap(),
+            parent: None,
+            author: Author::Agent(Some("claude".into())),
+            body: "Added with_capacity".into(),
+            sent_batch: None,
+            edited_since_sent: false,
+        });
+        let view = view(&diff, &review, 120, 30);
+        // The thread is still placed as outdated, and its card is one row.
+        assert_eq!(
+            view.stream.placements[0],
+            Placement::Outdated { near: Some(3) }
+        );
+        assert_eq!(view.stream.len(), 26);
+        let screen = fresh(&view, &diff);
+        assert!(
+            screen.contains("✓ u1 resolved by agent:claude: Added with_capacity"),
+            "{screen}"
+        );
+        assert!(!screen.contains("outdated"), "{screen}");
+        assert!(!screen.contains("was: not there anymore"), "{screen}");
+    }
+
+    #[test]
+    fn with_an_empty_diff_the_block_still_lists_the_threads() {
+        let diff = diff_of("");
+        let review = Review {
+            threads: vec![
+                thread("u1", "a.rs", line(1, "fn main() {}")),
+                thread("u2", "b.rs", AnchorTarget::File),
+            ],
+            ..Review::default()
+        };
+        let view = view(&diff, &review, 80, 20);
+        let screen = fresh(&view, &diff);
+        assert!(screen.contains("Comments not in this diff (2)"), "{screen}");
+        assert!(screen.contains("a.rs:1 (R)"), "{screen}");
+        assert!(screen.contains("b.rs (file)"), "{screen}");
+        assert!(
+            screen.contains("No changes in the working tree."),
+            "{screen}"
+        );
+        assert_eq!(view.stream.thread_rows, [1, 5]);
+        // With no threads either, the message is the only row.
+        let bare = fresh(&view_of(&diff), &diff);
+        assert!(!bare.contains("not in this diff"));
+    }
+
+    #[test]
+    fn a_comment_on_a_renamed_files_old_name_hangs_under_the_new_file() {
+        let patch = "diff --git a/old.rs b/new.rs\nsimilarity index 90%\nrename from old.rs\nrename to new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let diff = diff_of(patch);
+        let mut review = Review {
+            threads: vec![thread("a1", "old.rs", AnchorTarget::File)],
+            ..Review::default()
+        };
+        review.threads[0].root.author = Author::Agent(None);
+        let view = view(&diff, &review, 80, 12);
+        assert_eq!(view.stream.len(), 6);
+        assert_eq!(view.stream.thread_rows, [1]);
+    }
+
+    #[test]
+    fn a_narrow_stream_wraps_a_long_body_into_more_rows() {
+        let diff = diff_of(PATCH);
+        let mut review = review();
+        review.threads[2].root.body = "word ".repeat(30);
+        let wide = view(&diff, &review, 120, 12);
+        let narrow = view(&diff, &review, 60, 12);
+        assert!(narrow.stream.len() > wide.stream.len());
+        assert!(!wide.needs_rebuild() && !narrow.needs_rebuild());
+        let mut changed = narrow.clone();
+        changed.resize(Rect::new(0, 0, 120, 12));
+        assert!(changed.needs_rebuild());
     }
 
     #[test]
@@ -1044,7 +1473,7 @@ Binary files a/img.png and b/img.png differ
     fn a_reload_puts_the_cursor_back_on_its_row_in_the_same_file() {
         let (diff, mut view) = plain();
         view.move_to(12);
-        let anchor = view.anchor(&diff);
+        let anchor = view.spot(&diff);
         // The first file lost its second hunk, so b.rs starts earlier.
         let smaller = diff_of(&PATCH.replace("@@ -10,2 +10,3 @@\n a10\n+a11\n a12\n", ""));
         view.rebuild(&smaller, &Review::default(), anchor);
@@ -1053,8 +1482,33 @@ Binary files a/img.png and b/img.png differ
             matches!(view.stream.locate(&smaller, 8), Some(RowRef::Line(row)) if row.text == "b1")
         );
         // The file is gone: the cursor stays on the nearest row that exists.
-        let anchor = view.anchor(&smaller);
+        let anchor = view.spot(&smaller);
         view.rebuild(&diff_of(""), &Review::default(), anchor);
         assert_eq!(view.cursor, 0);
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_cursor_on_its_line_of_the_same_card() {
+        let diff = diff_of(PATCH);
+        let mut review = review();
+        let mut view = view(&diff, &review, 80, 12);
+        // Line 1 of u3's card, which is row 11.
+        view.move_to(11);
+        // A new thread above it pushes everything down by its rows.
+        review.threads.push(thread("u5", "a.rs", line(1, "a1")));
+        let spot = view.spot(&diff);
+        view.rebuild(&diff, &review, spot);
+        assert!(matches!(
+            view.stream.locate(&diff, view.cursor),
+            Some(RowRef::Card { thread: 2, line: 1 })
+        ));
+        assert_eq!(view.cursor, 11 + 2);
+        // The thread is deleted: the cursor goes to the line it hung under.
+        review.threads.remove(2);
+        let spot = view.spot(&diff);
+        view.rebuild(&diff, &review, spot);
+        assert!(
+            matches!(view.stream.locate(&diff, view.cursor), Some(RowRef::Line(row)) if row.text == "A2")
+        );
     }
 }
