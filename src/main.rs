@@ -31,7 +31,16 @@ fn main() -> ExitCode {
         Ok(Command::Tui { .. }) => tui::run(&env),
         Ok(Command::SpikeSend) => spike::send(&env),
         Ok(Command::Comment { repo, action }) => {
-            finish(&run_comment(repo.as_deref(), &action, &env, run_git))
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let output = run_comment(
+                repo.as_deref(),
+                &action,
+                &env,
+                &now,
+                run_git,
+                std::io::stdin(),
+            );
+            finish(&output)
         }
     }
 }

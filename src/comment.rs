@@ -1,13 +1,162 @@
 //! The `comment` subcommands an agent runs: what each one reads from the review and prints.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    Anchor, AnchorTarget, Comment, Side, Status, StoreError, Thread, Warning, read,
+    Add, Anchor, AnchorTarget, Author, Comment, CommentId, Event, Kind, Review, Side, Status,
+    StoreError, Thread, Warning, WriteError, read, write,
 };
+
+/// The most a body may hold after trimming.
+pub const MAX_BODY: usize = 16 * 1024;
+
+/// The request cannot be done. Exit code 2.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandError {
+    /// No open thread has this id. `open` lists the ones that do.
+    UnknownId { id: String, open: Vec<CommentId> },
+    /// The text on stdin cannot be a comment body.
+    InvalidBody(String),
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownId { id, open } if open.is_empty() => {
+                write!(f, "unknown id {id}, there are no open threads")
+            }
+            Self::UnknownId { id, open } => {
+                let open = open.iter().map(CommentId::as_str).collect::<Vec<_>>();
+                write!(f, "unknown id {id}, open threads: {}", open.join(" "))
+            }
+            Self::InvalidBody(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+/// Check a body as it came from stdin. It is stored as written, so shell syntax in it stays text.
+pub fn check_body(text: &str) -> Result<(), CommandError> {
+    match text.trim().len() {
+        0 => Err(CommandError::InvalidBody("the text is empty".into())),
+        n if n > MAX_BODY => Err(CommandError::InvalidBody(format!(
+            "the text is {n} bytes, the limit is {MAX_BODY}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The root of the thread called `id`. A reply's id, or one nobody has used, is an unknown id.
+fn thread<'a>(review: &'a Review, id: &str) -> Result<&'a Thread, CommandError> {
+    CommentId::parse(id)
+        .and_then(|id| review.thread(&id))
+        .ok_or_else(|| CommandError::UnknownId {
+            id: id.to_owned(),
+            open: review.open_ids().into_iter().cloned().collect(),
+        })
+}
+
+fn event(now: &str, by: &Author, kind: Kind) -> Event {
+    Event {
+        at: now.to_owned(),
+        by: by.clone(),
+        kind,
+    }
+}
+
+fn reply_event(
+    review: &Review,
+    now: &str,
+    by: &Author,
+    parent: &CommentId,
+    body: &str,
+) -> (Event, CommentId) {
+    let id = review.ids.clone().comment(by);
+    let add = Add {
+        id: id.clone(),
+        parent: Some(parent.clone()),
+        path: None,
+        old_path: None,
+        side: None,
+        line: None,
+        end_line: None,
+        line_text: None,
+        spec: None,
+        body: body.to_owned(),
+    };
+    (event(now, by, Kind::Add(add)), id)
+}
+
+/// `comment reply <id> -`: add a reply and leave the status alone. Returns the reply's id.
+pub fn reply(
+    dir: &Path,
+    now: &str,
+    by: &Author,
+    id: &str,
+    text: &str,
+) -> Result<CommentId, WriteError<CommandError>> {
+    write(dir, now, |review, now| {
+        let root = thread(review, id)?;
+        check_body(text)?;
+        let (added, reply_id) = reply_event(review, now, by, &root.root.id, text);
+        Ok((vec![added], reply_id))
+    })
+}
+
+/// `comment resolve <id> --reply -`: add the reply, then resolve. A thread that is already
+/// resolved is left as it is, and the reply is not written.
+pub fn resolve(
+    dir: &Path,
+    now: &str,
+    by: &Author,
+    id: &str,
+    text: &str,
+) -> Result<Option<CommentId>, WriteError<CommandError>> {
+    write(dir, now, |review, now| {
+        let root = thread(review, id)?;
+        check_body(text)?;
+        if !root.is_open() {
+            return Ok((Vec::new(), None));
+        }
+        let (added, reply_id) = reply_event(review, now, by, &root.root.id, text);
+        let resolved = event(
+            now,
+            by,
+            Kind::Resolve {
+                id: root.root.id.clone(),
+            },
+        );
+        Ok((vec![added, resolved], Some(reply_id)))
+    })
+}
+
+/// `comment reopen <id>`. A thread that is already open is left as it is.
+pub fn reopen(
+    dir: &Path,
+    now: &str,
+    by: &Author,
+    id: &str,
+) -> Result<(), WriteError<CommandError>> {
+    write(dir, now, |review, now| {
+        let root = thread(review, id)?;
+        let events = if root.is_open() {
+            Vec::new()
+        } else {
+            vec![event(
+                now,
+                by,
+                Kind::Reopen {
+                    id: root.root.id.clone(),
+                },
+            )]
+        };
+        Ok((events, ()))
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusFilter {
@@ -131,7 +280,7 @@ pub fn render_json(listing: &Listing) -> String {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::store::{Add, Author, CommentId, Event, Kind, RelPath, Spec, fold, write};
+    use crate::store::{RelPath, Spec, fold};
 
     fn add(by: &Author, id: &str, parent: Option<&str>, body: &str) -> Event {
         let anchored = parent.is_none();

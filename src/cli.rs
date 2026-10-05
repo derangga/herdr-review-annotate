@@ -4,13 +4,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::comment::{AuthorFilter, Filter, StatusFilter, list, render_json, render_text};
+use crate::comment::{
+    AuthorFilter, CommandError, Filter, StatusFilter, list, render_json, render_text, reopen,
+    reply, resolve,
+};
 use crate::diff::{GitError, RepoRoot};
 use crate::env::Env;
 use crate::meta::locate;
-use crate::store::{StoreError, Warning};
+use crate::store::{Author, StoreError, Warning, WriteError};
 
 pub const USAGE: &str = "usage:
   herdr-review tui    [--repo <root>]
@@ -250,6 +254,7 @@ pub enum Failure {
     Usage(Usage),
     Git(GitError),
     Store(StoreError),
+    Command(CommandError),
     NoStateDir,
 }
 
@@ -260,6 +265,7 @@ impl Failure {
             Self::Usage(Usage(message)) => (format!("{message}\n{USAGE}"), 2),
             Self::Git(error) => (error.to_string(), 1),
             Self::Store(error) => (error.to_string(), 1),
+            Self::Command(error) => (error.to_string(), 2),
             Self::NoStateDir => (
                 "cannot find a state directory, set HOME or XDG_STATE_HOME".to_owned(),
                 1,
@@ -291,6 +297,15 @@ impl From<GitError> for Failure {
     }
 }
 
+impl From<WriteError<CommandError>> for Failure {
+    fn from(error: WriteError<CommandError>) -> Self {
+        match error {
+            WriteError::Store(error) => Self::Store(error),
+            WriteError::Build(error) => Self::Command(error),
+        }
+    }
+}
+
 impl From<StoreError> for Failure {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
@@ -303,15 +318,37 @@ fn warnings(warning: Option<Warning>) -> String {
         .unwrap_or_default()
 }
 
+/// The text a command reads from stdin. It must be UTF-8.
+fn read_text(stdin: &mut impl Read) -> Result<String, Failure> {
+    let mut bytes = Vec::new();
+    stdin.read_to_end(&mut bytes).map_err(|error| {
+        Failure::Command(CommandError::InvalidBody(format!(
+            "cannot read stdin: {error}"
+        )))
+    })?;
+    String::from_utf8(bytes)
+        .map_err(|_| Failure::Command(CommandError::InvalidBody("stdin is not valid UTF-8".into())))
+}
+
+fn author(name: Option<&String>) -> Author {
+    Author::Agent(name.cloned())
+}
+
 fn comment(
     repo: Option<&Path>,
     action: &CommentAction,
     env: &Env,
+    now: &str,
     git: impl FnMut(&[String]) -> Result<String, GitError>,
+    mut stdin: impl Read,
 ) -> Result<Output, Failure> {
     let root = RepoRoot::resolve(repo, &env.cwd, git)?;
     let base = env.state_base().ok_or(Failure::NoStateDir)?;
     let dir = locate(&base, root.path());
+    let printed = |id: Option<crate::store::CommentId>| Output {
+        stdout: id.map(|id| format!("{id}\n")).unwrap_or_default(),
+        ..Output::default()
+    };
     match action {
         CommentAction::List { filter, json } => {
             let (listing, warning) = list(&dir, *filter)?;
@@ -326,21 +363,44 @@ fn comment(
                 code: 0,
             })
         }
-        CommentAction::Apply { .. }
-        | CommentAction::Reply { .. }
-        | CommentAction::Resolve { .. }
-        | CommentAction::Reopen { .. } => Err(Failure::Usage(Usage("not implemented yet".into()))),
+        CommentAction::Reply { name, id } => {
+            let text = read_text(&mut stdin)?;
+            Ok(printed(Some(reply(
+                &dir,
+                now,
+                &author(name.as_ref()),
+                id,
+                &text,
+            )?)))
+        }
+        CommentAction::Resolve { name, id } => {
+            let text = read_text(&mut stdin)?;
+            Ok(printed(resolve(
+                &dir,
+                now,
+                &author(name.as_ref()),
+                id,
+                &text,
+            )?))
+        }
+        CommentAction::Reopen { id } => {
+            reopen(&dir, now, &author(None), id)?;
+            Ok(printed(None))
+        }
+        CommentAction::Apply { .. } => Err(Failure::Usage(Usage("not implemented yet".into()))),
     }
 }
 
-/// Run a `comment` command. `git` answers every `git` call.
+/// Run a `comment` command. `git` answers every `git` call and `stdin` holds the text or batch.
 pub fn run_comment(
     repo: Option<&Path>,
     action: &CommentAction,
     env: &Env,
+    now: &str,
     git: impl FnMut(&[String]) -> Result<String, GitError>,
+    stdin: impl Read,
 ) -> Output {
-    comment(repo, action, env, git).unwrap_or_else(|failure| failure.output())
+    comment(repo, action, env, now, git, stdin).unwrap_or_else(|failure| failure.output())
 }
 
 #[cfg(test)]
@@ -473,23 +533,92 @@ mod tests {
         );
     }
 
-    fn env(home: &Path) -> Env {
-        Env::new(
-            [("HOME".to_owned(), home.display().to_string())],
-            "/work".into(),
-        )
+    use crate::store::{Add, CommentId, Event, Kind, RelPath, Side, Spec, read, state_dir, write};
+
+    /// A repository root, a state directory under a temp `HOME`, and a `git` that names the root.
+    struct Fixture {
+        env: Env,
+        root: PathBuf,
+        dir: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let home = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("herdr-review-cli-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            let root = home.join("repo");
+            std::fs::create_dir_all(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            let env = Env::new(
+                [("HOME".to_owned(), home.display().to_string())],
+                "/work".into(),
+            );
+            let dir = state_dir(&env.state_base().unwrap(), &root);
+            Self { env, root, dir }
+        }
+
+        /// Run a command line with `stdin` and a fixed clock.
+        fn run(&self, line: &str, stdin: &[u8]) -> Output {
+            let Ok(Command::Comment { repo, action }) = parse(&args(line)) else {
+                panic!("not a comment command: {line}");
+            };
+            let git = |_: &[String]| Ok(format!("{}\n", self.root.display()));
+            run_comment(
+                repo.as_deref(),
+                &action,
+                &self.env,
+                "2026-10-04T00:00:00Z",
+                git,
+                stdin,
+            )
+        }
+
+        /// Add root comments by the user: u1, u2, ...
+        fn seed(&self, count: usize) {
+            for n in 1..=count {
+                let add = Add {
+                    id: CommentId::parse(&format!("u{n}")).unwrap(),
+                    parent: None,
+                    path: RelPath::parse("a.rs"),
+                    old_path: None,
+                    side: Some(Side::New),
+                    line: Some(3),
+                    end_line: None,
+                    line_text: Some("x".into()),
+                    spec: Some(Spec::WorkTree),
+                    body: format!("comment {n}"),
+                };
+                let event = Event {
+                    at: "t".into(),
+                    by: Author::User,
+                    kind: Kind::Add(add),
+                };
+                write(&self.dir, "t", |_, _| Ok::<_, ()>((vec![event], ()))).unwrap();
+            }
+        }
+
+        fn log(&self) -> String {
+            std::fs::read_to_string(self.dir.join("review.jsonl")).unwrap_or_default()
+        }
     }
 
     #[test]
     fn a_directory_that_is_not_a_repo_exits_1() {
+        let env = Env::new([("HOME".to_owned(), "/h".to_owned())], "/work".into());
+        let action = CommentAction::List {
+            filter: Filter::default(),
+            json: false,
+        };
         let output = run_comment(
             None,
-            &CommentAction::List {
-                filter: Filter::default(),
-                json: false,
-            },
-            &env(Path::new("/h")),
+            &action,
+            &env,
+            "t",
             |_| Err(GitError::NotARepo),
+            &b""[..],
         );
         assert_eq!(
             (output.code, output.stderr.as_str()),
@@ -499,62 +628,159 @@ mod tests {
 
     #[test]
     fn list_finds_the_review_of_the_repo_root() {
-        use crate::store::{
-            Add, Author, CommentId, Event, Kind, RelPath, Side, Spec, state_dir, write,
-        };
-        let home = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("herdr-review-cli-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let root = home.join("repo");
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        let env = env(&home);
-        let dir = state_dir(&env.state_base().unwrap(), &root);
-        let add = Add {
-            id: CommentId::parse("u1").unwrap(),
-            parent: None,
-            path: RelPath::parse("a.rs"),
-            old_path: None,
-            side: Some(Side::New),
-            line: Some(3),
-            end_line: None,
-            line_text: Some("x".into()),
-            spec: Some(Spec::WorkTree),
-            body: "fix".into(),
-        };
-        let event = Event {
-            at: "t".into(),
-            by: Author::User,
-            kind: Kind::Add(add),
-        };
-        write(&dir, "t", |_, _| Ok::<_, ()>((vec![event], ()))).unwrap();
-        let git = |args: &[String]| {
-            assert_eq!(args.join(" "), "-C /work rev-parse --show-toplevel");
-            Ok(format!("{}\n", root.display()))
-        };
-        let list = |json| {
-            run_comment(
-                None,
-                &CommentAction::List {
-                    filter: Filter::default(),
-                    json,
-                },
-                &env,
-                git,
-            )
-        };
-        let text = list(false);
+        let fixture = Fixture::new("list");
+        fixture.seed(1);
+        let text = fixture.run("comment list", b"");
         assert_eq!(
             (text.code, text.stdout.as_str()),
-            (0, "u1 open, unsent a.rs:3 (R) by user\n  fix\n")
+            (0, "u1 open, unsent a.rs:3 (R) by user\n  comment 1\n")
         );
-        let json = list(true);
+        let json = fixture.run("comment list --json", b"");
         assert!(
             json.stdout.starts_with("{\"threads\":[{") && json.stdout.ends_with("}\n"),
             "{}",
             json.stdout
+        );
+    }
+
+    #[test]
+    fn a_wrong_id_exits_2_and_prints_the_open_ids() {
+        let fixture = Fixture::new("unknown");
+        fixture.seed(2);
+        assert_eq!(fixture.run("comment resolve u2 --reply -", b"done").code, 0);
+        let before = fixture.log();
+        for line in [
+            "comment resolve zz9 --reply -",
+            "comment reply zz9 -",
+            "comment reopen zz9",
+        ] {
+            let output = fixture.run(line, b"text");
+            assert_eq!(output.code, 2, "{line}");
+            assert_eq!(
+                output.stderr, "unknown id zz9, open threads: u1\n",
+                "{line}"
+            );
+        }
+        assert_eq!(fixture.log(), before);
+    }
+
+    #[test]
+    fn a_reply_id_is_not_a_thread_id() {
+        let fixture = Fixture::new("reply-id");
+        fixture.seed(1);
+        assert_eq!(fixture.run("comment reply u1 -", b"first").stdout, "a1\n");
+        let output = fixture.run("comment reply a1 -", b"second");
+        assert_eq!(
+            (output.code, output.stderr.as_str()),
+            (2, "unknown id a1, open threads: u1\n")
+        );
+    }
+
+    #[test]
+    fn with_no_open_thread_the_error_says_so() {
+        let fixture = Fixture::new("none-open");
+        let output = fixture.run("comment reply u1 -", b"text");
+        assert_eq!(output.stderr, "unknown id u1, there are no open threads\n");
+    }
+
+    #[test]
+    fn resolve_without_a_reply_is_a_usage_error() {
+        let usage = parse(&args("comment resolve u1")).unwrap_err();
+        assert_eq!(Failure::Usage(usage).output().code, 2);
+    }
+
+    #[test]
+    fn a_resolve_adds_the_reply_and_marks_the_thread_new() {
+        let fixture = Fixture::new("resolve");
+        fixture.seed(1);
+        let output = fixture.run(
+            "comment resolve --name claude u1 --reply -",
+            b"Added with_capacity\n",
+        );
+        assert_eq!(
+            (output.code, output.stdout.as_str(), output.stderr.as_str()),
+            (0, "a1\n", "")
+        );
+        let review = read(&fixture.dir).unwrap();
+        let thread = &review.threads[0];
+        assert_eq!(
+            thread.status,
+            crate::store::Status::Resolved {
+                by: Author::Agent(Some("claude".into()))
+            }
+        );
+        assert!(thread.is_new);
+        assert_eq!(
+            thread.replies[0].author,
+            Author::Agent(Some("claude".into()))
+        );
+        assert_eq!(thread.replies[0].body, "Added with_capacity\n");
+    }
+
+    #[test]
+    fn a_second_resolve_or_reopen_exits_0_and_writes_nothing() {
+        let fixture = Fixture::new("repeat");
+        fixture.seed(1);
+        assert_eq!(fixture.run("comment reopen u1", b"").code, 0);
+        assert_eq!(fixture.run("comment resolve u1 --reply -", b"done").code, 0);
+        let resolved = fixture.log();
+        let again = fixture.run("comment resolve u1 --reply -", b"done again");
+        assert_eq!(
+            (again.code, again.stdout.as_str(), again.stderr.as_str()),
+            (0, "", "")
+        );
+        assert_eq!(fixture.log(), resolved);
+        assert_eq!(fixture.run("comment reopen u1", b"").code, 0);
+        let reopened = fixture.log();
+        assert_ne!(reopened, resolved);
+        assert!(read(&fixture.dir).unwrap().threads[0].is_open());
+        assert_eq!(fixture.run("comment reopen u1", b"").code, 0);
+        assert_eq!(fixture.log(), reopened);
+    }
+
+    #[test]
+    fn a_reply_leaves_the_status_alone() {
+        let fixture = Fixture::new("reply");
+        fixture.seed(1);
+        fixture.run("comment reply u1 -", b"question?");
+        let review = read(&fixture.dir).unwrap();
+        assert!(review.threads[0].is_open() && review.threads[0].replies.len() == 1);
+        assert_eq!(review.threads[0].replies[0].author, Author::Agent(None));
+    }
+
+    #[test]
+    fn reply_text_with_shell_syntax_is_stored_byte_for_byte() {
+        let fixture = Fixture::new("bytes");
+        fixture.seed(1);
+        let text =
+            "uses `id` and $(id) and \"quotes\" and 'single' and \\ and ${HOME}\n  indented\n";
+        assert_eq!(fixture.run("comment reply u1 -", text.as_bytes()).code, 0);
+        assert_eq!(read(&fixture.dir).unwrap().threads[0].replies[0].body, text);
+    }
+
+    #[test]
+    fn an_empty_oversized_or_non_utf8_text_is_rejected_and_nothing_is_written() {
+        let fixture = Fixture::new("bad-text");
+        fixture.seed(1);
+        let before = fixture.log();
+        let huge = "x".repeat(crate::comment::MAX_BODY + 1);
+        let at_limit = "x".repeat(crate::comment::MAX_BODY);
+        for (stdin, why) in [
+            (&b""[..], "empty"),
+            (b" \n\t ", "empty"),
+            (huge.as_bytes(), "limit is 16384"),
+            (&[0xff, 0xfe][..], "UTF-8"),
+        ] {
+            for line in ["comment reply u1 -", "comment resolve u1 --reply -"] {
+                let output = fixture.run(line, stdin);
+                assert_eq!(output.code, 2, "{line} {why}");
+                assert!(output.stderr.contains(why), "{}", output.stderr);
+            }
+        }
+        assert_eq!(fixture.log(), before);
+        assert_eq!(
+            fixture.run("comment reply u1 -", at_limit.as_bytes()).code,
+            0
         );
     }
 }

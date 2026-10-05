@@ -642,7 +642,7 @@ Errors, one enum per module:
 | Type | Cases | Meaning |
 |---|---|---|
 | `StoreError` | `Io(kind)`, `Busy` | The disk failed, or the lock was not free within 2 seconds |
-| `CommandError` | `UnknownId { id, open }`, `NotAllowed { id, why }`, `InvalidBatch { index, why }` | The caller asked for something the review cannot do |
+| `CommandError` | `UnknownId { id, open }`, `InvalidBody(why)`, `InvalidBatch { index, why }` | The caller asked for something the review cannot do. `NotAllowed` is not built: the `comment` subcommands never edit or delete, so no request breaks the rights rule |
 | `GitError` | `NotInstalled`, `NotARepo`, `NoBase { tried }`, `Failed { args, stderr }` | `git` could not answer |
 | `HerdrError` | `code`, `message` | As parsed by `agent_delivery.rs` |
 | `TargetError` | `NoAgent`, `Ambiguous(Vec<Target>)` | Resolution found zero or several agents |
@@ -720,7 +720,7 @@ Cardinality: one-shot.
   -> new side: read the file in the worktree  R: dir of repo  E: missing line -> InvalidBatch
   -> old side: git show <base>:<path>         R: git          E: missing line -> InvalidBatch
 -> detect agent name                       R: herdr, env   E: any -> escape, Author::Agent(None)
--> store::write                            R: dir, now     E: UnknownId, NotAllowed -> exit 2
+-> store::write                            R: dir, now     E: UnknownId -> exit 2
                                                            E: Busy, Io -> exit 1
 -> notification show (apply only)          R: herdr        E: any -> escape, ignored
 -> print ids as text or JSON
@@ -858,7 +858,7 @@ action.
 
 | Error | CLI edge (`main.rs`) | TUI edge (action dispatcher) |
 |---|---|---|
-| Usage, `UnknownId`, `NotAllowed`, `InvalidBatch` | One line on stderr, exit 2. `UnknownId` also lists the open ids | Cannot occur for ids, the TUI only acts on threads it shows |
+| Usage, `UnknownId`, `InvalidBody`, `InvalidBatch` | One line on stderr, exit 2. `UnknownId` also lists the open ids | Cannot occur for ids, the TUI only acts on threads it shows |
 | `StoreError::Busy` | "review is busy, try again", exit 1 | Status line, the action can be repeated |
 | `StoreError::Io` | Message with the path, exit 1 | Status line, the editor keeps its text |
 | `GitError` | Message, exit 1 | Message screen or status line, as in the graphs |
