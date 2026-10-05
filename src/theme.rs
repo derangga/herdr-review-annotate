@@ -28,6 +28,8 @@ struct Palette {
     yellow: u32,
     blue: u32,
     mauve: u32,
+    peach: u32,
+    sky: u32,
 }
 
 const MOCHA: Palette = Palette {
@@ -43,6 +45,8 @@ const MOCHA: Palette = Palette {
     yellow: 0xf9_e2af,
     blue: 0x89_b4fa,
     mauve: 0xcb_a6f7,
+    peach: 0xfa_b387,
+    sky: 0x89_dceb,
 };
 
 const MACCHIATO: Palette = Palette {
@@ -58,6 +62,8 @@ const MACCHIATO: Palette = Palette {
     yellow: 0xee_d49f,
     blue: 0x8a_adf4,
     mauve: 0xc6_a0f6,
+    peach: 0xf5_a97f,
+    sky: 0x91_d7e3,
 };
 
 const FRAPPE: Palette = Palette {
@@ -73,6 +79,8 @@ const FRAPPE: Palette = Palette {
     yellow: 0xe5_c890,
     blue: 0x8c_aaee,
     mauve: 0xca_9ee6,
+    peach: 0xef_9f76,
+    sky: 0x99_d1db,
 };
 
 const LATTE: Palette = Palette {
@@ -88,6 +96,8 @@ const LATTE: Palette = Palette {
     yellow: 0xdf_8e1d,
     blue: 0x1e_66f5,
     mauve: 0x88_39ef,
+    peach: 0xfe_640b,
+    sky: 0x04_a5e5,
 };
 
 /// The names `[theme] name` accepts.
@@ -128,6 +138,54 @@ const fn blend(over: u32, under: u32, percent: u32) -> Color {
     )
 }
 
+/// What a piece of code is, as far as its colour goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    Comment,
+    String,
+    /// A number, and any other constant.
+    Number,
+    Keyword,
+    Operator,
+    Function,
+    Type,
+}
+
+/// The token of a `TextMate` scope and of every scope under it. The first entry that fits wins, so
+/// a narrower scope stands above the wider one it belongs to. A scope that is not here has no
+/// colour of its own and takes that of the scope around it.
+pub const SCOPES: &[(&str, Token)] = &[
+    ("comment", Token::Comment),
+    ("string", Token::String),
+    ("constant", Token::Number),
+    ("keyword.operator", Token::Operator),
+    ("keyword", Token::Keyword),
+    ("storage", Token::Keyword),
+    ("variable.language", Token::Keyword),
+    ("entity.name.function", Token::Function),
+    ("support.function", Token::Function),
+    ("variable.function", Token::Function),
+    ("entity.name.tag", Token::Function),
+    ("entity.name", Token::Type),
+    ("entity.other.inherited-class", Token::Type),
+    ("entity.other.attribute-name", Token::Type),
+    ("support.type", Token::Type),
+    ("support.class", Token::Type),
+];
+
+/// The token of the scope `scope`, such as `keyword.operator.arithmetic.rust`.
+pub fn token_of(scope: &str) -> Option<Token> {
+    let under = |prefix: &str| {
+        scope
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    };
+    SCOPES
+        .iter()
+        .find(|(prefix, _)| under(prefix))
+        .map(|(_, token)| *token)
+}
+
 /// What each part of the pane is drawn in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -158,6 +216,13 @@ pub struct Theme {
     pub popup: Color,
     pub warning: Color,
     pub success: Color,
+    /// The colours of code, one per `Token`. A comment is drawn as subtle text.
+    pub string: Color,
+    pub number: Color,
+    pub keyword: Color,
+    pub operator: Color,
+    pub function: Color,
+    pub kind: Color,
 }
 
 impl Default for Theme {
@@ -186,6 +251,12 @@ impl Theme {
             popup: rgb(palette.mantle),
             warning: rgb(palette.yellow),
             success: rgb(palette.green),
+            string: rgb(palette.green),
+            number: rgb(palette.peach),
+            keyword: rgb(palette.mauve),
+            operator: rgb(palette.sky),
+            function: rgb(palette.blue),
+            kind: rgb(palette.yellow),
         }
     }
 
@@ -229,6 +300,19 @@ impl Theme {
                 |theme| (theme, Vec::new()),
             ),
             Some(_) => fallback("[theme] name is not a string".to_owned()),
+        }
+    }
+
+    /// The colour of a piece of code.
+    pub const fn token(&self, token: Token) -> Color {
+        match token {
+            Token::Comment => self.subtle,
+            Token::String => self.string,
+            Token::Number => self.number,
+            Token::Keyword => self.keyword,
+            Token::Operator => self.operator,
+            Token::Function => self.function,
+            Token::Type => self.kind,
         }
     }
 
@@ -325,6 +409,53 @@ mod tests {
         let latte = Theme::named("catppuccin-latte").unwrap();
         assert_ne!(latte.added_bg, Theme::default().added_bg);
         assert_ne!(latte.removed_bg, latte.added_bg);
+    }
+
+    #[test]
+    fn a_scope_takes_the_token_of_the_narrowest_entry_it_is_under() {
+        for (scope, token) in [
+            ("comment.block.documentation.rust", Some(Token::Comment)),
+            ("string.quoted.double.js", Some(Token::String)),
+            ("constant.numeric.integer.decimal.rust", Some(Token::Number)),
+            ("constant.language.boolean", Some(Token::Number)),
+            ("keyword.control.rust", Some(Token::Keyword)),
+            ("keyword.operator.arithmetic.rust", Some(Token::Operator)),
+            ("keyword", Some(Token::Keyword)),
+            ("storage.type.function.rust", Some(Token::Keyword)),
+            ("variable.language.this.js", Some(Token::Keyword)),
+            ("entity.name.function.rust", Some(Token::Function)),
+            ("support.function.builtin", Some(Token::Function)),
+            ("entity.name.struct.rust", Some(Token::Type)),
+            ("support.type.primitive", Some(Token::Type)),
+            // Not under any entry: a look-alike prefix, plain variables, punctuation, the file.
+            ("keywordish.thing", None),
+            ("variable.other.readwrite.js", None),
+            ("punctuation.separator", None),
+            ("source.rust", None),
+            ("", None),
+        ] {
+            assert_eq!(token_of(scope), token, "{scope}");
+        }
+    }
+
+    #[test]
+    fn every_token_has_a_colour_that_follows_the_flavor() {
+        let (mocha, latte) = (Theme::default(), Theme::named("catppuccin-latte").unwrap());
+        assert_eq!(mocha.token(Token::Keyword), Color::Rgb(0xcb, 0xa6, 0xf7));
+        assert_eq!(mocha.token(Token::Number), Color::Rgb(0xfa, 0xb3, 0x87));
+        assert_eq!(mocha.token(Token::Comment), mocha.subtle);
+        for token in [
+            Token::Comment,
+            Token::String,
+            Token::Number,
+            Token::Keyword,
+            Token::Operator,
+            Token::Function,
+            Token::Type,
+        ] {
+            assert_ne!(mocha.token(token), latte.token(token), "{token:?}");
+            assert_ne!(mocha.token(token), mocha.text, "{token:?}");
+        }
     }
 
     #[test]

@@ -526,6 +526,9 @@ impl fmt::Display for Notice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diff {
     pub files: Vec<DiffFile>,
+    /// The revision the working tree is compared against, which the old side of a file is read
+    /// from: `HEAD`, a merge base, or the empty tree.
+    pub rev: String,
     pub spec: Spec,
     pub notices: Vec<Notice>,
 }
@@ -650,6 +653,7 @@ pub fn load(
     files.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
     Ok(Diff {
         files,
+        rev,
         spec,
         notices,
     })
@@ -1382,6 +1386,7 @@ mod tests {
 
     fn diff_of(patch: &str, spec: Spec) -> Diff {
         Diff {
+            rev: "HEAD".into(),
             files: parse(patch.as_bytes(), MAX_PATCH),
             spec,
             notices: Vec::new(),
@@ -1567,6 +1572,7 @@ mod tests {
     #[test]
     fn a_renamed_file_is_found_by_either_path() {
         let diff = Diff {
+            rev: "HEAD".into(),
             files: parse(MIXED, MAX_PATCH),
             spec: Spec::WorkTree,
             notices: Vec::new(),
@@ -1594,6 +1600,7 @@ mod tests {
     #[test]
     fn a_line_comment_on_a_file_with_no_rows_is_outdated_with_no_line() {
         let diff = Diff {
+            rev: "HEAD".into(),
             files: parse(MIXED, MAX_PATCH),
             spec: Spec::WorkTree,
             notices: Vec::new(),

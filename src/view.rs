@@ -19,6 +19,7 @@ use crate::cards::{Card, Look, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
 use crate::keymap::{Action, Keymap};
 use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec};
+use crate::syntax::{Cache, FileTokens, side_of};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{string_width, tail_to_width, truncate_to_width};
@@ -748,6 +749,12 @@ impl View {
         }
     }
 
+    /// The files that have a row in the window, as indices into the diff's files.
+    pub fn visible_files(&self) -> std::ops::RangeInclusive<usize> {
+        let last = (self.scroll + self.height()).saturating_sub(1);
+        self.stream.file_at(self.scroll)..=self.stream.file_at(last)
+    }
+
     /// Switch to the other layout until toggled again. The caller lays the stream out again.
     pub fn toggle_layout(&mut self) {
         self.forced = Some(self.layout().other());
@@ -1188,9 +1195,58 @@ fn fitted(text: &str, width: usize) -> String {
     text
 }
 
+/// The text of a code row in exactly `room` cells, over the row's tint. A row that was highlighted
+/// is drawn token by token, in the theme's colour for each, and what lies between tokens is plain
+/// text. A row that was not is drawn whole in `plain`, the colour of its kind.
+fn code_text(
+    row: &Row,
+    room: usize,
+    plain: Style,
+    tint: Style,
+    tokens: Option<&FileTokens>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let side = side_of(row);
+    let spans = tokens.and_then(|tokens| tokens.line(side, row.line(side)?));
+    let mut out = Vec::new();
+    let mut used = 0;
+    let mut push = |piece: &str, style: Style| {
+        let piece = truncate_to_width(&sanitize_terminal_text(piece), room - used);
+        used += string_width(&piece);
+        if !piece.is_empty() {
+            out.push(Span::styled(piece, style.patch(tint)));
+        }
+    };
+    let mut at = 0;
+    for (range, token) in spans.unwrap_or_default() {
+        push(
+            row.text.get(at..range.start).unwrap_or_default(),
+            Style::new(),
+        );
+        push(
+            row.text.get(range.clone()).unwrap_or_default(),
+            Style::new().fg(theme.token(*token)),
+        );
+        at = range.end;
+    }
+    let rest = if spans.is_some() { Style::new() } else { plain };
+    push(row.text.get(at..).unwrap_or_default(), rest);
+    if row.no_newline {
+        push("  [no newline at end of file]", rest);
+    }
+    out.push(Span::styled(" ".repeat(room - used), tint));
+    out
+}
+
 /// One half of a split row: the line number, the sign and the text on `side`, or an empty half
 /// when the other side has a line and this one does not.
-fn half_spans(row: Option<&Row>, side: Side, width: usize, theme: &Theme) -> Vec<Span<'static>> {
+fn half_spans(
+    row: Option<&Row>,
+    side: Side,
+    width: usize,
+    theme: &Theme,
+    tokens: Option<&FileTokens>,
+) -> Vec<Span<'static>> {
     let Some(row) = row else {
         return vec![Span::styled(
             " ".repeat(width),
@@ -1202,15 +1258,13 @@ fn half_spans(row: Option<&Row>, side: Side, width: usize, theme: &Theme) -> Vec
         .line(side)
         .map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
     let gutter = format!("{number} {sign} ");
-    let mut text = sanitize_terminal_text(&row.text);
-    if row.no_newline {
-        text.push_str("  [no newline at end of file]");
-    }
     let room = width.saturating_sub(gutter.len());
-    vec![
-        Span::styled(truncate_to_width(&gutter, width), theme.dim().patch(tint)),
-        Span::styled(fitted(&text, room), text_style.patch(tint)),
-    ]
+    let mut spans = vec![Span::styled(
+        truncate_to_width(&gutter, width),
+        theme.dim().patch(tint),
+    )];
+    spans.extend(code_text(row, room, text_style, tint, tokens, theme));
+    spans
 }
 
 /// A file's header: its name on the left, the added and removed counts on the right.
@@ -1254,7 +1308,13 @@ fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-fn row_line(stream: &Stream, row: RowRef, width: usize, theme: &Theme) -> Line<'static> {
+fn row_line(
+    stream: &Stream,
+    row: RowRef,
+    width: usize,
+    theme: &Theme,
+    tokens: Option<&FileTokens>,
+) -> Line<'static> {
     match row {
         RowRef::BlockHeader(count) => Line::styled(
             truncate_to_width(&format!("Comments not in this diff ({count})"), width),
@@ -1280,9 +1340,9 @@ fn row_line(stream: &Stream, row: RowRef, width: usize, theme: &Theme) -> Line<'
         }
         RowRef::Pair { old, new } => {
             let (left, right) = split_widths(width);
-            let mut spans = half_spans(old, Side::Old, left, theme);
+            let mut spans = half_spans(old, Side::Old, left, theme, tokens);
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
-            spans.extend(half_spans(new, Side::New, right, theme));
+            spans.extend(half_spans(new, Side::New, right, theme, tokens));
             Line::from(spans)
         }
         RowRef::Line(row) => {
@@ -1290,15 +1350,13 @@ fn row_line(stream: &Stream, row: RowRef, width: usize, theme: &Theme) -> Line<'
                 |line: Option<u32>| line.map_or_else(|| "     ".to_owned(), |n| format!("{n:>5}"));
             let gutter = format!("{}{} ", number(row.old), number(row.new));
             let (sign, style, tint) = code_style(row.kind, theme);
-            let mut text = format!("{sign}{}", sanitize_terminal_text(&row.text));
-            if row.no_newline {
-                text.push_str("  [no newline at end of file]");
-            }
-            let room = width.saturating_sub(gutter.len());
-            Line::from(vec![
+            let room = width.saturating_sub(gutter.len() + 1);
+            let mut spans = vec![
                 Span::styled(gutter, theme.dim().patch(tint)),
-                Span::styled(fitted(&text, room), style.patch(tint)),
-            ])
+                Span::styled(sign.to_string(), style.patch(tint)),
+            ];
+            spans.extend(code_text(row, room, style, tint, tokens, theme));
+            Line::from(spans)
         }
     }
 }
@@ -1317,7 +1375,8 @@ fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
 
 /// Draw the sidebar and the stream, and the help overlay when it is open. Only the rows in the
 /// window are built. `mark` is the rows the open editor comments on. While it is set they are
-/// marked and no `[+]` is offered, since the mouse does nothing until the editor closes.
+/// marked and no `[+]` is offered, since the mouse does nothing until the editor closes. `syntax`
+/// holds the tokens of the files that were highlighted, and a file that is not in it draws plain.
 pub fn draw(
     frame: &mut Frame,
     view: &View,
@@ -1325,14 +1384,19 @@ pub fn draw(
     keymap: &Keymap,
     theme: &Theme,
     mark: Option<(usize, usize)>,
+    syntax: &Cache,
 ) {
     let areas = areas(frame.area());
     let cursor_style = Style::new().bg(theme.cursor);
     let height = usize::from(areas.stream.height);
     let width = usize::from(areas.stream.width);
     let lines = (view.scroll..view.scroll + height)
-        .filter_map(|row| view.stream.locate(diff, row))
-        .map(|row| row_line(&view.stream, row, width, theme))
+        .filter_map(|at| Some((at, view.stream.locate(diff, at)?)))
+        .map(|(at, row)| {
+            let file = diff.files.get(view.stream.file_at(at));
+            let tokens = file.and_then(|file| syntax.file(file.path.as_str()));
+            row_line(&view.stream, row, width, theme, tokens)
+        })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
     frame.render_widget(Paragraph::new(lines), areas.stream);
@@ -1572,6 +1636,7 @@ Binary files a/img.png and b/img.png differ
 
     fn diff_of(patch: &str) -> Diff {
         Diff {
+            rev: "HEAD".into(),
             files: parse(patch.as_bytes(), MAX_PATCH),
             spec: Spec::WorkTree,
             notices: Vec::new(),
@@ -1657,7 +1722,17 @@ Binary files a/img.png and b/img.png differ
         keymap: &Keymap,
     ) -> String {
         terminal
-            .draw(|frame| draw(frame, view, diff, keymap, &Theme::default(), None))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    view,
+                    diff,
+                    keymap,
+                    &Theme::default(),
+                    None,
+                    &Cache::default(),
+                );
+            })
             .unwrap();
         screen(terminal)
     }
@@ -1871,6 +1946,7 @@ Binary files a/img.png and b/img.png differ
                     &Keymap::default(),
                     &Theme::default(),
                     None,
+                    &Cache::default(),
                 );
             })
             .unwrap();
@@ -2478,6 +2554,7 @@ Binary files a/img.png and b/img.png differ
                     &Keymap::default(),
                     &theme,
                     Some((3, 4)),
+                    &Cache::default(),
                 );
             })
             .unwrap();
@@ -2509,6 +2586,7 @@ Binary files a/img.png and b/img.png differ
                     &Keymap::default(),
                     &Theme::default(),
                     None,
+                    &Cache::default(),
                 );
             })
             .unwrap();

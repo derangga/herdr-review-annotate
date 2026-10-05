@@ -49,6 +49,10 @@ herdr-review/
     send.rs            prompt format, target resolution, mark sent
     tui.rs             review pane: layout, render, actions
     keymap.rs          default keys, config.toml overrides, key parsing
+    theme.rs           colour roles, the Catppuccin flavors, the scope table for syntax colours
+    syntax.rs          tokens per line of a file, and the cache of the files on screen
+    view.rs            the stream of rows, the cursor, the sidebar, drawing
+    cards.rs           a thread as the lines of its box
     editor.rs          multi-line comment editor   (adapted from herdr-annotate)
     edit_keys.rs       editor key map              (copied)
     width.rs           display width helpers       (copied)
@@ -62,7 +66,10 @@ herdr-review/
 ```
 
 Dependencies: `ratatui` 0.30 (brings crossterm), `serde`, `serde_json`, `toml` (for the keymap file,
-section 7.1), `chrono` with the `clock` feature. On Unix, `signal-hook` for clean terminal restore. No `uuid`, `notify`, `tokio`, `similar`,
+section 7.1), `chrono` with the `clock` feature. On Unix, `signal-hook` for clean terminal restore. Behind
+the cargo feature `syntax`, which is on by default: `syntect` with `regex-fancy` and `default-syntaxes` and no
+default features, and `two-face` with `syntect-fancy` for TypeScript, TSX, TOML and the other grammars `bat`
+ships. Neither builds C code. `cargo build --no-default-features` leaves both out. No `uuid`, `notify`, `tokio`, `similar`,
 `rustix` or git library in v1. Lints and the release profile are copied from
 `herdr-annotate/rust/Cargo.toml`. `rust-version` is 1.89 or newer, for `std::fs::File::lock`.
 
@@ -382,6 +389,29 @@ How the layout behaves (built after M6):
   line and half, as `comment` does. Until the mouse has moved once, which tells the pane that Herdr delivers
   motion, the `[+]` is on the cursor's row instead, and a click elsewhere only moves the cursor. There is no
   drag to select a range.
+
+How syntax colours behave (built after M6, behind the `syntax` feature):
+
+- A code row is drawn token by token. `syntect` only splits a line into scopes. The colour of a token comes
+  from the theme: `SCOPES` in `theme.rs` maps a TextMate scope and everything under it to one of seven tokens
+  (comment, string, number, keyword, operator, function, type), and the theme has one colour for each, so the
+  colours follow the flavor. The innermost scope with an entry decides. Text between tokens is the theme's
+  text colour.
+- A token's colour replaces the green or red of an added or removed row. The sign keeps that colour, and the
+  tint stays behind the whole row.
+- The language comes from the file's name, then its extension. A file in a language `syntect` and `two-face`
+  do not know is drawn as before, each row in the colour of its kind.
+- A file is highlighted against its whole text, so a row inside a block comment or a multi-line string is
+  coloured as one. The new side is read from the work tree. The old side is `git show <rev>:<path>`, with the
+  old path of a renamed file, where `rev` is what the diff was taken against and `Diff` keeps. A side with no
+  row of its own is not read: context rows use the new side.
+- A row takes the tokens of its line only when that line of the file still reads as the row does. A file
+  edited after the diff was loaded draws the rows that moved plain until the next reload.
+- A side that cannot be read, is not UTF-8, or is over 1 MiB is highlighted hunk by hunk instead, each hunk
+  as a snippet of its rows on that side. A snippet cannot know it starts inside a comment or a string.
+- A file is highlighted when one of its rows first comes into the window, before the frame is drawn, and its
+  tokens are kept until the diff is loaded again. Only the tokens of the lines the diff shows are kept.
+- A build without the feature knows no language, reads nothing, and draws every row as before.
 
 How the cards behave (built in M5):
 
@@ -786,7 +816,7 @@ Records:
 | `Meta` | `root`, `spec`, `target: Option<Target>`, `review_pane: Option<PaneId>` |
 | `Target` | `pane: PaneId`, `terminal: TerminalId`, `agent: String` |
 | `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
-| `Diff` | `files`, `spec`, `notices` (cap reached, base missing, and so on) |
+| `Diff` | `files`, `rev` (what the working tree was compared against), `spec`, `notices` (cap reached, base missing, and so on) |
 | `Keymap` | Key to `Action`, plus `warnings` |
 | `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |
 | `Env` | Every `HERDR_*` and `REVIEW_*` value, read once in `main.rs` |
@@ -968,6 +998,8 @@ This is the only stream in the program. It merges two sources.
     -> apply Action to the app state       R: per action, see the next graphs
   -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
     -> read from offset, fold, reload diff
+  -> highlight the files on screen         R: git, repo dir   E: unreadable, not UTF-8, over 1 MiB -> escape, hunk snippets
+                                                              E: unknown language -> escape, plain rows
   -> draw                                  R: term
 ```
 
@@ -1049,6 +1081,7 @@ Each `E:` line above is one test, and each test swaps only the parameters listed
 | `open` | recording `herdr`, `Env` literal | No context JSON, review pane already open, stale review pane, no agent |
 | Load diff | fixture `git` | Every row of section 4.2, and a failed reload keeps the old diff |
 | TUI loop | `TestBackend`, key list, temp `dir` | A write from another process appears, a failed save keeps the editor text, termination with a draft saves it |
+| Highlight | recording `git`, temp repo dir | A side that cannot be read falls back to its hunks, so does one over 1 MiB, an unknown extension reads nothing |
 | Send | recording `herdr`, temp `dir` | Each `Refusal`, a stale pane id falls through to the list, `Ambiguous`, `sent` not recorded still reports success |
 
 If a test needs a real `git`, a real Herdr or a real terminal to exercise one of these graphs, the

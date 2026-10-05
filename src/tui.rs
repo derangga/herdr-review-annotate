@@ -38,6 +38,7 @@ use crate::store::{
     Anchor, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning, WriteError,
     log_len, read,
 };
+use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
 use crate::view::{View, areas, draw, editor_rect, popup_block};
@@ -165,6 +166,8 @@ pub struct App {
     repo: Option<PathBuf>,
     pub keymap: Keymap,
     pub theme: Theme,
+    /// The syntax tokens of the files that have been on screen since the diff was loaded.
+    pub syntax: Cache,
     pub root: Option<RepoRoot>,
     dir: Option<PathBuf>,
     pub meta: Meta,
@@ -207,6 +210,7 @@ impl App {
             repo,
             keymap,
             theme,
+            syntax: Cache::default(),
             root: None,
             dir: None,
             meta: Meta::default(),
@@ -283,6 +287,7 @@ impl App {
         };
         self.view.rebuild(&diff, &self.review, spot, &look);
         self.diff = Some(diff);
+        self.syntax.clear();
         Ok(())
     }
 
@@ -298,6 +303,19 @@ impl App {
                 now: &now,
             };
             self.view.rebuild(diff, &self.review, spot, &look);
+        }
+    }
+
+    /// Highlight the files that have a row on screen and were not highlighted yet. It runs before
+    /// each frame, so a file is read when it scrolls into view and not before.
+    pub fn highlight(&mut self, git: &mut Git) {
+        let (Some(diff), Some(root)) = (&self.diff, &self.root) else {
+            return;
+        };
+        for file in self.view.visible_files() {
+            if let Some(file) = diff.files.get(file) {
+                self.syntax.ensure(root.path(), &diff.rev, file, git);
+            }
         }
     }
 
@@ -899,7 +917,15 @@ pub fn render(frame: &mut Frame, app: &App) {
             };
             if let Some(diff) = &app.diff {
                 let rows = mark.flatten();
-                draw(frame, &app.view, diff, &app.keymap, &app.theme, rows);
+                draw(
+                    frame,
+                    &app.view,
+                    diff,
+                    &app.keymap,
+                    &app.theme,
+                    rows,
+                    &app.syntax,
+                );
             }
             if let (Some(compose), Some(rows)) = (&app.compose, mark) {
                 draw_compose(frame, app, compose, rows);
@@ -1035,6 +1061,7 @@ pub fn run_loop<B: Backend>(
         if let Ok(size) = terminal.size() {
             app.resize(Rect::new(0, 0, size.width, size.height));
         }
+        app.highlight(git);
         if terminal.draw(|frame| render(frame, app)).is_err() {
             app.save_draft();
             return Exit::Io;
@@ -2958,6 +2985,53 @@ diff --git a/b.rs b/b.rs
             ],
         );
         assert!(app.compose.is_some());
+    }
+
+    #[test]
+    fn a_code_row_is_drawn_in_token_colours_over_its_tint_once_its_file_is_highlighted() {
+        let fixture = Fixture::new("syntax");
+        let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-let n = 41;\n+let n = 42;\n";
+        std::fs::write(fixture.root.join("a.rs"), "let n = 42;\n").unwrap();
+        let mut app = opened(&fixture, patch);
+        // The stream starts at column 20, and the text of a unified row 12 cells further.
+        let (keyword, number) = ((32, 3), (40, 3));
+        let (rows, buffer) = drawn(&mut app, 80);
+        assert!(rows[3].trim_end().ends_with("+let n = 42;"), "{}", rows[3]);
+        // Before the file is highlighted the row is one colour, the green of an added row.
+        assert_eq!(buffer[keyword].fg, app.theme.added);
+        assert_eq!(buffer[number].fg, app.theme.added);
+        fixture.with_git(|git| app.highlight(git));
+        let (after, buffer) = drawn(&mut app, 80);
+        assert_eq!(after, rows, "highlighting changes colours and no character");
+        let highlighted = cfg!(feature = "syntax");
+        let expect = |token, plain| if highlighted { token } else { plain };
+        assert_eq!(
+            buffer[keyword].fg,
+            expect(app.theme.keyword, app.theme.added)
+        );
+        assert_eq!(buffer[number].fg, expect(app.theme.number, app.theme.added));
+        // The sign keeps the colour of its kind, and the tint stays behind all of it.
+        assert_eq!(buffer[(31, 3)].fg, app.theme.added);
+        for x in [31, 32, 40, 70] {
+            assert_eq!(buffer[(x, 3)].bg, app.theme.added_bg, "column {x}");
+        }
+        // The removed row comes from the old side, which this git cannot show: its hunk is
+        // highlighted as a snippet.
+        assert_eq!(
+            buffer[(40, 2)].fg,
+            expect(app.theme.number, app.theme.removed)
+        );
+        assert_eq!(buffer[(40, 2)].bg, app.theme.removed_bg);
+        // Side by side, the new half starts after the 32 column sidebar and the 49 column old half.
+        let (rows, buffer) = drawn(&mut app, 130);
+        let column = rows[2].chars().position(|c| c == '+').unwrap();
+        let at = (u16::try_from(column).unwrap() + 2, 2);
+        assert_eq!(buffer[at].symbol(), "l");
+        assert_eq!(buffer[at].fg, expect(app.theme.keyword, app.theme.added));
+        assert_eq!(buffer[at].bg, app.theme.added_bg);
+        // A reload forgets the tokens, since the files may read differently.
+        press(&fixture, &mut app, [key('R')]);
+        assert!(app.syntax.file("a.rs").is_none());
     }
 
     #[test]
