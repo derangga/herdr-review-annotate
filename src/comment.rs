@@ -20,6 +20,8 @@ pub enum CommandError {
     UnknownId { id: String, open: Vec<CommentId> },
     /// The text on stdin cannot be a comment body.
     InvalidBody(String),
+    /// One entry of a batch is wrong, or the batch as a whole when `index` is `None`.
+    InvalidBatch { index: Option<usize>, why: String },
 }
 
 impl fmt::Display for CommandError {
@@ -33,6 +35,11 @@ impl fmt::Display for CommandError {
                 write!(f, "unknown id {id}, open threads: {}", open.join(" "))
             }
             Self::InvalidBody(why) => f.write_str(why),
+            Self::InvalidBatch {
+                index: Some(index),
+                why,
+            } => write!(f, "comments[{index}]: {why}"),
+            Self::InvalidBatch { index: None, why } => write!(f, "invalid batch: {why}"),
         }
     }
 }

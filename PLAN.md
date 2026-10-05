@@ -41,6 +41,8 @@ herdr-review/
     store.rs           event log: lock, append, read, fold
     meta.rs            meta.json: load, locked save, find the state directory
     diff.rs            git runner, unified diff parser, anchor matching
+    agent.rs           the agent name for a `comment` command
+    apply.rs           `comment apply`: decode, check, read the anchored lines, append
     cli.rs             arguments into a Command, a Command into output and an exit code
     comment.rs         what the `comment` subcommands read and print
     env.rs             Env: the process variables, read once in main.rs
@@ -213,6 +215,10 @@ herdr-review comment reopen  [--repo <root>] <id>
 - Exit codes: 0 done, 1 failed and worth retrying later (busy, disk, git), 2 the request is wrong
   (usage, unknown id, not allowed, invalid batch).
 - Everything the `comment` subcommands write is authored by an agent. The user writes through the TUI.
+- `side` defaults to `new` when a `line` is given. `end_line` equal to `line` is a one-line comment. A
+  file comment (`path` only) is not checked against the worktree, so a deleted file can be commented.
+  An old-side line is read at `HEAD`, or at the merge base for the branch spec, under the path the
+  agent gives. A renamed file therefore needs its old path.
 - Agent name: `--name` wins. Otherwise the CLI runs `herdr agent list` and takes the `agent` field of
   the entry whose `pane_id` is `$HERDR_PANE_ID`, or else of the single entry whose `cwd` matches the
   current directory, and writes `agent:<name>`. Outside Herdr, or with no single match, it writes

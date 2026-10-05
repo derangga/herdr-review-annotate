@@ -3,18 +3,20 @@
 //! Every error is matched once, in `Failure::output` (PLAN.md section 12.6).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::agent::author;
+use crate::apply::{ApplyError, append, decode, read_lines};
 use crate::comment::{
     AuthorFilter, CommandError, Filter, StatusFilter, list, render_json, render_text, reopen,
     reply, resolve,
 };
 use crate::diff::{GitError, RepoRoot};
 use crate::env::Env;
-use crate::meta::locate;
-use crate::store::{Author, StoreError, Warning, WriteError};
+use crate::meta::{load, locate};
+use crate::store::{Spec, StoreError, Warning, WriteError};
 
 pub const USAGE: &str = "usage:
   herdr-review tui    [--repo <root>]
@@ -306,6 +308,21 @@ impl From<WriteError<CommandError>> for Failure {
     }
 }
 
+impl From<ApplyError> for Failure {
+    fn from(error: ApplyError) -> Self {
+        match error {
+            ApplyError::Invalid(error) => Self::Command(error),
+            ApplyError::Git(error) => Self::Git(error),
+        }
+    }
+}
+
+impl From<CommandError> for Failure {
+    fn from(error: CommandError) -> Self {
+        Self::Command(error)
+    }
+}
+
 impl From<StoreError> for Failure {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
@@ -330,8 +347,19 @@ fn read_text(stdin: &mut impl Read) -> Result<String, Failure> {
         .map_err(|_| Failure::Command(CommandError::InvalidBody("stdin is not valid UTF-8".into())))
 }
 
-fn author(name: Option<&String>) -> Author {
-    Author::Agent(name.cloned())
+/// `herdr notification show "N review comments from <name>"`. A failure is ignored.
+fn notify(
+    count: usize,
+    by: &crate::store::Author,
+    mut herdr: impl FnMut(&[String]) -> Result<String, String>,
+) {
+    let from = match by {
+        crate::store::Author::Agent(Some(name)) => name.as_str(),
+        _ => "an agent",
+    };
+    let noun = if count == 1 { "comment" } else { "comments" };
+    let title = format!("{count} review {noun} from {from}");
+    let _ = herdr(&["notification".to_owned(), "show".to_owned(), title]);
 }
 
 fn comment(
@@ -339,14 +367,18 @@ fn comment(
     action: &CommentAction,
     env: &Env,
     now: &str,
-    git: impl FnMut(&[String]) -> Result<String, GitError>,
+    mut git: impl FnMut(&[String]) -> Result<String, GitError>,
+    mut herdr: impl FnMut(&[String]) -> Result<String, String>,
     mut stdin: impl Read,
 ) -> Result<Output, Failure> {
-    let root = RepoRoot::resolve(repo, &env.cwd, git)?;
+    let root = RepoRoot::resolve(repo, &env.cwd, &mut git)?;
     let base = env.state_base().ok_or(Failure::NoStateDir)?;
     let dir = locate(&base, root.path());
-    let printed = |id: Option<crate::store::CommentId>| Output {
-        stdout: id.map(|id| format!("{id}\n")).unwrap_or_default(),
+    let printed = |ids: &[crate::store::CommentId]| Output {
+        stdout: ids.iter().fold(String::new(), |mut out, id| {
+            let _ = writeln!(out, "{id}");
+            out
+        }),
         ..Output::default()
     };
     match action {
@@ -365,42 +397,51 @@ fn comment(
         }
         CommentAction::Reply { name, id } => {
             let text = read_text(&mut stdin)?;
-            Ok(printed(Some(reply(
-                &dir,
-                now,
-                &author(name.as_ref()),
-                id,
-                &text,
-            )?)))
+            let by = author(name.as_deref(), env, &mut herdr);
+            Ok(printed(&[reply(&dir, now, &by, id, &text)?]))
         }
         CommentAction::Resolve { name, id } => {
             let text = read_text(&mut stdin)?;
-            Ok(printed(resolve(
-                &dir,
-                now,
-                &author(name.as_ref()),
-                id,
-                &text,
-            )?))
+            let by = author(name.as_deref(), env, &mut herdr);
+            Ok(printed(
+                &resolve(&dir, now, &by, id, &text)?
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            ))
         }
         CommentAction::Reopen { id } => {
-            reopen(&dir, now, &author(None), id)?;
-            Ok(printed(None))
+            let by = author(None, env, &mut herdr);
+            reopen(&dir, now, &by, id)?;
+            Ok(printed(&[]))
         }
-        CommentAction::Apply { .. } => Err(Failure::Usage(Usage("not implemented yet".into()))),
+        CommentAction::Apply { name } => {
+            let comments = decode(&read_text(&mut stdin)?)?;
+            let (meta, warning) = load(&dir);
+            let spec = meta.spec.unwrap_or(Spec::WorkTree);
+            let ready = read_lines(comments, root.path(), &spec, &mut git)?;
+            let by = author(name.as_deref(), env, &mut herdr);
+            let ids = append(&dir, now, &by, &spec, ready)?;
+            notify(ids.len(), &by, &mut herdr);
+            Ok(Output {
+                stderr: warnings(warning),
+                ..printed(&ids)
+            })
+        }
     }
 }
 
-/// Run a `comment` command. `git` answers every `git` call and `stdin` holds the text or batch.
+/// Run a `comment` command. `git` and `herdr` answer every call to those tools, and `stdin`
+/// holds the text or the batch.
 pub fn run_comment(
     repo: Option<&Path>,
     action: &CommentAction,
     env: &Env,
     now: &str,
     git: impl FnMut(&[String]) -> Result<String, GitError>,
+    herdr: impl FnMut(&[String]) -> Result<String, String>,
     stdin: impl Read,
 ) -> Output {
-    comment(repo, action, env, now, git, stdin).unwrap_or_else(|failure| failure.output())
+    comment(repo, action, env, now, git, herdr, stdin).unwrap_or_else(|failure| failure.output())
 }
 
 #[cfg(test)]
@@ -533,13 +574,24 @@ mod tests {
         );
     }
 
-    use crate::store::{Add, CommentId, Event, Kind, RelPath, Side, Spec, read, state_dir, write};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
-    /// A repository root, a state directory under a temp `HOME`, and a `git` that names the root.
+    use crate::store::{
+        Add, Author, CommentId, Event, Kind, RelPath, Side, Spec, read, state_dir, write,
+    };
+
+    /// A repository root, a state directory under a temp `HOME`, a `git` that names the root and
+    /// serves `old` files, and a `herdr` that records its calls.
     struct Fixture {
         env: Env,
         root: PathBuf,
         dir: PathBuf,
+        /// `git show` arguments (`HEAD:a.rs`) and the file text they print.
+        old: BTreeMap<String, String>,
+        /// The answer to `herdr agent list`.
+        agents: Result<String, String>,
+        herdr_calls: RefCell<Vec<String>>,
     }
 
     impl Fixture {
@@ -557,7 +609,47 @@ mod tests {
                 "/work".into(),
             );
             let dir = state_dir(&env.state_base().unwrap(), &root);
-            Self { env, root, dir }
+            Self {
+                env,
+                root,
+                dir,
+                old: BTreeMap::new(),
+                agents: Err("herdr is not running".into()),
+                herdr_calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// Write a worktree file.
+        fn file(&self, path: &str, text: &str) {
+            let path = self.root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        fn git(&self, args: &[String]) -> Result<String, GitError> {
+            let failed = || GitError::Failed {
+                args: args.join(" "),
+                stderr: "fatal".into(),
+            };
+            match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [_, _, "rev-parse", ..] => Ok(format!("{}\n", self.root.display())),
+                [_, _, "merge-base", ..] => Ok("abc123\n".into()),
+                [_, _, "show", spec] => self.old.get(*spec).cloned().ok_or_else(failed),
+                _ => Err(failed()),
+            }
+        }
+
+        fn herdr(&self, args: &[String]) -> Result<String, String> {
+            self.herdr_calls.borrow_mut().push(args.join(" "));
+            match args.first().map(String::as_str) {
+                Some("agent") => self.agents.clone(),
+                _ => self.agents.clone().map(|_| String::new()),
+            }
         }
 
         /// Run a command line with `stdin` and a fixed clock.
@@ -565,13 +657,13 @@ mod tests {
             let Ok(Command::Comment { repo, action }) = parse(&args(line)) else {
                 panic!("not a comment command: {line}");
             };
-            let git = |_: &[String]| Ok(format!("{}\n", self.root.display()));
             run_comment(
                 repo.as_deref(),
                 &action,
                 &self.env,
                 "2026-10-04T00:00:00Z",
-                git,
+                |args| self.git(args),
+                |args| self.herdr(args),
                 stdin,
             )
         }
@@ -618,6 +710,7 @@ mod tests {
             &env,
             "t",
             |_| Err(GitError::NotARepo),
+            |_| Err(String::new()),
             &b""[..],
         );
         assert_eq!(
@@ -782,5 +875,328 @@ mod tests {
             fixture.run("comment reply u1 -", at_limit.as_bytes()).code,
             0
         );
+    }
+
+    fn batch(entries: &[&str]) -> String {
+        format!(r#"{{"comments":[{}]}}"#, entries.join(","))
+    }
+
+    const LINE: &str = r#"{"path":"src/a.rs","side":"new","line":2,"body":"rename"}"#;
+
+    fn with_source(name: &str) -> Fixture {
+        let fixture = Fixture::new(name);
+        fixture.seed(1);
+        fixture.file("src/a.rs", "one\r\ntwo\r\nthree\n");
+        fixture
+    }
+
+    #[test]
+    fn a_batch_is_written_with_the_line_text_the_cli_read() {
+        let mut fixture = with_source("apply");
+        fixture
+            .old
+            .insert("HEAD:src/a.rs".into(), "was one\nwas two\n".into());
+        let input = batch(&[
+            LINE,
+            r#"{"path":"src/a.rs","line":1,"end_line":3,"body":"range"}"#,
+            r#"{"path":"src/a.rs","body":"whole file"}"#,
+            r#"{"path":"src/a.rs","side":"old","line":2,"body":"old side"}"#,
+            r#"{"reply_to":"u1","body":"a reply"}"#,
+        ]);
+        let output = fixture.run("comment apply --stdin", input.as_bytes());
+        assert_eq!(
+            (output.code, output.stdout.as_str(), output.stderr.as_str()),
+            (0, "a1\na2\na3\na4\na5\n", "")
+        );
+        let review = read(&fixture.dir).unwrap();
+        let anchors = review
+            .threads
+            .iter()
+            .skip(1)
+            .map(|t| t.anchor.clone())
+            .collect::<Vec<_>>();
+        let path = RelPath::parse("src/a.rs").unwrap();
+        let line = |side, line, text: &str| crate::store::AnchorTarget::Line {
+            side,
+            line,
+            text: text.into(),
+        };
+        assert_eq!(anchors[0].target, line(Side::New, 2, "two"));
+        assert_eq!(
+            anchors[1].target,
+            crate::store::AnchorTarget::Range {
+                side: Side::New,
+                start: 1,
+                end: 3,
+                text: "one".into()
+            }
+        );
+        assert_eq!(anchors[2].target, crate::store::AnchorTarget::File);
+        assert_eq!(anchors[3].target, line(Side::Old, 2, "was two"));
+        assert!(
+            anchors
+                .iter()
+                .all(|a| a.path == path && a.spec == Spec::WorkTree)
+        );
+        assert_eq!(review.threads[0].replies[0].id.as_str(), "a5");
+        assert_eq!(review.threads[1].root.author, Author::Agent(None));
+        // The lookup failed, so the batch says "an agent"; the notification is the last call.
+        assert_eq!(
+            fixture.herdr_calls.borrow().last().map(String::as_str),
+            Some("notification show 5 review comments from an agent")
+        );
+    }
+
+    #[test]
+    fn a_batch_ends_with_one_notification_naming_the_agent() {
+        let mut fixture = with_source("notify");
+        fixture.agents = Ok(
+            r#"{"result":{"agents":[{"pane_id":"w1:p2","agent":"claude","cwd":"/else"}]}}"#.into(),
+        );
+        fixture.env = Env::new(
+            [
+                (
+                    "HOME".to_owned(),
+                    fixture.env.get("HOME").unwrap().to_owned(),
+                ),
+                ("HERDR_PANE_ID".to_owned(), "w1:p2".to_owned()),
+            ],
+            "/work".into(),
+        );
+        let input = batch(&[LINE, r#"{"path":"src/a.rs","body":"two"}"#]);
+        assert_eq!(
+            fixture.run("comment apply --stdin", input.as_bytes()).code,
+            0
+        );
+        assert_eq!(
+            fixture.herdr_calls.into_inner(),
+            [
+                "agent list",
+                "notification show 2 review comments from claude"
+            ]
+        );
+        let review = read(&fixture.dir).unwrap();
+        assert_eq!(
+            review.threads[1].root.author,
+            Author::Agent(Some("claude".into()))
+        );
+    }
+
+    #[test]
+    fn one_comment_reads_as_a_singular_and_the_name_flag_skips_the_lookup() {
+        let fixture = with_source("single");
+        let output = fixture.run(
+            "comment apply --stdin --name codex",
+            batch(&[LINE]).as_bytes(),
+        );
+        assert_eq!(output.code, 0);
+        assert_eq!(
+            fixture.herdr_calls.into_inner(),
+            ["notification show 1 review comment from codex"]
+        );
+    }
+
+    #[test]
+    fn a_failing_herdr_still_exits_0_and_labels_the_author_agent() {
+        let fixture = with_source("herdr-down");
+        let output = fixture.run("comment apply --stdin", batch(&[LINE]).as_bytes());
+        assert_eq!((output.code, output.stderr.as_str()), (0, ""));
+        assert_eq!(
+            read(&fixture.dir).unwrap().threads[1].root.author,
+            Author::Agent(None)
+        );
+    }
+
+    #[test]
+    fn each_bad_entry_rejects_the_whole_batch_with_its_index_and_writes_nothing() {
+        let fixture = with_source("invalid");
+        let before = fixture.log();
+        let huge = format!(
+            r#"{{"path":"src/a.rs","body":"{}"}}"#,
+            "x".repeat(crate::comment::MAX_BODY + 1)
+        );
+        let cases: Vec<(String, &str)> = vec![
+            (
+                r#"{"path":"src/a.rs","line":4,"body":"x"}"#.into(),
+                "line 4 is past the end of src/a.rs (3 lines)",
+            ),
+            (
+                r#"{"path":"src/a.rs","line":1,"end_line":9,"body":"x"}"#.into(),
+                "line 9 is past the end",
+            ),
+            (
+                r#"{"path":"/etc/passwd","body":"x"}"#.into(),
+                "relative to the repository",
+            ),
+            (
+                r#"{"path":"../x.rs","body":"x"}"#.into(),
+                "relative to the repository",
+            ),
+            (
+                r#"{"path":"a/../../x.rs","body":"x"}"#.into(),
+                "relative to the repository",
+            ),
+            (
+                r#"{"path":"src/a.rs","body":"  \n"}"#.into(),
+                "the text is empty",
+            ),
+            (huge, "limit is 16384"),
+            (
+                r#"{"path":"src/a.rs","line":0,"body":"x"}"#.into(),
+                "line must be 1 or more",
+            ),
+            (
+                r#"{"path":"src/a.rs","line":-1,"body":"x"}"#.into(),
+                "invalid value",
+            ),
+            (
+                r#"{"path":"src/a.rs","line":3,"end_line":2,"body":"x"}"#.into(),
+                "end_line is before line",
+            ),
+            (
+                r#"{"path":"src/a.rs","side":"old","body":"x"}"#.into(),
+                "need a line",
+            ),
+            (
+                r#"{"path":"src/a.rs","side":"left","line":1,"body":"x"}"#.into(),
+                "unknown variant",
+            ),
+            (
+                r#"{"path":"src/a.rs","line":1,"body":"x","tag":1}"#.into(),
+                "unknown field",
+            ),
+            (r#"{"body":"x"}"#.into(), "path is missing"),
+            (r#"{"path":"src/a.rs"}"#.into(), "missing field"),
+            (
+                r#"{"reply_to":"u1","path":"src/a.rs","body":"x"}"#.into(),
+                "only reply_to and body",
+            ),
+            (
+                r#"{"reply_to":"zz9","body":"x"}"#.into(),
+                "reply_to zz9 is not a thread, open threads: u1",
+            ),
+            (
+                r#"{"path":"src/missing.rs","line":1,"body":"x"}"#.into(),
+                "cannot read src/missing.rs",
+            ),
+            (
+                r#"{"path":"src/a.rs","side":"old","line":1,"body":"x"}"#.into(),
+                "src/a.rs does not exist in HEAD",
+            ),
+        ];
+        for (entry, why) in cases {
+            let input = batch(&[LINE, &entry, LINE]);
+            let output = fixture.run("comment apply --stdin", input.as_bytes());
+            assert_eq!(output.code, 2, "{why}: {}", output.stderr);
+            assert!(
+                output.stderr.starts_with("comments[1]: "),
+                "{why}: {}",
+                output.stderr
+            );
+            assert!(output.stderr.contains(why), "{why}: {}", output.stderr);
+            assert_eq!(
+                output.stderr.matches('\n').count(),
+                1,
+                "one line: {}",
+                output.stderr
+            );
+            assert_eq!(fixture.log(), before, "{why}");
+        }
+        assert!(
+            fixture
+                .herdr_calls
+                .borrow()
+                .iter()
+                .all(|call| !call.starts_with("notification"))
+        );
+    }
+
+    #[test]
+    fn a_bad_batch_as_a_whole_exits_2_without_an_index() {
+        let fixture = with_source("bad-batch");
+        let before = fixture.log();
+        let too_many = batch(&vec![LINE; crate::apply::MAX_BATCH + 1]);
+        for (input, why) in [
+            ("not json".to_owned(), "stdin is not JSON"),
+            ("{}".to_owned(), "expected {\"comments\""),
+            (r#"{"comments":{}}"#.to_owned(), "expected {\"comments\""),
+            (batch(&[]), "holds no comments"),
+            (too_many, "holds 201 comments, the limit is 200"),
+        ] {
+            let output = fixture.run("comment apply --stdin", input.as_bytes());
+            assert_eq!(output.code, 2, "{why}");
+            assert!(
+                output.stderr.starts_with("invalid batch: ") && output.stderr.contains(why),
+                "{}",
+                output.stderr
+            );
+        }
+        assert_eq!(fixture.run("comment apply --stdin", &[0xff]).code, 2);
+        assert_eq!(fixture.log(), before);
+        assert_eq!(
+            fixture
+                .run(
+                    "comment apply --stdin",
+                    batch(&vec![LINE; crate::apply::MAX_BATCH]).as_bytes()
+                )
+                .code,
+            0
+        );
+    }
+
+    #[test]
+    fn the_branch_spec_reads_the_old_side_at_the_merge_base_and_records_the_spec() {
+        use crate::meta::save;
+        let mut fixture = with_source("branch");
+        let spec = Spec::Branch {
+            base: "main".into(),
+        };
+        save(&fixture.dir, &fixture.root, |meta| {
+            meta.spec = Some(spec.clone());
+        })
+        .unwrap();
+        fixture
+            .old
+            .insert("abc123:src/a.rs".into(), "base one\n".into());
+        let old = r#"{"path":"src/a.rs","side":"old","line":1,"body":"x"}"#;
+        let output = fixture.run("comment apply --stdin", batch(&[old]).as_bytes());
+        assert_eq!((output.code, output.stderr.as_str()), (0, ""));
+        let review = read(&fixture.dir).unwrap();
+        assert_eq!(review.threads[1].anchor.spec, spec);
+        assert_eq!(
+            review.threads[1].anchor.target,
+            crate::store::AnchorTarget::Line {
+                side: Side::Old,
+                line: 1,
+                text: "base one".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_meta_is_a_warning_and_the_batch_still_lands() {
+        let fixture = with_source("meta-bad");
+        std::fs::create_dir_all(&fixture.dir).unwrap();
+        std::fs::write(fixture.dir.join("meta.json"), "{broken").unwrap();
+        let output = fixture.run("comment apply --stdin", batch(&[LINE]).as_bytes());
+        assert_eq!(output.code, 0);
+        assert_eq!(
+            output.stderr,
+            "warning: meta.json is unreadable and was reset\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_git_on_the_old_side_exits_1() {
+        let root = std::env::temp_dir();
+        let comments = decode(&batch(&[
+            r#"{"path":"a.rs","side":"old","line":1,"body":"x"}"#,
+        ]))
+        .unwrap();
+        let error = read_lines(comments, &root, &Spec::WorkTree, |_| {
+            Err(GitError::NotInstalled)
+        })
+        .unwrap_err();
+        assert_eq!(Failure::from(error).output().code, 1);
     }
 }

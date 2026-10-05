@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use herdr_review::cli::{Command, Failure, Output, parse, run_comment};
 use herdr_review::diff::run_git;
 use herdr_review::env::Env;
+use herdr_review::herdr::run_herdr_output;
 use herdr_review::{open, spike, tui};
 
 #[allow(
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
                 &env,
                 &now,
                 run_git,
+                run_herdr_output,
                 std::io::stdin(),
             );
             finish(&output)
