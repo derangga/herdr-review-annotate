@@ -463,12 +463,16 @@ mod tests {
 
     #[test]
     fn no_other_module_names_a_colour() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for entry in std::fs::read_dir(src).unwrap() {
-            let path = entry.unwrap().path();
-            if path.file_name().unwrap() != "theme.rs" {
-                let text = std::fs::read_to_string(&path).unwrap();
-                assert!(!text.contains("Color::"), "{}", path.display());
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.file_name().unwrap() != "theme.rs" {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains("Color::"), "{}", path.display());
+                }
             }
         }
     }
