@@ -539,11 +539,11 @@ How archive behaves (built after M6):
 - `archive` takes every resolved thread except the ones still marked `[new]`, so an agent's resolve the
   user has not looked at stays. A resolved thread that was never sent goes too.
 - It asks first, in a box like the quit prompt: `archive 3 resolved threads (1 never sent)?`, then
-  `[a] archive` and `[esc] stay`. The part in brackets is there only when some were never sent. These two
+  `[y] yes` and `[n] no`. The part in brackets is there only when some were never sent. These two
   keys are not remappable, and any other key leaves the question open. The numbers are counted from the
   review when the box is drawn.
 - With nothing to archive the status line says `nothing to archive` and no box opens.
-- After `a` the status line says `archived 3`, with the number the store moved, and the pane reads the log
+- After `y` the status line says `archived 3`, with the number the store moved, and the pane reads the log
   again. The threads are gone from the pane, from the unsent count and from the agent's `comment list`.
   A busy review or a failed write is a failure on the status line, and the threads stay.
 - There is no viewer, no unarchive and no agent command for it. Only the user archives.

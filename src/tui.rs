@@ -41,7 +41,7 @@ use crate::store::{
 use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
-use crate::view::{View, areas, draw, editor_rect, popup_block, sidebar_open};
+use crate::view::{View, areas, draw, editor_rect, key_style, popup_block, sidebar_open};
 use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -596,8 +596,8 @@ impl App {
             (Some(Prompt::Quit), KeyCode::Char('s')) => self.request(Scope::Unsent, true),
             (Some(Prompt::Quit), KeyCode::Char('k')) => self.quit = true,
             (Some(Prompt::Quit), KeyCode::Esc | KeyCode::Char('n'))
-            | (Some(Prompt::Archive), KeyCode::Esc) => {}
-            (Some(Prompt::Archive), KeyCode::Char('a')) => self.run_archive(),
+            | (Some(Prompt::Archive), KeyCode::Esc | KeyCode::Char('n')) => {}
+            (Some(Prompt::Archive), KeyCode::Char('y')) => self.run_archive(),
             (
                 Some(Prompt::Pick {
                     found,
@@ -1121,15 +1121,20 @@ fn draw_compose(frame: &mut Frame, app: &App, compose: &Compose, rows: Option<(u
 fn draw_prompt(frame: &mut Frame, prompt: &Prompt, app: &App) {
     let theme = &app.theme;
     let plural = |n: usize| if n == 1 { "" } else { "s" };
+    // A choice: its key in `style`, then what it does.
+    let choice = |key: &'static str, what: &'static str, style: Style| {
+        Line::from(vec![Span::styled(key, style), Span::raw(what)])
+    };
+    let accent = key_style(theme);
     let (title, lines) = match prompt {
         Prompt::Quit => {
             let unsent = app.unsent();
             (
                 format!(" {unsent} unsent comment{} ", plural(unsent)),
                 vec![
-                    Line::from("[s] send, then quit"),
-                    Line::from("[k] quit and keep them unsent"),
-                    Line::from("[esc] stay"),
+                    choice("[s]", " send, then quit", accent),
+                    choice("[k]", " quit and keep them unsent", accent),
+                    choice("[esc]", " stay", accent),
                 ],
             )
         }
@@ -1145,7 +1150,10 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, app: &App) {
                     " archive {threads} resolved thread{}{never_sent}? ",
                     plural(threads)
                 ),
-                vec![Line::from("[a] archive"), Line::from("[esc] stay")],
+                vec![
+                    choice("[y]", " yes", accent.fg(theme.success)),
+                    choice("[n]", " no", accent.fg(theme.removed)),
+                ],
             )
         }
         Prompt::Pick {
@@ -1181,7 +1189,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, app: &App) {
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(popup_block(theme).title(title))
+            .block(popup_block(theme, title))
             .style(Style::new().bg(theme.popup)),
         popup,
     );
@@ -3477,11 +3485,16 @@ diff --git a/b.rs b/b.rs
             screen.contains(" archive 2 resolved threads (1 never sent)? "),
             "{screen}"
         );
-        assert!(screen.contains("[a] archive") && screen.contains("[esc] stay"));
+        assert!(screen.contains("[y] yes") && screen.contains("[n] no"));
         press(&fixture, &mut app, [key('x')]);
         assert!(app.prompt.is_some(), "an unrelated key answers nothing");
-        assert_eq!(log_of(&fixture, "archive.jsonl"), "");
         press(&fixture, &mut app, [key('a')]);
+        assert!(app.prompt.is_some(), "the old key answers nothing");
+        assert_eq!(log_of(&fixture, "archive.jsonl"), "");
+        press(&fixture, &mut app, [key('n')]);
+        assert_eq!(app.prompt, None, "n stays");
+        assert_eq!(log_of(&fixture, "archive.jsonl"), "");
+        press(&fixture, &mut app, [key('A'), key('y')]);
         assert_eq!(app.prompt, None);
         assert_eq!(app.status, Some((Tone::Notice, "archived 2".to_owned())));
         // The open thread stays, and so does the one whose resolve is still new.
@@ -3496,6 +3509,34 @@ diff --git a/b.rs b/b.rs
         assert!(!moved.contains("\"id\":\"u3\"") && !moved.contains("\"id\":\"u4\""));
         let left = log_of(&fixture, "review.jsonl");
         assert!(!left.contains("\"id\":\"u1\"") && !left.contains("\"id\":\"u2\""));
+    }
+
+    #[test]
+    fn prompts_draw_an_accent_box_with_bold_keys_and_a_green_yes_and_red_no() {
+        let (fixture, mut app) = with_resolved_threads("archive-colours");
+        press(&fixture, &mut app, [key('A')]);
+        let mut terminal = terminal();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cell_of = |text: &str| {
+            let screen = buffer
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            // Every symbol here is one char, so a char count is a cell index.
+            let at = screen.find(text).unwrap();
+            buffer.content[screen[..at].chars().count()].clone()
+        };
+        let theme = &app.theme;
+        assert_eq!(cell_of("┌").fg, theme.accent);
+        assert_eq!(cell_of("archive 2").fg, theme.accent);
+        let yes = cell_of("[y]");
+        assert_eq!(yes.fg, theme.success);
+        assert!(yes.modifier.contains(Modifier::BOLD));
+        let no = cell_of("[n]");
+        assert_eq!(no.fg, theme.removed);
+        assert!(no.modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -3534,7 +3575,7 @@ diff --git a/b.rs b/b.rs
         assert!(screen_of(&app).contains("nothing to archive"));
         // A resolve that is still new is not something to archive either.
         let (fixture, mut app) = with_resolved_threads("archive-new-only");
-        press(&fixture, &mut app, [key('A'), key('a'), key('A')]);
+        press(&fixture, &mut app, [key('A'), key('y'), key('A')]);
         assert_eq!(app.prompt, None);
         assert_eq!(app.status, said);
         assert_eq!(thread_ids(&app), ["u3", "u4"]);
@@ -3543,7 +3584,7 @@ diff --git a/b.rs b/b.rs
     #[test]
     fn a_comment_written_after_an_archive_takes_the_next_id_also_after_a_restart() {
         let (fixture, mut app) = with_resolved_threads("archive-ids");
-        press(&fixture, &mut app, [key('A'), key('a')]);
+        press(&fixture, &mut app, [key('A'), key('y')]);
         // The cursor is on the file header, which a comment may point at.
         press(&fixture, &mut app, [key('c'), key('x'), ctrl_s()]);
         assert_eq!(thread_ids(&app), ["u3", "u4", "u5"]);
@@ -3561,7 +3602,7 @@ diff --git a/b.rs b/b.rs
         let (fixture, mut app) = with_resolved_threads("archive-busy");
         let before = log_of(&fixture, "review.jsonl");
         let held = crate::store::lock(&fixture.dir()).unwrap();
-        press(&fixture, &mut app, [key('A'), key('a')]);
+        press(&fixture, &mut app, [key('A'), key('y')]);
         drop(held);
         let said = Some((Tone::Failure, "review is busy, press again".to_owned()));
         assert_eq!(app.status, said);

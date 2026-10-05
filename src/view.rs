@@ -1625,9 +1625,16 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff, theme: 
     }
 }
 
-/// The border of the help overlay and the prompts.
-pub fn popup_block(theme: &Theme) -> Block<'static> {
-    Block::bordered().border_style(Style::new().fg(theme.border))
+/// The box of the help overlay and the prompts: an accent border and a bold accent `title`.
+pub fn popup_block(theme: &Theme, title: String) -> Block<'static> {
+    Block::bordered()
+        .border_style(Style::new().fg(theme.accent))
+        .title(Line::styled(title, key_style(theme)))
+}
+
+/// What a key is drawn in, in every popup.
+pub fn key_style(theme: &Theme) -> Style {
+    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
 
 /// Every action with its current keys, drawn from the effective keymap.
@@ -1645,17 +1652,19 @@ fn draw_help(frame: &mut Frame, keymap: &Keymap, theme: &Theme) {
     let lines = Action::ALL
         .iter()
         .map(|action| {
-            Line::from(format!(
-                "{:<16} {}",
-                sanitize_terminal_text(&keymap.label(*action)),
-                action.describe()
-            ))
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<16}", sanitize_terminal_text(&keymap.label(*action))),
+                    key_style(theme),
+                ),
+                Span::raw(format!(" {}", action.describe())),
+            ])
         })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(popup_block(theme).title(" keys, any key closes "))
+            .block(popup_block(theme, " keys, any key closes ".to_owned()))
             .style(Style::new().bg(theme.popup)),
         popup,
     );
