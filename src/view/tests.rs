@@ -136,8 +136,7 @@ fn render(
 }
 
 fn fresh(view: &View, diff: &Diff) -> String {
-    let mut terminal =
-        Terminal::new(TestBackend::new(view.area.width, view.area.height)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(view.area.width, view.area.height)).unwrap();
     render(&mut terminal, view, diff, &Keymap::default())
 }
 
@@ -163,8 +162,8 @@ fn the_stream_numbers_every_row_of_every_file() {
     assert_eq!(
         kinds,
         [
-            "file", "hunk", "line", "line", "line", "line", "hunk", "line", "line", "line",
-            "file", "hunk", "line", "line", "file", "note"
+            "file", "hunk", "line", "line", "line", "line", "hunk", "line", "line", "line", "file",
+            "hunk", "line", "line", "file", "note"
         ]
     );
     assert!(view.stream.locate(&diff, 16).is_none());
@@ -705,9 +704,7 @@ fn a_reload_puts_the_cursor_back_on_its_row_in_the_same_file() {
     let smaller = diff_of(&PATCH.replace("@@ -10,2 +10,3 @@\n a10\n+a11\n a12\n", ""));
     view.rebuild(&smaller, &Review::default(), anchor, &Look::test());
     assert_eq!(view.cursor, 8);
-    assert!(
-        matches!(view.stream.locate(&smaller, 8), Some(RowRef::Line(row)) if row.text == "b1")
-    );
+    assert!(matches!(view.stream.locate(&smaller, 8), Some(RowRef::Line(row)) if row.text == "b1"));
     // The file is gone: the cursor stays on the nearest row that exists.
     let anchor = view.spot(&smaller);
     view.rebuild(&diff_of(""), &Review::default(), anchor, &Look::test());
@@ -1207,8 +1204,7 @@ fn a_narrow_pane_stays_unified_without_gap_rows() {
     assert_eq!(
         kinds_of(&view, &diff),
         [
-            "file", "hunk", "c3", "old4", "old5", "new4", "c6", "c7", "hunk", "c20", "add21",
-            "c22"
+            "file", "hunk", "c3", "old4", "old5", "new4", "c6", "c7", "hunk", "c20", "add21", "c22"
         ]
     );
 }

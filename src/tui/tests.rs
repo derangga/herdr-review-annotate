@@ -13,8 +13,7 @@ use crate::store::{
     Add, AnchorTarget, Author, CommentId, Event as LogEvent, Kind, RelPath, Side, state_dir,
 };
 
-const PATCH: &[u8] =
-    b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+const PATCH: &[u8] = b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 
 /// The Herdr the pane talks to in a test: the agents it lists, and every call it got.
 #[derive(Default)]
@@ -156,9 +155,7 @@ impl Fixture {
             }
             ["rev-parse", "--show-toplevel"] => Err(GitError::NotARepo),
             ["merge-base", ..] if self.merge_base_missing.get() => Err(failed()),
-            ["rev-parse", "--verify", "--quiet", name]
-                if self.no_refs.get() && *name != "HEAD" =>
-            {
+            ["rev-parse", "--verify", "--quiet", name] if self.no_refs.get() && *name != "HEAD" => {
                 Err(failed())
             }
             ["rev-parse" | "merge-base", ..] => Ok(b"abc\n".to_vec()),
@@ -733,10 +730,7 @@ impl Backend for Resizing {
         self.inner.clear()
     }
 
-    fn clear_region(
-        &mut self,
-        clear_type: ratatui::backend::ClearType,
-    ) -> Result<(), Self::Error> {
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> Result<(), Self::Error> {
         self.inner.clear_region(clear_type)
     }
 
@@ -912,9 +906,8 @@ fn a_panic_in_the_loop_restores_the_terminal_once() {
     let restored = Cell::new(0);
     let result = catch_unwind(AssertUnwindSafe(|| {
         let _guard = Guard(Some(|| restored.set(restored.get() + 1)));
-        fixture.with_git(|git| {
-            run_loop(&mut app, &mut terminal(), git, |_| panic!("boom"), || false)
-        })
+        fixture
+            .with_git(|git| run_loop(&mut app, &mut terminal(), git, |_| panic!("boom"), || false))
     }));
     assert!(result.is_err());
     assert_eq!(restored.get(), 1);
@@ -1289,11 +1282,7 @@ fn drawn(app: &mut App, width: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     drawn_tall(app, width, 12)
 }
 
-fn drawn_tall(
-    app: &mut App,
-    width: u16,
-    height: u16,
-) -> (Vec<String>, ratatui::buffer::Buffer) {
+fn drawn_tall(app: &mut App, width: u16, height: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     app.resize(Rect::new(0, 0, width, height));
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| render(frame, app)).unwrap();
@@ -1461,7 +1450,9 @@ fn a_termination_signal_with_a_draft_writes_one_comment_at_the_captured_anchor()
         if tick == 5 {
             let agent_event = thread_event("a1", agent(), "from the agent");
             write_log(&fixture, &[agent_event]);
-            *patch.borrow_mut() = b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1,2 @@\n+first\n new\n".to_vec();
+            *patch.borrow_mut() =
+                b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1,2 @@\n+first\n new\n"
+                    .to_vec();
         }
     });
     assert_eq!(exit, Exit::Terminated);
@@ -1794,8 +1785,7 @@ fn editing_the_commented_line_tags_the_thread_outdated_and_committing_moves_it_t
     );
     // The line is edited in an editor, and R reloads.
     *fixture.patch.borrow_mut() =
-        b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+edited\n"
-            .to_vec();
+        b"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+edited\n".to_vec();
     press(&fixture, &mut app, [key('R')]);
     let screen = screen_of(&app);
     assert!(screen.contains("a.rs R1 [outdated]"), "{screen}");
@@ -1982,8 +1972,7 @@ fn quitting_with_send_delivers_first_and_a_refusal_keeps_the_pane_open() {
     press(&fixture, &mut app, [key('q'), key('s')]);
     assert!(app.quit);
     assert_eq!(fixture.prompts().len(), 1);
-    let (fixture, mut app) =
-        two_user_threads("quit-refused", &[("w1:p1", "term_1", "blocked")]);
+    let (fixture, mut app) = two_user_threads("quit-refused", &[("w1:p1", "term_1", "blocked")]);
     press(&fixture, &mut app, [key('q'), key('s')]);
     assert!(!app.quit, "the comments were not delivered");
     assert!(app.message().unwrap().contains("waiting on a prompt"));
@@ -2657,7 +2646,8 @@ fn a_code_row_is_drawn_in_token_colours_over_its_tint_once_its_file_is_highlight
 }
 
 #[cfg(feature = "syntax")]
-const A_RS: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-let n = 41;\n+let n = 42;\n";
+const A_RS: &str =
+    "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-let n = 41;\n+let n = 42;\n";
 
 #[cfg(feature = "syntax")]
 /// A pane on `A_RS` with `a.rs` highlighted once, which asks `git show` for its old side.
