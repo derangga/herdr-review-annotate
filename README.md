@@ -206,4 +206,4 @@ cargo test
 cargo clippy --all-targets
 ```
 
-`PLAN.md` is the design, `docs/adr/` has the decisions, and `CONTEXT.md` defines the terms.
+`DESIGN.md` indexes the design in `design/`, `docs/adr/` has the decisions, and `CONTEXT.md` defines the terms.

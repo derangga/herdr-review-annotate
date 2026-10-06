@@ -1,4 +1,4 @@
-//! The pane's keys: the defaults from PLAN.md section 7 and the `[keys]` table of `config.toml`.
+//! The pane's keys: the defaults from design/tui.md and the `[keys]` table of `config.toml`.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -42,7 +42,7 @@ pub enum Action {
 }
 
 impl Action {
-    /// In the order of the table in PLAN.md section 7, which is the order of the help overlay.
+    /// In the order of the table in design/tui.md, which is the order of the help overlay.
     pub const ALL: [Self; 27] = [
         Self::Up,
         Self::Down,

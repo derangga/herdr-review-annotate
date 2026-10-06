@@ -181,7 +181,7 @@ fn is_session_id(id: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// The transcript file of `agent`'s session (PLAN.md 13.2).
+/// The transcript file of `agent`'s session (design/message-review.md, finding the message).
 pub fn find_transcript(agent: &MessageAgent, env: &Env) -> Result<PathBuf, MessageError> {
     if agent.name != "claude" {
         return Err(MessageError::Unsupported(agent.name.clone()));
@@ -261,7 +261,7 @@ fn text_blocks(line: &str) -> Vec<(String, String)> {
 }
 
 /// The newest message of the transcript at `path`: every text block of the last message id that
-/// has text, in file order, joined by a blank line (PLAN.md 13.2).
+/// has text, in file order, joined by a blank line (design/message-review.md, finding the message).
 pub fn read_message(path: &Path) -> Result<AgentMessage, MessageError> {
     let bytes = std::fs::read(path).map_err(|error| MessageError::Io {
         path: path.to_owned(),
@@ -312,7 +312,7 @@ pub fn read_pointer(path: &Path) -> Option<PaneId> {
 /// Longest quote of a range in a prompt. A longer one shows its first lines and a count.
 const QUOTE_LINES: usize = 6;
 
-/// The prompt that sends `comments` on the message `lines` back to the agent (PLAN.md 13.5).
+/// The prompt that sends `comments` on the message `lines` back to the agent (design/message-review.md, prompt).
 ///
 /// Comments go in line order, and in the order they were written when they start on the same
 /// line. The quote only has to locate the comment, since the agent has the whole message in its

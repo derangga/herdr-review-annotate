@@ -29,4 +29,4 @@ it", which the next message already says.
 - A send cannot be repeated. The pane closes when Herdr accepts the prompt.
 - The prompt carries no ids and no commands, so the skill does not change.
 - The pane writes one file, the pointer to its own pane id that lets a second key press focus it
-  (PLAN.md section 13.3).
+  (design/message-review.md, command line and manifest).

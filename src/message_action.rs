@@ -1,5 +1,5 @@
 //! The `message` action: put the message pane to the right of the agent pane, or focus the one
-//! that is open (PLAN.md 13.3 and 13.7).
+//! that is open (design/message-review.md, command line and graphs).
 
 use std::process::ExitCode;
 

@@ -44,7 +44,7 @@ fn terminal_id(agent_get: &Result<String, String>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The arguments of `herdr plugin pane open` for the review pane (PLAN.md section 5, `open` step 4).
+/// The arguments of `herdr plugin pane open` for the review pane (design/cli.md, `open` step 4).
 fn pane_open_args(root: &str, pane: Option<&str>, terminal: Option<&str>) -> Vec<String> {
     let mut args = [
         "plugin",
@@ -118,7 +118,7 @@ pub enum Opened {
 }
 
 /// Open the review pane for the repository of the action's pane or the current directory, or focus
-/// the one that is open (PLAN.md section 5, `open`, and the graph in 12.4).
+/// the one that is open (design/cli.md, `open`, and design/graphs/commands.md).
 ///
 /// The agent is the focused pane when it hosts an agent, else `$HERDR_PANE_ID` when Herdr accepts
 /// it, else whatever target resolution finds. With none, or several, the pane opens without one

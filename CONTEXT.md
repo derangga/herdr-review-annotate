@@ -1,6 +1,6 @@
 # Context: herdr-review
 
-Glossary only. Decisions are in `docs/adr/`, the build plan is in `PLAN.md`.
+Glossary only. Decisions are in `docs/adr/`, the design is in `DESIGN.md`.
 
 | Term | Meaning |
 |---|---|

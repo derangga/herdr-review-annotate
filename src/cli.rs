@@ -1,6 +1,6 @@
 //! The command line: arguments into a `Command`, a `Command` into output and an exit code.
 //!
-//! Every error is matched once, in `Failure::output` (PLAN.md section 12.6).
+//! Every error is matched once, in `Failure::output` (design/errors.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
@@ -211,7 +211,7 @@ fn parse_comment(args: &[String]) -> Result<Command, Usage> {
     Ok(Command::Comment { repo, action })
 }
 
-/// Text only arrives on stdin, so no shell substitution in it can run (PLAN.md section 5).
+/// Text only arrives on stdin, so no shell substitution in it can run (design/cli.md).
 fn require_stdin_dash(what: &str, text: &str) -> Result<(), Usage> {
     if text == "-" {
         Ok(())

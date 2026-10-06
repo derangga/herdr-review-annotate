@@ -1,7 +1,7 @@
 //! The message pane: the agent's newest message as Markdown lines the user can comment on.
 //!
 //! The pane takes its terminal and its input as parameters, as the review pane does, so tests
-//! drive it with a `TestBackend` and a list of events (PLAN.md 13.4 and 13.7).
+//! drive it with a `TestBackend` and a list of events (design/message-review.md, pane and graphs).
 
 use std::io;
 use std::ops::Range;

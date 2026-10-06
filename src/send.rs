@@ -82,7 +82,7 @@ fn entry(thread: &Thread) -> String {
 }
 
 /// The prompt for `threads`: the instructions with the commands to answer, then one entry per
-/// thread (PLAN.md section 6.1). `bin` and `root` are quoted for a POSIX shell.
+/// thread (design/send.md, prompt). `bin` and `root` are quoted for a POSIX shell.
 pub fn format(threads: &[&Thread], bin: &Path, root: &Path) -> String {
     let bin = quote(&bin.to_string_lossy());
     let root = quote(&root.to_string_lossy());
@@ -198,7 +198,7 @@ fn one_of(found: &[&Seen]) -> Option<Result<Target, TargetError>> {
     }
 }
 
-/// The agent a send goes to (PLAN.md section 6.2, ADR 0006): the pane the review was opened beside,
+/// The agent a send goes to (design/send.md, target resolution, ADR 0006): the pane the review was opened beside,
 /// the one saved in `meta`, then a search by terminal id and by working directory.
 pub fn resolve_target(
     env: &Env,
@@ -367,7 +367,7 @@ pub enum Scope {
     Thread(CommentId),
 }
 
-/// Deliver the threads `scope` names to the target agent as one prompt (PLAN.md section 6.3), then
+/// Deliver the threads `scope` names to the target agent as one prompt (design/send.md, steps), then
 /// record the send.
 ///
 /// Nothing is retried. A second `herdr agent prompt` after an unclear failure could deliver the
