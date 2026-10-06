@@ -169,7 +169,11 @@ fn side_tokens(
             .map_or(text.len(), |(at, _)| at + 1);
         let prefix = text.get(..end).unwrap_or(text);
         let mut lines = highlight(prefix, language);
-        let source = prefix.split('\n').collect::<Vec<_>>();
+        // `row.text` has no `\r`, so the source lines must not have one either.
+        let source = prefix
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .collect::<Vec<_>>();
         for row in file.hunks.iter().flat_map(|hunk| &hunk.rows) {
             let Some(line) = row.line(side).filter(|_| side_of(row) == side) else {
                 continue;
@@ -399,6 +403,30 @@ mod engine_tests {
             [Token::String]
         );
         // The whole line is covered, to its last byte.
+        let line = tokens.line(Side::New, 2).unwrap();
+        assert_eq!(line[0].0, 0.." still a comment".len());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_file_with_crlf_line_endings_is_coloured_like_one_with_lf() {
+        let crlf = |text: &str| text.replace('\n', "\r\n");
+        // Git puts the `\r` on the content rows only, not on the headers.
+        let patch = String::from_utf8(PATCH.to_vec()).unwrap();
+        let patch = patch
+            .replace("comment\n", "comment\r\n")
+            .replace("b\n", "b\r\n");
+        let file = parse(patch.as_bytes(), MAX_PATCH).remove(0);
+        let root = root("crlf", Some(&crlf(NEW)));
+        let mut cache = Cache::default();
+        cache.ensure(&root, "HEAD", &file, &mut |_| Ok(crlf(OLD).into_bytes()));
+        let tokens = cache.file("app.js").unwrap();
+        for side in [Side::New, Side::Old] {
+            let comment = tokens.line(side, 2).unwrap();
+            assert_eq!(tokens_of(comment), [Token::Comment], "{side:?}");
+            assert_eq!(tokens_of(tokens.line(side, 5).unwrap()), [Token::String]);
+        }
+        // The span stops before the carriage return.
         let line = tokens.line(Side::New, 2).unwrap();
         assert_eq!(line[0].0, 0.." still a comment".len());
         let _ = std::fs::remove_dir_all(root);
