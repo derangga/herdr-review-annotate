@@ -174,7 +174,10 @@ pub fn open(
 
 /// The `open` action's edge: a failure is a notification and exit 1, because an action has no
 /// terminal.
-fn report(result: &Result<Opened, String>, mut notify: impl FnMut(&str, Option<&str>)) -> ExitCode {
+pub(crate) fn report(
+    result: &Result<Opened, String>,
+    mut notify: impl FnMut(&str, Option<&str>),
+) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(message) => {

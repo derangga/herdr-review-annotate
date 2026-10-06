@@ -46,7 +46,7 @@ use crate::view::{View, areas, draw, editor_rect, key_style, note_box, popup_blo
 use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
-const TICK: Duration = Duration::from_millis(250);
+pub(crate) const TICK: Duration = Duration::from_millis(250);
 
 /// `git` as the pane sees it: the arguments in, the stdout bytes out.
 pub type Git<'a> = dyn FnMut(&[String]) -> Result<Vec<u8>, GitError> + 'a;
@@ -109,7 +109,7 @@ impl HerdrCall {
         Self(Box::new(call))
     }
 
-    fn call(&mut self, args: &[String]) -> Result<String, String> {
+    pub(crate) fn call(&mut self, args: &[String]) -> Result<String, String> {
         (self.0)(args)
     }
 }
@@ -1038,7 +1038,7 @@ impl App {
     /// from the left.
     fn status_line(&self, width: usize) -> Line<'static> {
         let theme = &self.theme;
-        let mut spans = match &self.status {
+        let spans = match &self.status {
             Some((tone, text)) => {
                 let colour = match tone {
                     Tone::Notice => theme.warning,
@@ -1053,10 +1053,6 @@ impl App {
             None if self.view.select.is_some() => self.visual_state(),
             None => self.state(),
         };
-        let used = spans
-            .iter()
-            .map(|span| string_width(&span.content))
-            .sum::<usize>();
         let label = |action| self.keymap.label(action);
         let keys = if self.view.select.is_some() {
             vec![
@@ -1069,35 +1065,70 @@ impl App {
                 .map(|(action, what)| (label(*action), *what))
                 .collect()
         };
-        let keys = keys
-            .into_iter()
-            .map(|(key, what)| {
-                let key = sanitize_terminal_text(&key);
-                (string_width(&key) + 1 + what.len(), key, what)
-            })
-            .collect::<Vec<_>>();
-        let room = width.saturating_sub(used + 2);
-        let fits = |from: usize| {
-            let shown = keys.iter().skip(from);
-            shown.clone().map(|key| key.0).sum::<usize>() + 2 * shown.count().saturating_sub(1)
-                <= room
-        };
-        let Some(from) = (0..keys.len()).find(|from| fits(*from)) else {
-            return Line::from(spans);
-        };
-        let keys_width = keys.iter().skip(from).map(|key| key.0).sum::<usize>()
-            + 2 * (keys.len() - from).saturating_sub(1);
-        spans.push(" ".repeat(width - used - keys_width).into());
-        for (at, (_, key, what)) in keys.into_iter().enumerate().skip(from) {
-            if at > from {
-                spans.push("  ".into());
-            }
-            let bold = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
-            spans.push(Span::styled(key, bold));
-            spans.push(Span::styled(format!(" {what}"), theme.dim()));
-        }
-        Line::from(spans)
+        status_bar(spans, keys, width, theme)
     }
+}
+
+/// A status line `width` cells wide: `spans` on the left and `keys`, each a key and what it does,
+/// against the right edge. Keys that do not fit beside the left part drop off from the left.
+pub(crate) fn status_bar(
+    mut spans: Vec<Span<'static>>,
+    keys: Vec<(String, &str)>,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let used = spans
+        .iter()
+        .map(|span| string_width(&span.content))
+        .sum::<usize>();
+    let keys = keys
+        .into_iter()
+        .map(|(key, what)| {
+            let key = sanitize_terminal_text(&key);
+            (string_width(&key) + 1 + what.len(), key, what)
+        })
+        .collect::<Vec<_>>();
+    let room = width.saturating_sub(used + 2);
+    let fits = |from: usize| {
+        let shown = keys.iter().skip(from);
+        shown.clone().map(|key| key.0).sum::<usize>() + 2 * shown.count().saturating_sub(1) <= room
+    };
+    let Some(from) = (0..keys.len()).find(|from| fits(*from)) else {
+        return Line::from(spans);
+    };
+    let keys_width = keys.iter().skip(from).map(|key| key.0).sum::<usize>()
+        + 2 * (keys.len() - from).saturating_sub(1);
+    spans.push(" ".repeat(width - used - keys_width).into());
+    for (at, (_, key, what)) in keys.into_iter().enumerate().skip(from) {
+        if at > from {
+            spans.push("  ".into());
+        }
+        let bold = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+        spans.push(Span::styled(key, bold));
+        spans.push(Span::styled(format!(" {what}"), theme.dim()));
+    }
+    Line::from(spans)
+}
+
+/// The text of a screen that has nothing else to show, with the keys that still work under it.
+pub(crate) fn draw_notice(
+    frame: &mut Frame,
+    area: Rect,
+    text: &str,
+    keymap: &Keymap,
+    theme: &Theme,
+) {
+    let hint = format!(
+        "{} reload, {} quit",
+        keymap.label(Action::Reload),
+        keymap.label(Action::Quit)
+    );
+    let text = Text::from(vec![
+        Line::from(sanitize_terminal_text(text)),
+        Line::default(),
+        Line::styled(hint, theme.dim()),
+    ]);
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
 /// Draw the pane. Every string that came from the store or from `git` passes through
@@ -1110,19 +1141,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
     match &app.screen {
-        Screen::Message(message) => {
-            let hint = format!(
-                "{} reload, {} quit",
-                app.keymap.label(Action::Reload),
-                app.keymap.label(Action::Quit)
-            );
-            let text = Text::from(vec![
-                Line::from(sanitize_terminal_text(message)),
-                Line::default(),
-                Line::styled(hint, app.theme.dim()),
-            ]);
-            frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
-        }
+        Screen::Message(message) => draw_notice(frame, body, message, &app.keymap, &app.theme),
         Screen::Review => {
             // The rows a new comment points at, marked while its editor is open.
             let mark = match (&app.compose, &app.diff) {
@@ -1273,6 +1292,16 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, app: &App) {
                 .collect(),
         ),
     };
+    draw_popup(frame, theme, title, lines);
+}
+
+/// `lines` in a box over the middle of the pane, under `title` on its top border.
+pub(crate) fn draw_popup(
+    frame: &mut Frame,
+    theme: &Theme,
+    title: String,
+    lines: Vec<Line<'static>>,
+) {
     let area = frame.area();
     // Wide enough for the title between the corners, and no narrower than 44.
     let wanted = u16::try_from(string_width(&title) + 2).unwrap_or(u16::MAX);
@@ -1370,7 +1399,7 @@ pub fn run_loop<B: Backend>(
 }
 
 /// Runs `restore` once when dropped, also while a panic unwinds.
-struct Guard<F: FnMut()>(Option<F>);
+pub(crate) struct Guard<F: FnMut()>(pub(crate) Option<F>);
 
 impl<F: FnMut()> Drop for Guard<F> {
     fn drop(&mut self) {
@@ -1381,7 +1410,7 @@ impl<F: FnMut()> Drop for Guard<F> {
 }
 
 /// Raw mode off, main screen back, cursor shown, mouse and focus reports off.
-fn restore_terminal() {
+pub(crate) fn restore_terminal() {
     let _ = execute!(
         io::stdout(),
         DisableMouseCapture,
@@ -1394,7 +1423,7 @@ fn restore_terminal() {
 
 /// Restore the terminal before the panic message prints, so it is not drawn on the alternate
 /// screen and lost.
-fn restoring_panic_hook(restore: fn()) {
+pub(crate) fn restoring_panic_hook(restore: fn()) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
@@ -1402,7 +1431,7 @@ fn restoring_panic_hook(restore: fn()) {
     }));
 }
 
-fn enter_terminal() -> io::Result<()> {
+pub(crate) fn enter_terminal() -> io::Result<()> {
     enable_raw_mode()?;
     execute!(
         io::stdout(),

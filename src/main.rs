@@ -7,7 +7,7 @@ use herdr_review::cli::{Command, Failure, Output, parse, run_comment};
 use herdr_review::diff::run_git;
 use herdr_review::env::Env;
 use herdr_review::herdr::run_herdr_output;
-use herdr_review::{open, send, tui};
+use herdr_review::{message_action, message_tui, open, send, tui};
 
 #[allow(
     clippy::print_stdout,
@@ -31,6 +31,8 @@ fn main() -> ExitCode {
         Ok(Command::Open { repo, base }) => open::run(&env, repo.as_deref(), base.as_deref()),
         Ok(Command::Tui { repo }) => tui::run(&env, repo.as_deref()),
         Ok(Command::Send { repo, all_open }) => send::run(&env, repo.as_deref(), all_open),
+        Ok(Command::Message) => message_action::run(&env),
+        Ok(Command::MessageTui) => message_tui::run(&env),
         Ok(Command::Comment { repo, action }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             let output = run_comment(

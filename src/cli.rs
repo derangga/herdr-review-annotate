@@ -22,6 +22,8 @@ pub const USAGE: &str = "usage:
   herdr-review tui    [--repo <root>]
   herdr-review open   [--repo <root>] [--base <ref>]
   herdr-review send   [--repo <root>] [--all-open]
+  herdr-review message
+  herdr-review message-tui
   herdr-review comment apply   [--repo <root>] [--name <agent>] --stdin
   herdr-review comment list    [--repo <root>] [--status open|resolved] [--author user|agent] [--json]
   herdr-review comment reply   [--repo <root>] [--name <agent>] <id> -
@@ -58,6 +60,8 @@ pub enum Command {
         repo: Option<PathBuf>,
         action: CommentAction,
     },
+    Message,
+    MessageTui,
 }
 
 /// Positional arguments, flags that take a value, and flags that do not.
@@ -246,6 +250,14 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             );
             no_arguments(parsed)?;
             Ok(Command::Send { repo, all_open })
+        }
+        "message" => {
+            no_arguments(split(rest, &[], &[])?)?;
+            Ok(Command::Message)
+        }
+        "message-tui" => {
+            no_arguments(split(rest, &[], &[])?)?;
+            Ok(Command::MessageTui)
         }
         "comment" => parse_comment(rest),
         other => Err(Usage(format!("unknown command '{other}'"))),
@@ -504,6 +516,9 @@ mod tests {
             })
         );
         assert!(parse(&args("send now")).is_err());
+        assert_eq!(parse(&args("message")), Ok(Command::Message));
+        assert!(parse(&args("message --repo /r")).is_err());
+        assert_eq!(parse(&args("message-tui")), Ok(Command::MessageTui));
         assert_eq!(
             comment_action("comment apply --stdin --name codex"),
             CommentAction::Apply {

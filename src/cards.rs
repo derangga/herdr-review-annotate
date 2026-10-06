@@ -63,23 +63,30 @@ pub fn ago(at: &str, now: &str) -> String {
     }
 }
 
-/// The keys on the bottom border of a box: reply for any thread, and edit and delete when the
-/// thread is the user's. Each is the action's first key, and an action with no key is left out.
-fn footer(keymap: &Keymap, own: bool) -> String {
-    let actions: &[(Action, &str)] = if own {
-        &[
-            (Action::Reply, "reply"),
-            (Action::Edit, "edit"),
-            (Action::Delete, "delete"),
-        ]
-    } else {
-        &[(Action::Reply, "reply")]
-    };
+/// The keys on the bottom border of a box: each is the action's first key, and an action with no
+/// key is left out.
+fn keys_of(keymap: &Keymap, actions: &[(Action, &str)]) -> String {
     let keys = actions
         .iter()
         .filter_map(|(action, what)| Some(format!("{} {what}", keymap.keys(*action).first()?)))
         .collect::<Vec<_>>();
     sanitize_terminal_text(&keys.join("  "))
+}
+
+/// The keys of a thread's box: reply for any thread, and edit and delete when it is the user's.
+fn footer(keymap: &Keymap, own: bool) -> String {
+    if own {
+        keys_of(
+            keymap,
+            &[
+                (Action::Reply, "reply"),
+                (Action::Edit, "edit"),
+                (Action::Delete, "delete"),
+            ],
+        )
+    } else {
+        keys_of(keymap, &[(Action::Reply, "reply")])
+    }
 }
 
 /// `text` cut into lines of at most `width` cells. It breaks at newlines, then after spaces, and
@@ -228,11 +235,42 @@ fn top(thread: &Thread, outdated: bool, width: usize, look: &Look, border: Style
         head.push(Span::styled(format!(" · {place}"), theme.dim()));
     }
     head.extend(badges);
-    let fill = width.saturating_sub(4 + cells(&head));
+    box_top(head, width, border)
+}
+
+/// The top border of a box `width` cells wide: `head` between the corners, then the rule.
+fn box_top(head: Vec<Span<'static>>, width: usize, border: Style) -> Line<'static> {
+    let used: usize = head.iter().map(|span| string_width(&span.content)).sum();
+    let fill = width.saturating_sub(4 + used);
     let mut line = vec![Span::styled("╭ ", border)];
     line.extend(head);
     line.push(Span::styled(format!(" {}╮", "─".repeat(fill)), border));
     Line::from(line)
+}
+
+/// One row inside a box: `text` in `style`, padded to `room` cells, between the sides.
+fn box_row(text: String, style: Style, room: usize, border: Style) -> Line<'static> {
+    let pad = " ".repeat(room.saturating_sub(string_width(&text)));
+    Line::from(vec![
+        Span::styled("│ ", border),
+        Span::styled(text, style),
+        Span::styled(format!("{pad} │"), border),
+    ])
+}
+
+/// The bottom border of a box `width` cells wide, naming `keys`.
+fn box_bottom(keys: &str, width: usize, border: Style, theme: &Theme) -> Line<'static> {
+    let keys = if keys.is_empty() {
+        String::new()
+    } else {
+        format!(" {keys} ")
+    };
+    let fill = width.saturating_sub(2 + string_width(&keys));
+    Line::from(vec![
+        Span::styled(format!("╰{}", "─".repeat(fill)), border),
+        Span::styled(keys, theme.dim()),
+        Span::styled("╯", border),
+    ])
 }
 
 /// The lines of one thread at `width` cells. A resolved thread is one line. An open thread is a
@@ -252,14 +290,7 @@ pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) ->
     let border = Style::new().fg(if own { theme.warning } else { theme.agent });
     // A side and a space at each end of a row.
     let room = width.saturating_sub(4).max(8);
-    let row = |text: String, style: Style| {
-        let pad = " ".repeat(room.saturating_sub(string_width(&text)));
-        Line::from(vec![
-            Span::styled("│ ", border),
-            Span::styled(text, style),
-            Span::styled(format!("{pad} │"), border),
-        ])
-    };
+    let row = |text: String, style: Style| box_row(text, style, room, border);
     let mut card = Card::default();
     card.push(top(thread, outdated, width, look, border), 0);
     // An empty row under the top border, as the editor has.
@@ -292,21 +323,45 @@ pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) ->
             card.push(row(format!("{lead}{text}"), Style::new()), owner);
         }
     }
-    let keys = footer(look.keymap, own);
-    let keys = if keys.is_empty() {
-        String::new()
-    } else {
-        format!(" {keys} ")
-    };
-    let fill = width.saturating_sub(2 + string_width(&keys));
     card.push(
-        Line::from(vec![
-            Span::styled(format!("╰{}", "─".repeat(fill)), border),
-            Span::styled(keys, theme.dim()),
-            Span::styled("╯", border),
-        ]),
+        box_bottom(&footer(look.keymap, own), width, border, theme),
         0,
     );
+    card
+}
+
+/// A message comment as a box `width` cells wide: who wrote it and which lines it covers, an empty
+/// row, the body wrapped, and the keys that act on it. `start` and `end` are 1-based and inclusive.
+pub fn message_note(
+    (start, end): (usize, usize),
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    keymap: &Keymap,
+) -> Card {
+    let border = Style::new().fg(theme.warning);
+    let room = width.saturating_sub(4).max(8);
+    let lines = if start == end {
+        format!("line {start}")
+    } else {
+        format!("lines {start}-{end}")
+    };
+    let head = vec![
+        Span::styled("● ", border),
+        Span::styled("Your note", border.add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {lines}"), theme.dim()),
+    ];
+    let mut card = Card::default();
+    card.push(box_top(head, width, border), 0);
+    card.push(box_row(String::new(), Style::new(), room, border), 0);
+    for text in wrap(&sanitize_terminal_text(body), room) {
+        card.push(box_row(text, Style::new(), room, border), 0);
+    }
+    let keys = keys_of(
+        keymap,
+        &[(Action::Edit, "edit"), (Action::Delete, "delete")],
+    );
+    card.push(box_bottom(&keys, width, border, theme), 0);
     card
 }
 
@@ -472,6 +527,31 @@ mod tests {
         thread.root.author = Author::Agent(None);
         let lines = boxed(&thread, MATCHED, 50);
         assert!(lines[0].starts_with("╭ ● agent · 10m · "), "{}", lines[0]);
+    }
+
+    #[test]
+    fn a_message_note_is_a_box_that_says_which_lines_it_covers() {
+        let look = Look::test();
+        let note = |range, body: &str, width| {
+            text(&message_note(range, body, width, look.theme, look.keymap))
+        };
+        let lines = note((12, 14), "why not keep both?", 40);
+        assert_eq!(lines.len(), 4);
+        assert!(
+            lines[0].starts_with("╭ ● Your note · lines 12-14 "),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].ends_with("╮"));
+        assert_eq!(lines[1], format!("│ {} │", " ".repeat(36)));
+        assert!(lines[2].starts_with("│ why not keep both?"), "{}", lines[2]);
+        assert!(lines[3].ends_with("e edit  d delete ╯"), "{}", lines[3]);
+        assert!(lines.iter().all(|line| string_width(line) == 40));
+        assert!(note((3, 3), "x", 40)[0].contains("Your note · line 3 "));
+        // A body wraps inside the box, and a long one makes it taller.
+        let wrapped = note((1, 1), &"word ".repeat(20), 30);
+        assert!(wrapped.len() > 4);
+        assert!(wrapped.iter().all(|line| string_width(line) == 30));
     }
 
     #[test]

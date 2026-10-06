@@ -20,3 +20,6 @@ Glossary only. Decisions are in `docs/adr/`, the build plan is in `PLAN.md`.
 | New | A marker on a thread an agent resolved that the user has not looked at yet. |
 | Target agent | The agent that receives a send for this review. |
 | Archive | Move resolved threads out of the review, into `archive.jsonl`. Only the user archives. A thread that is still new stays. |
+| Agent message | The text of the newest assistant message in the agent's Claude Code transcript: the text blocks of one message id. Not to be confused with a reply. |
+| Message review | The pane that shows an agent message as Markdown lines for the user to comment on. It has no threads and writes nothing to the review. |
+| Message comment | A user comment on a line or range of an agent message. It lives only in the message pane until it is sent or the pane closes. |

@@ -20,8 +20,20 @@ title = "Review: send comments to agent"
 contexts = ["pane"]
 command = ["./bin/herdr-review", "send"]
 
+[[actions]]
+id = "message"
+title = "Review: agent's last message"
+contexts = ["pane"]
+command = ["./bin/herdr-review", "message"]
+
 [[panes]]
 id = "tui"
 title = "Review"
 placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-review\" tui"]
+
+[[panes]]
+id = "message"
+title = "Message"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-review\" message-tui"]

@@ -2,7 +2,8 @@
 
 Review a diff in a [Herdr](https://github.com/herdrdev/herdr) pane, comment on lines, and send the
 comments to your coding agent. The agent replies and resolves threads from its own shell, and the pane
-picks the changes up live. The agent can also start a review of its own changes.
+picks the changes up live. The agent can also start a review of its own changes. A second pane does
+the same for the agent's last message, with no diff and no repository.
 
 Needs Herdr 0.9.1 or later, on macOS or Linux, and `git`. Claude Code is the agent v1 supports.
 
@@ -46,6 +47,17 @@ command = "review.send"
 description = "send review comments to the agent"
 ```
 
+To review the agent's last message too, add a third entry. `prefix+o` is the key herdr-annotate uses.
+Herdr runs one action per key, so remove that entry, or pick another key.
+
+```toml
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "review.message"
+description = "review the agent's last message"
+```
+
 Run `herdr config check`, then reload the config. `check` does not verify that the action exists, so a
 typo in `review.open` shows up only when you press the key.
 
@@ -67,6 +79,51 @@ your base branch. `herdr-review open --base <ref>` picks the base. Without it, t
 else `main`, else `master`.
 
 Review state lives outside the repository, keyed by the worktree root, so nothing lands in `git status`.
+
+## Review the agent's last message
+
+Use this when the agent just explained something and you want to answer it line by line. It reads the
+agent's Claude Code transcript, so it works in any folder, and it supports Claude Code only. In a pane
+that runs another agent, or none, the key shows a notification and opens nothing.
+
+1. Focus the pane where Claude Code runs and press `prefix+o`. A pane opens to its right with the
+   agent's newest message as Markdown source, one numbered row per line, wrapped to the width. Pressing
+   the key again focuses it. Text the agent wrote between tool calls belongs to earlier messages and is
+   not shown. If the agent is still working, the status line says `working` and the pane shows the
+   newest message so far. After `/clear` there is no message yet, and the notification says so.
+2. Move with `j` and `k`. A wrapped line is one stop. Press `c`, write the comment, and save it with
+   `ctrl+s`. For a range, press `v`, move or drag the mouse over the lines, then press `c`. The comment
+   is a box under the last line it covers. `e` edits and `d` deletes the comment under the cursor, and
+   `n` and `N` jump between comments.
+3. Press `S`. Every comment goes to the agent as one prompt, and the pane closes. The agent answers in
+   its next message, and `prefix+o` opens that one if you want to go on. If the agent is waiting on a
+   permission prompt, the send is refused, the pane stays, and the comments are kept.
+
+The prompt quotes each comment's lines, at most six, so the agent can find them:
+
+```
+Feedback on your last message. Address each point.
+
+- lines 12-14:
+  > ## Step 2: migrate the store
+  > Move events into the new file and drop the old one.
+  > The fold reads only the new file.
+  Why not keep the old file and read both?
+- line 30:
+  > Use a global lock.
+  Fine for now, add a ponytail note.
+```
+
+`R` loads the newest message again, and `q` leaves. Both ask first when there are comments. The comments
+live only in the pane: nothing is written to disk, and closing the pane without sending loses them.
+
+The pane reads the same `[keys]` table as the diff pane and acts on `up`, `down`, `page_up`,
+`page_down`, `prev_thread`, `next_thread`, `comment`, `select_range`, `edit`, `delete`, `send`,
+`reload`, `help` and `quit`. The other actions do nothing there, and `?` lists only these.
+
+To find the transcript the pane takes the session id from `herdr agent get`, then looks under
+`$CLAUDE_CONFIG_DIR`, `~/.claude` and every other `~/.claude*` directory. Herdr's own environment is
+not the agent's, so the scan is what finds sessions kept elsewhere, such as `~/.claude-work`.
 
 ## Keys
 

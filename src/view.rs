@@ -1630,7 +1630,7 @@ fn empty_message(spec: &Spec) -> String {
     }
 }
 
-fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
+pub(crate) fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
     let y = area.y + u16::try_from(row).unwrap_or(0);
     buffer.set_style(Rect::new(area.x, y, area.width, 1), style);
 }
@@ -1704,7 +1704,7 @@ pub fn draw(
         draw_sidebar(frame, sidebar, view, diff, theme);
     }
     if view.help {
-        draw_help(frame, keymap, theme);
+        draw_help(frame, keymap, theme, &Action::ALL);
     }
 }
 
@@ -1847,19 +1847,18 @@ pub fn key_style(theme: &Theme) -> Style {
     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
 
-/// Every action with its current keys, drawn from the effective keymap.
-fn draw_help(frame: &mut Frame, keymap: &Keymap, theme: &Theme) {
+/// `actions` with their current keys, drawn from the effective keymap.
+pub(crate) fn draw_help(frame: &mut Frame, keymap: &Keymap, theme: &Theme, actions: &[Action]) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(64);
-    let height =
-        (u16::try_from(Action::ALL.len()).unwrap_or(0) + 2).min(area.height.saturating_sub(2));
+    let height = (u16::try_from(actions.len()).unwrap_or(0) + 2).min(area.height.saturating_sub(2));
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
         width,
         height,
     );
-    let lines = Action::ALL
+    let lines = actions
         .iter()
         .map(|action| {
             Line::from(vec![

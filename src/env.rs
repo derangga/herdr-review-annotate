@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use crate::store::state_base;
 
-/// The `HERDR_*` and `REVIEW_*` variables, the two that locate the state directory, and the
-/// working directory.
+/// The `HERDR_*` and `REVIEW_*` variables, the two that locate the state directory, the one that
+/// locates Claude Code's config, and the working directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
     vars: BTreeMap<String, String>,
@@ -20,7 +20,10 @@ impl Env {
             .filter(|(name, _)| {
                 name.starts_with("HERDR_")
                     || name.starts_with("REVIEW_")
-                    || matches!(name.as_str(), "HOME" | "XDG_STATE_HOME")
+                    || matches!(
+                        name.as_str(),
+                        "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR"
+                    )
             })
             .collect();
         Self { vars, cwd }
@@ -67,10 +70,12 @@ mod tests {
             ("PATH", "/bin"),
             ("HERDR_PANE_ID", "w1:p1"),
             ("REVIEW_X", ""),
+            ("CLAUDE_CONFIG_DIR", "/c"),
         ]);
         assert_eq!(env.get("PATH"), None);
         assert_eq!(env.get("HERDR_PANE_ID"), Some("w1:p1"));
         assert_eq!(env.get("REVIEW_X"), None);
+        assert_eq!(env.get("CLAUDE_CONFIG_DIR"), Some("/c"));
         assert_eq!(env.herdr_and_review().count(), 2);
     }
 
