@@ -209,3 +209,7 @@ cargo clippy --all-targets
 ```
 
 `DESIGN.md` indexes the design in `design/`, `docs/adr/` has the decisions, and `CONTEXT.md` defines the terms.
+
+## License
+
+MIT. See `LICENSE`.
