@@ -145,6 +145,7 @@ effect.
 | `scroll_reset` | `0` | scroll back to the start of the lines |
 | `switch_panel` | `tab` | switch between sidebar and stream |
 | `toggle_sidebar` | `f` | show or hide the sidebar |
+| `filter` | `/` | narrow the sidebar to the files whose path matches what you type; `enter` keeps it, `esc` clears it |
 | `comment` | `c` | comment on the line, range or file |
 | `select_range` | `v` | select lines (visual mode) |
 | `reply` | `r` | reply to the thread |

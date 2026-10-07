@@ -26,7 +26,8 @@ switch_spec = ""                # unbound
 - The file is read once when the pane starts. The footer and the `help` overlay are drawn from the
   effective keymap, never from hard-coded text.
 - Keys inside the comment editor (cursor movement, save, cancel) are not in `[keys]`. They stay as
-  `edit_keys.rs` defines them.
+  `edit_keys.rs` defines them. The same goes for the keys of the sidebar's query (`enter`, `esc`,
+  `backspace`, `ctrl+u`). Only the key that opens it, `filter`, is in the table.
 - The agent CLI, `open` and `send` do not read the file.
 
 The same file chooses the pane's colours:

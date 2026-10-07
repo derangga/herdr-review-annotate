@@ -10,11 +10,13 @@ use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::cards::{Card, Look, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
@@ -31,6 +33,10 @@ const WHEEL_ROWS: usize = 3;
 
 /// Cells of code one press of a scroll key, or one notch of the sideways wheel, moves.
 const HSCROLL_COLS: usize = 8;
+
+/// Rows at the top of the sidebar the filter's box takes, drawn whether or not there is a filter: its
+/// two borders and the line of the query.
+const FILTER_BOX: u16 = 3;
 
 /// Cells a unified row spends before its code: two line numbers, the sign, and the spaces.
 const UNIFIED_GUTTER: usize = 12;
@@ -349,12 +355,38 @@ enum SideRow {
     File(usize),
 }
 
+/// The query of the file filter, and whether keys go to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filter {
+    pub query: String,
+    /// Keys edit the query. Once applied, the query stays and the keys are the keymap's again.
+    pub typing: bool,
+}
+
+/// The query's characters appear in `path` in order. A query with no upper case letter ignores
+/// case.
+fn matches(query: &str, path: &str) -> bool {
+    let fold = !query.chars().any(char::is_uppercase);
+    let mut path = path.chars().map(|c| {
+        if fold {
+            c.to_lowercase().next().unwrap_or(c)
+        } else {
+            c
+        }
+    });
+    query.chars().all(|wanted| path.any(|c| c == wanted))
+}
+
 /// Group the files by directory, in the diff's order. A directory that comes again later, as
-/// untracked files do, gets a second heading.
-fn sidebar_rows(diff: &Diff) -> Vec<SideRow> {
+/// untracked files do, gets a second heading. With a `query`, a file that does not match is left
+/// out, and so is the heading of a directory with no match.
+fn sidebar_rows(diff: &Diff, query: Option<&str>) -> Vec<SideRow> {
     let mut rows = Vec::new();
     let mut last = None;
     for (index, file) in diff.files.iter().enumerate() {
+        if query.is_some_and(|query| !matches(query, file.path.as_str())) {
+            continue;
+        }
         let dir = file
             .path
             .as_str()
@@ -418,7 +450,7 @@ impl Stream {
                 .map(|thread| thread.root.id.clone())
                 .collect(),
             width,
-            side: sidebar_rows(diff),
+            side: sidebar_rows(diff, None),
             unsent: vec![false; diff.files.len()],
             layout,
             ..Self::default()
@@ -535,12 +567,20 @@ impl Stream {
         self.total == 0
     }
 
-    /// The sidebar row that holds `file`.
-    fn side_row_of(&self, file: usize) -> usize {
+    /// The sidebar row that holds `file`, when the filter has not left it out.
+    fn side_row_of(&self, file: usize) -> Option<usize> {
+        self.side.iter().position(|row| *row == SideRow::File(file))
+    }
+
+    /// The files the sidebar lists, in the diff's order.
+    fn side_files(&self) -> Vec<usize> {
         self.side
             .iter()
-            .position(|row| *row == SideRow::File(file))
-            .unwrap_or(0)
+            .filter_map(|row| match row {
+                SideRow::File(file) => Some(*file),
+                SideRow::Heading(_) => None,
+            })
+            .collect()
     }
 
     pub const fn files(&self) -> usize {
@@ -784,6 +824,10 @@ pub struct Select {
 
 /// The cursor, the scroll position, the focus, and the help overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags: help is open, the sidebar is wanted, icons are on, a drag is held"
+)]
 pub struct View {
     pub stream: Stream,
     pub cursor: usize,
@@ -797,6 +841,8 @@ pub struct View {
     pub icons: bool,
     /// Where a range started, while one is being selected. This is visual mode.
     pub select: Option<Select>,
+    /// The sidebar lists only the files that match. `None` lists them all.
+    pub filter: Option<Filter>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
     forced: Option<DiffLayout>,
     /// Cells of code hidden on the left of every row, and the file they were set for.
@@ -834,6 +880,7 @@ impl Default for View {
             sidebar: true,
             icons: false,
             select: None,
+            filter: None,
             forced: None,
             hscroll: 0,
             hfile: 0,
@@ -869,7 +916,95 @@ impl View {
     fn leave_hidden_sidebar(&mut self) {
         if !self.sidebar_drawn() {
             self.panel = Panel::Stream;
+            if let Some(filter) = &mut self.filter {
+                filter.typing = false;
+            }
         }
+    }
+
+    /// Open the query on the sidebar, with the query an applied filter has. The caller has shown
+    /// the sidebar.
+    pub fn open_filter(&mut self) {
+        let query = self
+            .filter
+            .take()
+            .map(|filter| filter.query)
+            .unwrap_or_default();
+        self.filter = Some(Filter {
+            query,
+            typing: true,
+        });
+        self.panel = Panel::Sidebar;
+    }
+
+    /// Drop the filter and list every file again.
+    pub fn clear_filter(&mut self, diff: &Diff) {
+        self.filter = None;
+        self.refilter(diff);
+    }
+
+    /// List the files that match the query, or all of them when there is no filter.
+    pub fn refilter(&mut self, diff: &Diff) {
+        let query = self.filter.as_ref().map(|filter| filter.query.as_str());
+        self.stream.side = sidebar_rows(diff, query);
+    }
+
+    /// A key while the query takes the keys. Anything it does not use is ignored.
+    pub fn filter_key(&mut self, key: KeyEvent, diff: &Diff) {
+        let Some(filter) = self.filter.as_mut().filter(|filter| filter.typing) else {
+            return;
+        };
+        let control = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                filter.query.clear();
+            }
+            KeyCode::Char(c) if !control => filter.query.push(c),
+            KeyCode::Backspace => {
+                filter.query.pop();
+            }
+            KeyCode::Esc => return self.clear_filter(diff),
+            KeyCode::Enter => return self.apply_filter(diff),
+            _ => return,
+        }
+        self.refilter(diff);
+    }
+
+    /// `enter` in the query: keep the filter and put the cursor on a match. An empty query is no
+    /// filter, and a query nothing matches stays open.
+    fn apply_filter(&mut self, diff: &Diff) {
+        if self
+            .filter
+            .as_ref()
+            .is_some_and(|filter| filter.query.is_empty())
+        {
+            return self.clear_filter(diff);
+        }
+        let files = self.stream.side_files();
+        let Some(&first) = files.first() else { return };
+        if let Some(filter) = &mut self.filter {
+            filter.typing = false;
+        }
+        if !files.contains(&self.stream.file_at(self.cursor)) {
+            self.move_to_file(first);
+        }
+    }
+
+    /// Where the sidebar lists its files, and the first sidebar row it shows: under the query
+    /// when there is one, with the cursor's file in the middle. Drawing and clicks both use it.
+    fn side_list(&self, area: Rect) -> (Rect, usize) {
+        let mut list = Block::new().borders(Borders::RIGHT).inner(area);
+        list.y += FILTER_BOX;
+        list.height = list.height.saturating_sub(FILTER_BOX);
+        let selected = self.stream.side_row_of(self.stream.file_at(self.cursor));
+        let top = sidebar_top(
+            selected.unwrap_or(0),
+            usize::from(list.height),
+            self.stream.side.len(),
+        );
+        (list, top)
     }
 
     fn height(&self) -> usize {
@@ -1138,6 +1273,7 @@ impl View {
     /// the same card, else its row in the same file.
     pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, look: &Look) {
         self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), look);
+        self.refilter(diff);
         self.select = None;
         self.drag = false;
         let stream = &self.stream;
@@ -1235,6 +1371,23 @@ impl View {
         }
     }
 
+    /// The sidebar's `up`, `down` and page keys: `by` matching files on from the cursor's file. A
+    /// cursor on a file the filter left out goes to the next match after it, or the last before it.
+    fn step_files(&mut self, down: bool, by: usize) {
+        let files = self.stream.side_files();
+        let last = files.len().saturating_sub(1);
+        let target = match (files.binary_search(&self.stream.file_at(self.cursor)), down) {
+            (Ok(at), true) => at + by,
+            (Ok(at), false) => at.saturating_sub(by),
+            (Err(at), true) if at < files.len() => at + by - 1,
+            (Err(at), false) if at > 0 => at.saturating_sub(by),
+            (Err(_), _) => return,
+        };
+        if let Some(&file) = files.get(target.min(last)) {
+            self.move_to_file(file);
+        }
+    }
+
     fn page(&mut self, down: bool) {
         let height = self.height();
         let last = self.stream.len().saturating_sub(1);
@@ -1274,14 +1427,13 @@ impl View {
     /// Apply a navigation action. Returns false for the actions the body does not handle.
     pub fn apply(&mut self, action: Action) -> bool {
         let files = self.panel == Panel::Sidebar;
-        let file = self.stream.file_at(self.cursor);
         match action {
-            Action::Up if files => self.move_to_file(file.saturating_sub(1)),
-            Action::Down if files => self.move_to_file(file + 1),
+            Action::Up if files => self.step_files(false, 1),
+            Action::Down if files => self.step_files(true, 1),
             Action::Up => self.move_to(self.cursor.saturating_sub(1)),
             Action::Down => self.move_to(self.cursor + 1),
-            Action::PageUp if files => self.move_to_file(file.saturating_sub(self.height())),
-            Action::PageDown if files => self.move_to_file(file + self.height()),
+            Action::PageUp if files => self.step_files(false, self.height()),
+            Action::PageDown if files => self.step_files(true, self.height()),
             Action::PageUp => self.page(false),
             Action::PageDown => self.page(true),
             Action::PrevHunk => self.jump(true, false),
@@ -1391,14 +1543,10 @@ impl View {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.drag = false;
                 if let Some(sidebar) = areas.sidebar.filter(|rect| at(*rect)) {
-                    let selected = self.stream.side_row_of(self.stream.file_at(self.cursor));
-                    let top = sidebar_top(
-                        selected,
-                        usize::from(sidebar.height),
-                        self.stream.side.len(),
-                    );
-                    let row = top + usize::from(event.row - sidebar.y);
-                    if let Some(SideRow::File(file)) = self.stream.side.get(row) {
+                    let (list, top) = self.side_list(sidebar);
+                    let row = top + usize::from(event.row.saturating_sub(list.y));
+                    let file = self.stream.side.get(row);
+                    if let (true, Some(SideRow::File(file))) = (event.row >= list.y, file) {
                         self.panel = Panel::Sidebar;
                         self.move_to_file(*file);
                     }
@@ -1732,7 +1880,12 @@ pub fn draw(
         }
     }
     if let Some(sidebar) = areas.sidebar {
-        draw_sidebar(frame, sidebar, view, diff, theme);
+        let hint = if keymap.keys(Action::Filter).is_empty() {
+            "filter".to_owned()
+        } else {
+            format!("filter ({})", keymap.label(Action::Filter))
+        };
+        draw_sidebar(frame, sidebar, view, diff, theme, &hint);
     }
     if view.help {
         draw_help(frame, keymap, theme, &Action::ALL);
@@ -1844,17 +1997,72 @@ fn side_file_line(
     Line::from(spans)
 }
 
-fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff, theme: &Theme) {
+/// The filter's query in a rounded box at the top of the sidebar, always drawn so the user sees
+/// there is a filter: a `>` prompt, the query cut from the left so its end shows (or `hint` while
+/// it is empty), and how many of the diff's files match on the right. The border is in the accent
+/// colour while the query takes keys.
+fn draw_filter_box(
+    frame: &mut Frame,
+    inner: Rect,
+    view: &View,
+    diff: &Diff,
+    theme: &Theme,
+    hint: &str,
+) {
+    let typing = view.filter.as_ref().is_some_and(|filter| filter.typing);
+    let query = view.filter.as_ref().map_or("", |filter| &filter.query);
+    let area = Rect::new(inner.x, inner.y, inner.width, inner.height.min(FILTER_BOX));
+    let border = if typing { theme.accent } else { theme.border };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border));
+    let room = usize::from(block.inner(area).width);
+    frame.render_widget(block.clone(), area);
+    let count = format!("{}/{}", view.stream.side_files().len(), diff.files.len());
+    let cursor = usize::from(typing);
+    let query_room = room.saturating_sub(2 + string_width(&count) + 1 + cursor);
+    let mut spans = vec![Span::styled("> ", key_style(theme))];
+    let mut used = 2 + cursor;
+    if query.is_empty() && !typing {
+        let hint = tail_to_width(hint, query_room);
+        used += string_width(&hint);
+        spans.push(Span::styled(hint, theme.dim()));
+    } else {
+        let query = tail_to_width(&sanitize_terminal_text(query), query_room);
+        used += string_width(&query);
+        spans.push(Span::raw(query));
+    }
+    if typing {
+        spans.push(Span::styled(" ", Style::new().bg(theme.cursor)));
+    }
+    spans.push(Span::raw(
+        " ".repeat(room.saturating_sub(used + string_width(&count))),
+    ));
+    spans.push(Span::styled(count, theme.dim()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), block.inner(area));
+}
+
+fn draw_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    view: &View,
+    diff: &Diff,
+    theme: &Theme,
+    hint: &str,
+) {
     let block = Block::new()
         .borders(Borders::RIGHT)
         .border_style(Style::new().fg(theme.border));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    let selected = view.stream.side_row_of(view.stream.file_at(view.cursor));
-    let height = usize::from(inner.height);
-    let top = sidebar_top(selected, height, view.stream.side.len());
-    let width = usize::from(inner.width);
+    let (list, top) = view.side_list(area);
+    let height = usize::from(list.height);
+    let width = usize::from(list.width);
+    draw_filter_box(frame, inner, view, diff, theme, hint);
+    if view.filter.is_some() && view.stream.side.is_empty() {
+        frame.render_widget(Paragraph::new(Line::styled("no match", theme.dim())), list);
+    }
     let lines = view
         .stream
         .side
@@ -1869,14 +2077,15 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff, theme: 
             }),
         })
         .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), list);
     let style = if view.panel == Panel::Sidebar {
         Style::new().bg(theme.cursor)
     } else {
         Style::new().add_modifier(Modifier::BOLD)
     };
-    if selected >= top && selected < top + height {
-        highlight(frame.buffer_mut(), inner, selected - top, style);
+    let selected = view.stream.side_row_of(view.stream.file_at(view.cursor));
+    if let Some(selected) = selected.filter(|row| (top..top + height).contains(row)) {
+        highlight(frame.buffer_mut(), list, selected - top, style);
     }
 }
 

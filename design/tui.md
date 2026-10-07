@@ -15,6 +15,7 @@ in a unified or a side-by-side layout.
 | `scroll_reset` | `0` | Scroll back to the start of the lines |
 | `switch_panel` | `tab` | Switch between sidebar and stream |
 | `toggle_sidebar` | `f` | Show or hide the sidebar |
+| `filter` | `/` | Narrow the sidebar to the files whose path matches a query |
 | `comment` | `c` | Comment on the line, the selected range, or the file when the cursor is on a file header |
 | `select_range` | `v` | Start or leave visual mode, to select a range |
 | `reply` | `r` | Reply to the focused thread |
@@ -43,6 +44,36 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
   against the right edge. The name is cut with `…` before the counts, and the icon always stays. The sidebar is left out below 50
   columns and follows the file under the cursor. With the sidebar focused, `up` and `down` move to the
   previous and next file, and the page keys move by a page of files. A click on a heading does nothing.
+- `filter` puts the cursor in the query box at the top of the sidebar, and the sidebar lists only the files whose path
+  matches it. The stream, its cursor, cards, hunk and thread jumps and send are not filtered.
+  - A path matches when the query's characters appear in it in order. A query with no upper case letter
+    ignores case, and one upper case letter makes it exact. A space is a character of the query. There is no
+    score and no highlight. The files keep the diff's order and their directory headings, and a directory
+    with no matching file has no heading.
+  - While the query takes keys, a character goes into it (so `q`, `j` and `f` do not run their actions),
+    `backspace` removes one, `ctrl+u` empties it, and each key narrows the list while the stream stays
+    where it is. These keys are fixed and not in `[keys]`. Any other key is ignored.
+  - `enter` keeps the filter and the keys are the keymap's again, with the focus on the sidebar. The cursor
+    goes to the first match unless its file matches. With no match it is ignored, so the user keeps typing
+    or presses `esc`. On an empty query it clears the filter.
+  - `esc` clears the filter, while typing and afterwards, from either panel. A visual selection is
+    cancelled first and the filter stays. `filter` with a filter applied reopens the same query.
+  - With a filter on, the sidebar's `up`, `down` and page keys visit the matching files only, and a click
+    selects the file drawn on its row. A cursor on a file that does not match has no highlighted row, and
+    `down` goes to the first match after that file and `up` to the last match before it. The mouse never
+    changes the filter.
+  - The query is a rounded box of three rows at the top of the sidebar. It is drawn whether or not there
+    is a filter, so the user sees that the files can be filtered, and it reads as an input field and not
+    as a file. Inside it are a `>` prompt in the accent colour, the text cut from the left so its end stays
+    in view, a cursor cell while it takes keys, and on the right how many of the diff's files match, as
+    `2/4`, in the subtle colour. With an empty query that is not taking keys, the text is the hint
+    `filter (/)` in the subtle colour, with the key from the keymap (`filter` alone when the action is
+    unbound). The border is the accent colour while the query takes keys and the plain border colour
+    otherwise. A list with no match shows `no match` in the subtle colour under the box.
+  - `filter` with the sidebar hidden shows it first. In a pane under 50 columns it opens nothing and the
+    status line says the pane is too narrow to show the sidebar. A reload, a spec switch or a change from
+    an agent keeps the query and matches it against the new files. The filter is not saved. A pane resized under
+    50 columns while the query takes keys stops taking them, since the query is no longer drawn.
 - `toggle_sidebar` hides the sidebar and shows it again. While it is hidden the stream has the whole
   width and is laid out again, as after a resize, so cards and the editor box are as wide as the pane.
   Hiding it moves the focus to the stream. While the sidebar is not drawn, because it is hidden or the

@@ -1282,6 +1282,13 @@ fn drawn(app: &mut App, width: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     drawn_tall(app, width, 12)
 }
 
+/// The rows without the sidebar's 20 columns, so its filter box is not taken for a card.
+fn stream_columns(rows: &[String]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row.chars().skip(20).collect())
+        .collect()
+}
+
 fn drawn_tall(app: &mut App, width: u16, height: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     app.resize(Rect::new(0, 0, width, height));
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1389,6 +1396,7 @@ fn a_long_draft_stops_growing_at_two_thirds_of_the_stream() {
     }
     // The stream is 10 rows tall, so the box is 6: two borders and the last four lines.
     let (rows, _) = drawn(&mut app, 80);
+    let rows = stream_columns(&rows);
     let top = rows.iter().position(|row| row.contains('╭')).unwrap();
     let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
     assert_eq!(bottom - top, 5, "{}", rows.join("\n"));
@@ -2668,6 +2676,7 @@ fn a_card_s_footer_names_the_keys_the_config_gives_and_an_agent_s_offers_only_re
     let mut app = opened(&fixture, patch_text());
     // Four rows of the diff and two boxes of four rows each.
     let (rows, _) = drawn_tall(&mut app, 80, 16);
+    let rows = stream_columns(&rows);
     let footers = rows
         .iter()
         .filter(|row| row.contains('╰'))
@@ -2932,4 +2941,412 @@ fn a_write_from_another_process_waits_for_visual_mode_to_end() {
     drive(&fixture, &mut app, vec![None], |_| {});
     assert_eq!(app.review.threads.len(), 1);
     assert_eq!(fixture.diffs.get(), 2);
+}
+
+// The file filter. `FILTER_FILES` are files 0 to 3 of the diff: README.md, src/tui.rs, src/view.rs and
+// src/view/tests.rs, each with one hunk of two lines, so a file is four rows of the stream.
+
+const FILTER_FILES: [&str; 4] = [
+    "README.md",
+    "src/tui.rs",
+    "src/view.rs",
+    "src/view/tests.rs",
+];
+
+fn files_patch(paths: &[&str]) -> String {
+    use std::fmt::Write as _;
+    let mut patch = String::new();
+    for path in paths {
+        let _ = write!(
+            patch,
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+        );
+    }
+    patch
+}
+
+fn filter_pane(fixture: &Fixture) -> App {
+    opened(fixture, &files_patch(&FILTER_FILES))
+}
+
+/// The sidebar as the names it lists: a heading as drawn, a file as ` name` after its icon, and
+/// the filter's box as its line of text (`> vw 2/4`) with its borders left out. The status line
+/// is left out.
+fn sidebar(app: &mut App) -> Vec<String> {
+    let (rows, _) = drawn(app, 80);
+    rows.iter()
+        .take(rows.len() - 1)
+        .map(|row| row.chars().take(19).collect::<String>())
+        .filter(|row| !row.starts_with(['╭', '╰']))
+        .map(|row| row.trim_end().to_owned())
+        .filter(|row| !row.is_empty())
+        .map(|row| match row.split_whitespace().nth(2) {
+            Some(name) if row.starts_with(" M") => format!(" {name}"),
+            _ if row.starts_with('│') => row
+                .trim_matches('│')
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => row,
+        })
+        .collect()
+}
+
+fn file_under_cursor(app: &App) -> usize {
+    app.view.stream.file_at(app.view.cursor)
+}
+
+fn ctrl(c: char) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+fn enter() -> Event {
+    Event::Key(KeyEvent::from(KeyCode::Enter))
+}
+
+fn backspace() -> Event {
+    Event::Key(KeyEvent::from(KeyCode::Backspace))
+}
+
+#[test]
+fn typing_narrows_the_sidebar_in_the_diffs_order_and_the_stream_does_not_move() {
+    let fixture = Fixture::new("filter-type");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("jjj"));
+    let (cursor, scroll) = (app.view.cursor, app.view.scroll);
+    assert_eq!(
+        sidebar(&mut app),
+        [
+            "> filter (/) 4/4",
+            "./",
+            " README.…",
+            "src/",
+            " tui.rs",
+            " view.rs",
+            "src/view/",
+            " tests.rs"
+        ]
+    );
+    press(&fixture, &mut app, chars("/vw"));
+    assert_eq!(app.view.panel, crate::view::Panel::Sidebar);
+    assert_eq!(
+        sidebar(&mut app),
+        ["> vw 2/4", "src/", " view.rs", "src/view/", " tests.rs"]
+    );
+    assert_eq!((app.view.cursor, app.view.scroll), (cursor, scroll));
+    // A character is a literal one: a space matches nothing here.
+    press(&fixture, &mut app, [key(' ')]);
+    assert_eq!(sidebar(&mut app), ["> vw 0/4", "no match"]);
+}
+
+#[test]
+fn backspace_widens_the_list_and_ctrl_u_empties_the_query() {
+    let fixture = Fixture::new("filter-erase");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    press(&fixture, &mut app, [backspace(), backspace()]);
+    assert_eq!(sidebar(&mut app).len(), 8, "the query row and every file");
+    // On an empty query backspace does nothing.
+    press(&fixture, &mut app, [backspace()]);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "");
+    press(&fixture, &mut app, chars("src"));
+    assert_eq!(sidebar(&mut app)[0], "> src 3/4");
+    press(&fixture, &mut app, [ctrl('u')]);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "");
+    assert_eq!(sidebar(&mut app).len(), 8);
+}
+
+#[test]
+fn enter_applies_the_filter_focuses_the_sidebar_and_moves_to_the_first_match() {
+    let fixture = Fixture::new("filter-apply");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    press(&fixture, &mut app, [enter()]);
+    let filter = app.view.filter.as_ref().unwrap();
+    assert!(!filter.typing);
+    assert_eq!(app.view.panel, crate::view::Panel::Sidebar);
+    assert_eq!(file_under_cursor(&app), 2);
+    // The query row stays, with no cursor cell after it.
+    assert_eq!(sidebar(&mut app)[0], "> vw 2/4");
+    // The keys are the keymap's again: `j` is `down`, not a character of the query.
+    press(&fixture, &mut app, [key('j')]);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "vw");
+    assert_eq!(file_under_cursor(&app), 3);
+}
+
+#[test]
+fn enter_leaves_the_cursor_when_its_file_already_matches() {
+    let fixture = Fixture::new("filter-keep");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("jjjj"));
+    assert_eq!(file_under_cursor(&app), 1);
+    press(&fixture, &mut app, chars("/s"));
+    let cursor = app.view.cursor;
+    press(&fixture, &mut app, [enter()]);
+    assert_eq!(app.view.cursor, cursor);
+}
+
+#[test]
+fn enter_with_no_match_is_ignored_and_the_list_says_no_match() {
+    let fixture = Fixture::new("filter-nomatch");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/zzz"));
+    assert_eq!(sidebar(&mut app), ["> zzz 0/4", "no match"]);
+    press(&fixture, &mut app, [enter()]);
+    assert!(app.view.filter.as_ref().unwrap().typing);
+    press(
+        &fixture,
+        &mut app,
+        [backspace(), backspace(), backspace(), key('v')],
+    );
+    assert_eq!(sidebar(&mut app)[0], "> v 2/4");
+}
+
+#[test]
+fn enter_on_an_empty_query_clears_the_filter() {
+    let fixture = Fixture::new("filter-empty");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/"));
+    assert!(app.view.filter.is_some());
+    press(&fixture, &mut app, [enter()]);
+    assert!(app.view.filter.is_none());
+    assert_eq!(sidebar(&mut app).len(), 8);
+}
+
+#[test]
+fn esc_while_typing_clears_the_filter_and_leaves_the_cursor() {
+    let fixture = Fixture::new("filter-esc-typing");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("jjj/vw"));
+    let cursor = app.view.cursor;
+    press(&fixture, &mut app, [esc()]);
+    assert!(app.view.filter.is_none());
+    assert_eq!(app.view.cursor, cursor);
+    assert_eq!(sidebar(&mut app).len(), 8);
+}
+
+#[test]
+fn esc_with_a_filter_applied_clears_it_from_the_stream_and_after_a_selection() {
+    let fixture = Fixture::new("filter-esc-applied");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    press(
+        &fixture,
+        &mut app,
+        [enter(), Event::Key(KeyEvent::from(KeyCode::Tab))],
+    );
+    assert_eq!(app.view.panel, crate::view::Panel::Stream);
+    press(&fixture, &mut app, [esc()]);
+    assert!(app.view.filter.is_none());
+    assert_eq!(sidebar(&mut app).len(), 8);
+
+    press(&fixture, &mut app, chars("/vw"));
+    press(&fixture, &mut app, [enter()]);
+    app.view.panel = crate::view::Panel::Stream;
+    press(&fixture, &mut app, [key('v')]);
+    assert!(app.view.select.is_some());
+    press(&fixture, &mut app, [esc()]);
+    assert!(app.view.select.is_none());
+    assert!(app.view.filter.is_some());
+    press(&fixture, &mut app, [esc()]);
+    assert!(app.view.filter.is_none());
+}
+
+#[test]
+fn the_sidebar_keys_visit_only_the_matches_from_a_file_that_does_not_match_too() {
+    let fixture = Fixture::new("filter-keys");
+    let mut app = filter_pane(&fixture);
+    // `t` matches src/tui.rs (1) and src/view/tests.rs (3).
+    press(&fixture, &mut app, chars("/t"));
+    press(&fixture, &mut app, [enter()]);
+    assert_eq!(file_under_cursor(&app), 1);
+    press(&fixture, &mut app, [key('j')]);
+    assert_eq!(file_under_cursor(&app), 3);
+    press(&fixture, &mut app, [key('j')]);
+    assert_eq!(file_under_cursor(&app), 3);
+    press(&fixture, &mut app, [key('k')]);
+    assert_eq!(file_under_cursor(&app), 1);
+    press(&fixture, &mut app, [key('k')]);
+    assert_eq!(file_under_cursor(&app), 1);
+    // The cursor on file 2, which does not match: no row is highlighted.
+    let on = |app: &mut App, file: usize| {
+        app.view.cursor = app.view.stream.file_start(file).unwrap();
+    };
+    on(&mut app, 2);
+    press(&fixture, &mut app, [key('j')]);
+    assert_eq!(file_under_cursor(&app), 3);
+    on(&mut app, 2);
+    press(&fixture, &mut app, [key('k')]);
+    assert_eq!(file_under_cursor(&app), 1);
+    on(&mut app, 2);
+    press(&fixture, &mut app, [ctrl('d')]);
+    assert_eq!(file_under_cursor(&app), 3);
+    on(&mut app, 2);
+    press(&fixture, &mut app, [ctrl('u')]);
+    assert_eq!(file_under_cursor(&app), 1);
+    // Nothing matches before file 0, or after file 3 that is not already a match.
+    on(&mut app, 0);
+    press(&fixture, &mut app, [key('k')]);
+    assert_eq!(file_under_cursor(&app), 0);
+}
+
+#[test]
+fn a_click_on_a_narrowed_row_selects_the_file_drawn_there() {
+    let fixture = Fixture::new("filter-click");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    press(&fixture, &mut app, [enter()]);
+    assert_eq!(
+        sidebar(&mut app),
+        ["> vw 2/4", "src/", " view.rs", "src/view/", " tests.rs"]
+    );
+    let click = |column, row| MouseEvent {
+        kind: event::MouseEventKind::Down(event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    // Rows 0 to 2 are the box, 3 is the heading, 4 `view.rs` and 6 `tests.rs`.
+    app.mouse(click(3, 6));
+    assert_eq!(file_under_cursor(&app), 3);
+    app.mouse(click(3, 4));
+    assert_eq!(file_under_cursor(&app), 2);
+    app.mouse(click(3, 1));
+    assert_eq!(file_under_cursor(&app), 2);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "vw");
+}
+
+#[test]
+fn the_filter_key_shows_a_hidden_sidebar_and_a_narrow_pane_opens_nothing() {
+    let fixture = Fixture::new("filter-hidden");
+    let mut app = filter_pane(&fixture);
+    act(&fixture, &mut app, Action::ToggleSidebar);
+    assert!(!app.view.sidebar_drawn());
+    press(&fixture, &mut app, [key('/')]);
+    assert!(app.view.sidebar_drawn());
+    assert_eq!(app.view.panel, crate::view::Panel::Sidebar);
+    assert!(app.view.filter.as_ref().unwrap().typing);
+
+    let mut app = filter_pane(&fixture);
+    app.resize(Rect::new(0, 0, 49, 12));
+    press(&fixture, &mut app, [key('/')]);
+    assert!(app.view.filter.is_none());
+    assert_eq!(
+        app.status,
+        Some((
+            Tone::Notice,
+            "the pane is too narrow to show the sidebar".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn the_filter_key_does_nothing_on_the_start_up_message_screen() {
+    let fixture = Fixture::new("filter-message");
+    fixture.repo_ok.set(false);
+    let mut app = fixture.app();
+    fixture.with_git(|git| app.load(git));
+    act(&fixture, &mut app, Action::Filter);
+    assert!(app.view.filter.is_none());
+    assert_eq!(app.status, None);
+}
+
+#[test]
+fn the_filter_key_reopens_an_applied_query_for_more_typing() {
+    let fixture = Fixture::new("filter-reopen");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/v"));
+    press(&fixture, &mut app, [enter()]);
+    press(&fixture, &mut app, [key('/')]);
+    assert!(app.view.filter.as_ref().unwrap().typing);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "v");
+    press(&fixture, &mut app, [key('w')]);
+    assert_eq!(sidebar(&mut app)[0], "> vw 2/4");
+}
+
+#[test]
+fn a_reload_keeps_the_query_and_a_reload_that_matches_nothing_says_no_match() {
+    let fixture = Fixture::new("filter-reload");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    press(&fixture, &mut app, [enter()]);
+    *fixture.patch.borrow_mut() = files_patch(&["README.md", "src/view.rs"]).into_bytes();
+    press(&fixture, &mut app, [key('R')]);
+    assert_eq!(sidebar(&mut app), ["> vw 1/2", "src/", " view.rs"]);
+    *fixture.patch.borrow_mut() = files_patch(&["README.md"]).into_bytes();
+    press(&fixture, &mut app, [key('R')]);
+    assert_eq!(sidebar(&mut app), ["> vw 0/1", "no match"]);
+    assert!(app.view.filter.is_some());
+}
+
+#[test]
+fn the_filter_key_can_be_rebound_the_help_lists_it_and_the_footer_does_not() {
+    let fixture = Fixture::new("filter-rebind");
+    let mut app = filter_pane(&fixture);
+    app.view.help = true;
+    app.resize(Rect::new(0, 0, 80, 30));
+    let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>();
+    assert!(text.contains("/                filter the files in the sidebar"));
+    app.view.help = false;
+    assert!(!drawn(&mut app, 80).0[11].contains("filter"));
+
+    std::fs::write(
+        fixture.home.join("config/config.toml"),
+        "[keys]\nfilter = \"g\"\n",
+    )
+    .unwrap();
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, [key('/')]);
+    assert!(app.view.filter.is_none());
+    press(&fixture, &mut app, [key('g')]);
+    assert!(app.view.filter.is_some());
+}
+
+#[test]
+fn while_typing_a_key_bound_to_an_action_goes_into_the_query() {
+    let fixture = Fixture::new("filter-bound-keys");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/qjf"));
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "qjf");
+    assert!(!app.quit);
+    assert!(app.view.sidebar);
+}
+
+#[test]
+fn the_box_is_always_drawn_and_its_hint_names_the_key_of_the_filter() {
+    let fixture = Fixture::new("filter-hint");
+    let mut app = filter_pane(&fixture);
+    assert_eq!(sidebar(&mut app)[0], "> filter (/) 4/4");
+    assert!(app.view.filter.is_none());
+    press(&fixture, &mut app, [key('/')]);
+    assert_eq!(
+        sidebar(&mut app)[0],
+        "> 4/4",
+        "the hint goes when typing starts"
+    );
+    press(&fixture, &mut app, [esc()]);
+    assert_eq!(sidebar(&mut app)[0], "> filter (/) 4/4");
+
+    std::fs::write(
+        fixture.home.join("config/config.toml"),
+        "[keys]\nfilter = \"g\"\n",
+    )
+    .unwrap();
+    let mut app = filter_pane(&fixture);
+    assert_eq!(sidebar(&mut app)[0], "> filter (g) 4/4");
+    std::fs::write(
+        fixture.home.join("config/config.toml"),
+        "[keys]\nfilter = \"\"\n",
+    )
+    .unwrap();
+    let mut app = filter_pane(&fixture);
+    assert_eq!(sidebar(&mut app)[0], "> filter 4/4");
 }

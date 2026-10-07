@@ -12,6 +12,7 @@ Each `E:` line above is one test, and each test swaps only the parameters listed
 | `open` | recording `herdr`, `Env` literal | No context JSON, review pane already open, stale review pane, no agent |
 | Load diff | fixture `git` | Every row of the cases in `diff.md`, and a failed reload keeps the old diff |
 | TUI loop | `TestBackend`, key list, temp `dir` | A write from another process appears, a failed save keeps the editor text, termination with a draft saves it |
+| Filter the files | `TestBackend`, key list | Every `E:` line of the graph, each decision of `filter` in `tui.md`, and `matches` and `sidebar_rows` directly. The fixture is a diff of four files in two directories |
 | Highlight | recording `git`, temp repo dir | A side that cannot be read falls back to its hunks, so does one over 1 MiB, an unknown extension reads nothing |
 | Send | recording `herdr`, temp `dir` | Each `Refusal`, a stale pane id falls through to the list, `Ambiguous`, `sent` not recorded still reports success |
 

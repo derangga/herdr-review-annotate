@@ -154,6 +154,9 @@ pub enum Tone {
 
 /// The keys the status line names, in the order they are drawn. They drop off from the left when
 /// the line is narrow.
+/// What the status line says when a sidebar was asked for in a pane under 50 columns.
+const TOO_NARROW: &str = "the pane is too narrow to show the sidebar";
+
 const FOOTER: [(Action, &str); 6] = [
     (Action::ToggleSidebar, "sidebar"),
     (Action::Send, "send"),
@@ -497,6 +500,7 @@ impl App {
                 self.rebuild_view();
             }
             Action::ToggleSidebar => self.toggle_sidebar(),
+            Action::Filter => self.open_filter(),
             Action::Comment => self.start_comment(),
             Action::SelectRange => self.view.toggle_select(),
             Action::Reply => self.start_reply(),
@@ -519,8 +523,25 @@ impl App {
             self.rebuild_view();
         }
         if self.view.too_narrow() {
-            self.notice("the pane is too narrow to show the sidebar");
+            self.notice(TOO_NARROW);
         }
+    }
+
+    /// `filter`: show the sidebar and open the query on it. A pane too narrow for a sidebar opens
+    /// nothing, and neither does the start-up message screen, which has no diff.
+    fn open_filter(&mut self) {
+        if self.diff.is_none() {
+            return;
+        }
+        if self.view.too_narrow() {
+            self.notice(TOO_NARROW);
+            return;
+        }
+        if !self.view.sidebar {
+            self.view.toggle_sidebar();
+            self.rebuild_view();
+        }
+        self.view.open_filter();
     }
 
     fn unsent(&self) -> usize {
@@ -892,10 +913,25 @@ impl App {
             self.prompt_key(key);
         } else if self.view.help {
             self.view.help = false;
+        } else if self
+            .view
+            .filter
+            .as_ref()
+            .is_some_and(|filter| filter.typing)
+        {
+            if let Some(diff) = &self.diff {
+                self.view.filter_key(key, diff);
+            }
         } else if key.code == KeyCode::Esc && self.view.select.is_some() {
             self.warnings.clear();
             self.status = None;
             self.view.select = None;
+        } else if key.code == KeyCode::Esc && self.view.filter.is_some() {
+            self.warnings.clear();
+            self.status = None;
+            if let Some(diff) = &self.diff {
+                self.view.clear_filter(diff);
+            }
         } else if let Some(action) = self.keymap.action(&key) {
             self.handle(action, git);
         }

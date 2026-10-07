@@ -25,6 +25,7 @@ pub enum Action {
     ScrollReset,
     SwitchPanel,
     ToggleSidebar,
+    Filter,
     Comment,
     SelectRange,
     Reply,
@@ -43,7 +44,7 @@ pub enum Action {
 
 impl Action {
     /// In the order of the table in design/tui.md, which is the order of the help overlay.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -57,6 +58,7 @@ impl Action {
         Self::ScrollReset,
         Self::SwitchPanel,
         Self::ToggleSidebar,
+        Self::Filter,
         Self::Comment,
         Self::SelectRange,
         Self::Reply,
@@ -89,6 +91,7 @@ impl Action {
             Self::ScrollReset => "scroll_reset",
             Self::SwitchPanel => "switch_panel",
             Self::ToggleSidebar => "toggle_sidebar",
+            Self::Filter => "filter",
             Self::Comment => "comment",
             Self::SelectRange => "select_range",
             Self::Reply => "reply",
@@ -122,6 +125,7 @@ impl Action {
             Self::ScrollReset => "scroll back to the start of the lines",
             Self::SwitchPanel => "switch between sidebar and stream",
             Self::ToggleSidebar => "show or hide the sidebar",
+            Self::Filter => "filter the files in the sidebar",
             Self::Comment => "comment on the line, range or file",
             Self::SelectRange => "select lines (visual mode)",
             Self::Reply => "reply to the thread",
@@ -158,6 +162,7 @@ impl Action {
             Self::ScrollReset => &["0"],
             Self::SwitchPanel => &["tab"],
             Self::ToggleSidebar => &["f"],
+            Self::Filter => &["/"],
             Self::Comment => &["c"],
             Self::SelectRange => &["v"],
             Self::Reply => &["r"],

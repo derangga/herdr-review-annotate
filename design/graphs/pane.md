@@ -65,6 +65,49 @@ before the message prints.
 If the pane is closed while the editor holds text, the draft is saved as a comment at the anchor that
 was captured when `comment` was pressed. Losing typed text is the one data-loss path in the pane.
 
+## Filter the files
+
+```
+filter action                              R: view, diff
+-> no diff on screen?                      (pure)   E: start-up message screen -> ignored
+-> pane under 50 columns?                  (pure)   E: too narrow -> notice, no filter
+-> sidebar hidden? show it, rebuild        (pure)
+-> focus the sidebar                       (pure)
+-> filter = the applied query or empty, typing
+
+key while typing                           R: view, diff
+-> character with no ctrl or alt           (pure)   -> push, refilter
+-> backspace                               (pure)   -> pop, refilter. On an empty query nothing happens
+-> ctrl+u                                  (pure)   -> empty the query, refilter
+-> enter                                   (pure)   E: empty query -> clear the filter, refilter
+                                                    E: no match -> ignored, still typing
+  -> typing = false
+  -> cursor's file matches? else move to the first match
+-> esc                                     (pure)   -> clear the filter, refilter, cursor untouched
+-> any other key                           (pure)   -> ignored
+
+esc with a filter applied                  R: view, diff
+-> a visual selection is on?               (pure)   -> cancel it, keep the filter
+-> clear the filter, refilter              (pure)
+
+refilter                                   R: view, diff
+-> sidebar_rows(diff, query)               (pure)
+  -> per file in the diff's order: matches(query, path)?   (pure)
+  -> heading when the directory differs from the last matching file's   (pure)
+
+rebuild the view (reload, resize, store change)
+-> Stream::build, as today
+-> refilter, when a filter is set          (pure)   E: nothing matches any more -> `no match` line, filter stays
+
+sidebar up, down, page keys                R: view
+-> the file rows of Stream::side           (pure)
+-> next after, or last before, the cursor's file   (pure)   none -> stay
+```
+
+Nothing here fails outside the state. Every `E:` line is a state the user can reach, and each one is an
+escape: ignore the key or show a line. The typed characters pass through `sanitize_terminal_text` when
+drawn, like every string that reaches the screen.
+
 ## User comment, reply, edit, delete, resolve
 
 ```

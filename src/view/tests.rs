@@ -578,12 +578,13 @@ fn the_wheel_scrolls_and_a_click_moves_the_cursor() {
         stream.y + 5,
     ));
     assert_eq!((view.cursor, view.panel), (8, Panel::Stream));
-    // A click in the sidebar on the second file. Row 0 is the directory heading.
-    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 2));
+    // A click in the sidebar on the second file. Rows 0 to 2 are the filter's box and row 3 is the
+    // directory heading.
+    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 5));
     assert_eq!((view.cursor, view.panel), (10, Panel::Sidebar));
     // A click on the heading, or below the last file, does nothing.
-    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0));
-    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 6));
+    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 3));
+    view.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 9));
     assert_eq!(view.cursor, 10);
 }
 
@@ -1084,7 +1085,8 @@ fn the_sidebar_groups_files_under_their_directory_with_letters_and_counts() {
     let rows = screen
         .lines()
         .map(|row| row.split('│').next().unwrap_or("").to_owned());
-    let rows = rows.take(5).collect::<Vec<_>>();
+    // The first three rows are the filter's box.
+    let rows = rows.skip(3).take(5).collect::<Vec<_>>();
     assert_eq!(rows[0].trim_end(), "app/");
     assert_eq!(rows[1], format!("{:<14}+2 -1", " M a.js"));
     assert_eq!(rows[2], format!("{:<14}+1 -1", " M b.js"));
@@ -1098,7 +1100,7 @@ fn a_directory_that_comes_back_gets_a_second_heading() {
         "{TREE}diff --git a/app/z.js b/app/z.js\n--- a/app/z.js\n+++ b/app/z.js\n@@ -1 +1 @@\n-1\n+2\n"
     );
     let diff = diff_of(&patch);
-    let headings = sidebar_rows(&diff)
+    let headings = sidebar_rows(&diff, None)
         .into_iter()
         .filter(|row| matches!(row, SideRow::Heading(_)))
         .count();
@@ -1827,4 +1829,53 @@ fn a_rebuild_in_the_middle_of_a_drag_drops_the_selection_and_the_gesture() {
     press_at(&mut view, stream.x + 4, stream.y + 6);
     drag_to(&mut view, stream.x + 4, stream.y + 8);
     assert_eq!(view.select.map(|select| select.row), Some(6));
+}
+
+#[test]
+fn a_query_matches_the_characters_of_a_path_in_order() {
+    assert!(matches("vw", "src/view.rs"));
+    assert!(matches("s/v", "src/view.rs"));
+    assert!(!matches("wv", "src/view.rs"));
+    assert!(!matches("vww", "src/view.rs"));
+    assert!(matches("", "src/view.rs"));
+}
+
+#[test]
+fn a_query_with_no_upper_case_letter_ignores_case_and_one_that_has_makes_it_exact() {
+    assert!(matches("readme", "README.md"));
+    assert!(matches("README", "README.md"));
+    assert!(!matches("Readme", "README.md"));
+    assert!(!matches("Src", "src/view.rs"));
+}
+
+#[test]
+fn a_directory_with_no_match_has_no_heading_and_matches_around_a_skipped_file_share_one() {
+    let file = |path: &str| {
+        format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-1\n+2\n")
+    };
+    let patch = ["src/a.rs", "lib/x.rs", "src/b.rs", "doc/c.md"]
+        .map(file)
+        .concat();
+    let diff = diff_of(&patch);
+    // `doc/` has no match, so it has no heading.
+    assert_eq!(
+        sidebar_rows(&diff, Some("rs")),
+        [
+            SideRow::Heading("src/".into()),
+            SideRow::File(0),
+            SideRow::Heading("lib/".into()),
+            SideRow::File(1),
+            SideRow::Heading("src/".into()),
+            SideRow::File(2),
+        ]
+    );
+    // `lib/x.rs` is skipped, so the two `src/` files share one heading.
+    assert_eq!(
+        sidebar_rows(&diff, Some("src")),
+        [
+            SideRow::Heading("src/".into()),
+            SideRow::File(0),
+            SideRow::File(2)
+        ]
+    );
 }
