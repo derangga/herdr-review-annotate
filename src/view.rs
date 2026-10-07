@@ -2078,10 +2078,11 @@ fn draw_sidebar(
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), list);
+    // The cursor's file has a bar either way, a dimmer one while the keys go to the stream.
     let style = if view.panel == Panel::Sidebar {
         Style::new().bg(theme.cursor)
     } else {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().bg(theme.header).add_modifier(Modifier::BOLD)
     };
     let selected = view.stream.side_row_of(view.stream.file_at(view.cursor));
     if let Some(selected) = selected.filter(|row| (top..top + height).contains(row)) {

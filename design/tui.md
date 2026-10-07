@@ -42,7 +42,8 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
   a whole name such as `Cargo.toml` first, then the lower-cased extension, else a generic file glyph) in the
   subtle colour, the file's name, and its added and removed line counts
   against the right edge. The name is cut with `…` before the counts, and the icon always stays. The sidebar is left out below 50
-  columns and follows the file under the cursor. With the sidebar focused, `up` and `down` move to the
+  columns and follows the file under the cursor. That file's row has a bar behind it: the cursor colour
+  while the sidebar is focused, and the header colour with bold text while the stream is. With the sidebar focused, `up` and `down` move to the
   previous and next file, and the page keys move by a page of files. A click on a heading does nothing.
 - `filter` puts the cursor in the query box at the top of the sidebar, and the sidebar lists only the files whose path
   matches it. The stream, its cursor, cards, hunk and thread jumps and send are not filtered.

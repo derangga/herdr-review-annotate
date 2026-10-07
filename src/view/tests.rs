@@ -1138,6 +1138,34 @@ fn the_sidebar_follows_the_cursor_through_headings() {
     assert!(fresh(&view, &diff).contains("M top.md"));
 }
 
+#[test]
+fn the_cursors_file_has_a_bar_in_the_sidebar_that_is_dimmer_while_the_stream_is_focused() {
+    let diff = diff_of(TREE);
+    let mut view = view(&diff, &Review::default(), 80, 20);
+    let theme = Theme::default();
+    let bars = |view: &View| {
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let (keymap, cache) = (Keymap::default(), Cache::default());
+        terminal
+            .draw(|frame| draw(frame, view, &diff, &keymap, &theme, None, &cache))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // The background of the sidebar's rows, at a column inside it.
+        (0..20).map(|y| buffer[(5, y)].bg).collect::<Vec<_>>()
+    };
+    let count = |rows: &[Color], colour| rows.iter().filter(|bg| **bg == colour).count();
+    let stream = bars(&view);
+    assert_eq!(count(&stream, theme.header), 1);
+    assert_eq!(count(&stream, theme.cursor), 0);
+    view.apply(Action::SwitchPanel);
+    let sidebar = bars(&view);
+    assert_eq!(count(&sidebar, theme.cursor), 1);
+    assert_eq!(count(&sidebar, theme.header), 0);
+    // The bar is on the same row in both.
+    let row = |rows: &[Color], colour| rows.iter().position(|bg| *bg == colour);
+    assert_eq!(row(&stream, theme.header), row(&sidebar, theme.cursor));
+}
+
 const SPLIT_PATCH: &str = "diff --git a/s.rs b/s.rs
 --- a/s.rs
 +++ b/s.rs
