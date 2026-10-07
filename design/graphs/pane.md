@@ -48,19 +48,36 @@ This is the only stream in the program. It merges two sources.
 ```
 -> loop
   -> termination flag set?                 R: signal flag   -> save draft (below), leave the loop
-  -> poll terminal, 250 ms                 R: term    E: Io -> leave the loop, restore terminal
+  -> anything changed?                     (pure)     no event, same size, log not read, no send, no slice -> no frame
+    -> draw                                R: term    with the tokens there are, a file not highlighted yet draws plain
+  -> poll terminal                         R: term    E: Io -> leave the loop, restore terminal
+                                                      0 ms while a file on screen is not highlighted to its end, else 250 ms
+    -> no event, and a file on screen is not highlighted to its end?
+      -> highlight one slice (below)       R: git, repo dir, budget
     -> key -> Keymap -> Action             (pure)     no binding -> ignored
     -> apply Action to the app state       R: per action, see the next graphs
   -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
     -> read from offset, fold, reload diff
-  -> anything changed?                     (pure)     no event, same size, log not read, no send -> skip both below
-  -> highlight the files on screen         R: git, repo dir   E: unreadable, not UTF-8, over 1 MiB -> escape, hunk snippets
-                                                              E: unknown language -> escape, plain rows
-  -> draw                                  R: term
 ```
 
 An idle tick builds no frame. The loop holds no lock between ticks. A panic hook restores the terminal
 before the message prints.
+
+## Highlight one slice
+
+```
+-> the files on screen not highlighted to their end, the cursor's file first   (pure)
+-> per file, while the budget says more
+  -> first step of this file? read it      R: git, repo dir   E: unknown language -> escape, no tokens, done
+                                                              E: side unreadable, not UTF-8, over 1 MiB -> escape, hunk snippets
+  -> parse one line, then ask the budget   R: budget          E: the engine cannot parse the line -> escape, no tokens for it
+    -> the line reads as its row does? keep its tokens   (pure)
+  -> no line left -> the file is done, its text is dropped
+```
+
+Cardinality: many steps per file. A step always parses one line, so the file gets further whatever the
+budget says. The budget is a closure: the loop passes 8 ms of the clock, a test passes a counter. A key
+waits for at most one slice and the read of one file.
 
 If the pane is closed while the editor holds text, the draft is saved as a comment at the anchor that
 was captured when `comment` was pressed. Losing typed text is the one data-loss path in the pane.

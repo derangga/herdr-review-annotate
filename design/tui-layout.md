@@ -58,7 +58,13 @@ Part of the [herdr-review design](../DESIGN.md).
   edited after the diff was loaded draws the rows that moved plain until the next reload.
 - A side that cannot be read, is not UTF-8, or is over 1 MiB is highlighted hunk by hunk instead, each hunk
   as a snippet of its rows on that side. A snippet cannot know it starts inside a comment or a string.
-- A file is highlighted when one of its rows first comes into the window, before the frame is drawn. A reload
-  against the same `rev` keeps the tokens of each file whose `DiffFile` did not change, and forgets the rest.
-  A reload against another `rev` forgets them all. Only the tokens of the lines the diff shows are kept.
+- A file is highlighted after one of its rows first came into the window, and never before a frame. The
+  frame of a key is drawn with what is highlighted so far, so a file that was just reached draws plain. While
+  no key is waiting the loop then highlights the files on screen in slices of 8 ms, the cursor's file first,
+  and draws again after each slice. A file is read in its first slice, and its lines are parsed from the top,
+  the new side before the old, so its colours arrive from the top down. A slice parses at least one line, so
+  one very long line can take longer than a slice.
+- A reload against the same `rev` keeps the tokens of each file whose `DiffFile` did not change, half
+  highlighted or whole, and forgets the rest. A reload against another `rev` forgets them all. Only the tokens
+  of the lines the diff shows are kept.
 - A build without the feature knows no language, reads nothing, and draws every row as before.

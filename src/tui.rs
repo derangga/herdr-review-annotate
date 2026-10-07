@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -49,6 +49,9 @@ use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
 pub(crate) const TICK: Duration = Duration::from_millis(250);
+
+/// How long the loop highlights before it looks for a key again.
+const SLICE: Duration = Duration::from_millis(8);
 
 /// `git` as the pane sees it: the arguments in, the stdout bytes out.
 pub type Git<'a> = dyn FnMut(&[String]) -> Result<Vec<u8>, GitError> + 'a;
@@ -368,15 +371,35 @@ impl App {
         }
     }
 
-    /// Highlight the files that have a row on screen and were not highlighted yet. It runs before
-    /// each frame, so a file is read when it scrolls into view and not before.
-    pub fn highlight(&mut self, git: &mut Git) {
+    /// The files that have a row on screen and are not highlighted to their end, the cursor's
+    /// file first.
+    fn unhighlighted(&self) -> impl Iterator<Item = usize> {
+        let first = self.view.stream.file_at(self.view.cursor);
+        let rest = self.view.visible_files().filter(move |file| *file != first);
+        let diff = self.diff.as_ref().filter(|_| self.screen == Screen::Review);
+        std::iter::once(first).chain(rest).filter(move |file| {
+            let file = diff.and_then(|diff| diff.files.get(*file));
+            file.is_some_and(|file| self.syntax.pending(file.path.as_str()))
+        })
+    }
+
+    /// Whether a file on screen still has lines to highlight.
+    pub fn highlight_pending(&self) -> bool {
+        self.unhighlighted().next().is_some()
+    }
+
+    /// Highlight more of the files on screen, for as long as `more` says so and at least one line.
+    /// The loop calls it when no key is waiting, so a file is read after it scrolled into view
+    /// and its rows draw plain until then.
+    pub fn highlight(&mut self, git: &mut Git, more: &mut dyn FnMut() -> bool) {
+        let files = self.unhighlighted().collect::<Vec<_>>();
         let (Some(diff), Some(root)) = (&self.diff, &self.root) else {
             return;
         };
-        for file in self.view.visible_files() {
-            if let Some(file) = diff.files.get(file) {
-                self.syntax.ensure(root.path(), &diff.rev, file, git);
+        for file in files.into_iter().filter_map(|file| diff.files.get(file)) {
+            self.syntax.step(root.path(), &diff.rev, file, git, more);
+            if !more() {
+                return;
             }
         }
     }
@@ -1381,7 +1404,7 @@ pub fn run_loop<B: Backend>(
     terminated: impl Fn() -> bool,
 ) -> Exit {
     // A frame is drawn only after something that can change it: an event, a new terminal size,
-    // a read of the log, or a send.
+    // a read of the log, a send, or a slice of highlighting.
     let mut dirty = true;
     let mut drawn_size = None;
     loop {
@@ -1394,14 +1417,21 @@ pub fn run_loop<B: Backend>(
             app.resize(Rect::new(0, 0, size.width, size.height));
         }
         if dirty || size != drawn_size {
-            app.highlight(git);
             if terminal.draw(|frame| render(frame, app)).is_err() {
                 app.save_draft();
                 return Exit::Io;
             }
             (dirty, drawn_size) = (false, size);
         }
-        let polled = poll(TICK);
+        // A key is drawn before anything is highlighted for it. The files on screen are
+        // highlighted a slice at a time, between polls that do not wait.
+        let highlighting = app.highlight_pending();
+        let polled = poll(if highlighting { Duration::ZERO } else { TICK });
+        if highlighting && matches!(polled, Ok(None)) {
+            let until = Instant::now() + SLICE;
+            app.highlight(git, &mut || Instant::now() < until);
+            dirty = true;
+        }
         dirty |= matches!(polled, Ok(Some(_)));
         let input = matches!(polled, Ok(Some(Event::Key(_) | Event::Mouse(_))));
         match polled {

@@ -756,6 +756,13 @@ fn frames<B: Backend>(
     events: Vec<Option<Event>>,
     mut before: impl FnMut(usize),
 ) -> usize {
+    // Every file is highlighted first, so no frame counted is one that highlighting draws.
+    fixture.with_git(|git| {
+        let (diff, root) = (app.diff.as_ref().unwrap(), app.root.as_ref().unwrap());
+        for file in &diff.files {
+            app.syntax.ensure(root.path(), &diff.rev, file, git);
+        }
+    });
     let count = events.len();
     let mut events = events.into_iter();
     let polls = Cell::new(0);
@@ -2718,7 +2725,7 @@ fn a_code_row_is_drawn_in_token_colours_over_its_tint_once_its_file_is_highlight
     // Before the file is highlighted the row is one colour, the green of an added row.
     assert_eq!(buffer[keyword].fg, app.theme.added);
     assert_eq!(buffer[number].fg, app.theme.added);
-    fixture.with_git(|git| app.highlight(git));
+    fixture.with_git(|git| app.highlight(git, &mut || true));
     let (after, buffer) = drawn(&mut app, 80);
     assert_eq!(after, rows, "highlighting changes colours and no character");
     let highlighted = cfg!(feature = "syntax");
@@ -2761,9 +2768,44 @@ const A_RS: &str =
 fn highlighted(fixture: &Fixture) -> App {
     std::fs::write(fixture.root.join("a.rs"), "let n = 42;\n").unwrap();
     let mut app = opened(fixture, A_RS);
-    fixture.with_git(|git| app.highlight(git));
+    fixture.with_git(|git| app.highlight(git, &mut || true));
     assert_eq!(fixture.shows.get(), 1);
     app
+}
+
+#[test]
+fn the_loop_does_not_wait_for_a_key_while_a_file_on_screen_is_not_highlighted() {
+    let fixture = Fixture::new("syntax-poll");
+    let mut app = fixture.started();
+    let waits = RefCell::new(Vec::new());
+    let poll = |wait| {
+        waits.borrow_mut().push(wait);
+        Ok(None)
+    };
+    fixture.with_git(|git| {
+        run_loop(&mut app, &mut terminal(), git, poll, || {
+            waits.borrow().len() >= 200
+        })
+    });
+    let waits = waits.into_inner();
+    assert_eq!(waits.first(), Some(&Duration::ZERO));
+    assert_eq!(waits.last(), Some(&TICK));
+    assert!(!app.highlight_pending());
+}
+
+#[cfg(feature = "syntax")]
+#[test]
+fn a_file_is_highlighted_only_once_no_key_is_waiting() {
+    let fixture = Fixture::new("syntax-idle");
+    std::fs::write(fixture.root.join("a.rs"), "let n = 42;\n").unwrap();
+    let mut app = opened(&fixture, A_RS);
+    // The frame of each key is drawn with the file not read yet.
+    drive(&fixture, &mut app, vec![Some(key('j')); 5], |_| {});
+    assert_eq!(fixture.shows.get(), 0);
+    assert!(app.highlight_pending());
+    drive(&fixture, &mut app, vec![None; 200], |_| {});
+    assert_eq!(fixture.shows.get(), 1);
+    assert!(!app.highlight_pending());
 }
 
 #[cfg(feature = "syntax")]
@@ -2772,7 +2814,7 @@ fn a_reload_with_the_file_unchanged_reads_it_no_more() {
     let fixture = Fixture::new("syntax-kept");
     let mut app = highlighted(&fixture);
     press(&fixture, &mut app, [key('R')]);
-    fixture.with_git(|git| app.highlight(git));
+    fixture.with_git(|git| app.highlight(git, &mut || true));
     assert_eq!(fixture.shows.get(), 1);
 }
 
@@ -2784,7 +2826,7 @@ fn a_reload_after_the_file_changed_highlights_it_again() {
     std::fs::write(fixture.root.join("a.rs"), "let n = 43;\n").unwrap();
     *fixture.patch.borrow_mut() = A_RS.replace("42", "43").into_bytes();
     press(&fixture, &mut app, [key('R')]);
-    fixture.with_git(|git| app.highlight(git));
+    fixture.with_git(|git| app.highlight(git, &mut || true));
     assert_eq!(fixture.shows.get(), 2);
 }
 
@@ -2796,7 +2838,7 @@ fn a_reload_against_another_revision_highlights_every_file_again() {
     let rev = app.diff.as_ref().unwrap().rev.clone();
     press(&fixture, &mut app, [key('b')]);
     assert_ne!(app.diff.as_ref().unwrap().rev, rev);
-    fixture.with_git(|git| app.highlight(git));
+    fixture.with_git(|git| app.highlight(git, &mut || true));
     assert_eq!(fixture.shows.get(), 2);
 }
 

@@ -13,7 +13,7 @@ Each `E:` line above is one test, and each test swaps only the parameters listed
 | Load diff | fixture `git` | Every row of the cases in `diff.md`, and a failed reload keeps the old diff |
 | TUI loop | `TestBackend`, key list, temp `dir` | A write from another process appears, a failed save keeps the editor text, termination with a draft saves it |
 | Filter the files | `TestBackend`, key list | Every `E:` line of the graph, each decision of `filter` in `tui.md`, and `matches` and `sidebar_rows` directly. The fixture is a diff of four files in two directories |
-| Highlight | recording `git`, temp repo dir | A side that cannot be read falls back to its hunks, so does one over 1 MiB, an unknown extension reads nothing |
+| Highlight | recording `git`, temp repo dir, a budget that counts lines | A side that cannot be read falls back to its hunks, so does one over 1 MiB, an unknown extension reads nothing, steps of 50 lines add up to the tokens of one whole pass, the loop reads no file while keys are waiting |
 | Send | recording `herdr`, temp `dir` | Each `Refusal`, a stale pane id falls through to the list, `Ambiguous`, `sent` not recorded still reports success |
 
 If a test needs a real `git`, a real Herdr or a real terminal to exercise one of these graphs, the

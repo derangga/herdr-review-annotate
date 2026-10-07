@@ -64,17 +64,27 @@ mod engine {
         })
     }
 
-    /// The tokens of each line of `text`, which is a whole file or a run of lines from one. A
-    /// line the engine cannot parse has no tokens.
-    pub fn highlight(text: &str, language: Language) -> Vec<Vec<Span>> {
-        let mut state = ParseState::new(language.0);
-        let mut stack = ScopeStack::new();
-        let mut lines = Vec::new();
-        for line in LinesWithEndings::from(text) {
+    /// A parse of one text that stops after any line and goes on from there.
+    #[derive(Debug)]
+    pub(super) struct Parser {
+        state: ParseState,
+        stack: ScopeStack,
+    }
+
+    impl Parser {
+        pub(super) fn new(language: Language) -> Self {
+            Self {
+                state: ParseState::new(language.0),
+                stack: ScopeStack::new(),
+            }
+        }
+
+        /// The tokens of the next line of the text, which `line` is with its line ending. A line
+        /// the engine cannot parse has no tokens.
+        pub(super) fn line(&mut self, line: &str) -> Vec<Span> {
             let mut spans: Vec<Span> = Vec::new();
-            let Ok(ops) = state.parse_line(line, &SYNTAXES) else {
-                lines.push(spans);
-                continue;
+            let Ok(ops) = self.state.parse_line(line, &SYNTAXES) else {
+                return spans;
             };
             let end = line.trim_end_matches(['\n', '\r']).len();
             let mut emit = |stack: &ScopeStack, from: usize, to: usize| {
@@ -89,14 +99,21 @@ mod engine {
             };
             let mut start = 0;
             for (at, op) in &ops {
-                emit(&stack, start, *at);
+                emit(&self.stack, start, *at);
                 start = *at;
-                let _ = stack.apply(op);
+                let _ = self.stack.apply(op);
             }
-            emit(&stack, start, line.len());
-            lines.push(spans);
+            emit(&self.stack, start, line.len());
+            spans
         }
-        lines
+    }
+
+    /// The tokens of each line of `text`, which is a whole file or a run of lines from one.
+    pub fn highlight(text: &str, language: Language) -> Vec<Vec<Span>> {
+        let mut parser = Parser::new(language);
+        LinesWithEndings::from(text)
+            .map(|line| parser.line(line))
+            .collect()
     }
 }
 
@@ -112,11 +129,26 @@ mod engine {
         None
     }
 
+    /// Never built, since there is no language to build it for.
+    #[derive(Debug)]
+    pub(super) struct Parser(Language);
+
+    impl Parser {
+        pub(super) fn new(language: Language) -> Self {
+            Self(language)
+        }
+
+        pub(super) fn line(&mut self, _line: &str) -> Vec<Span> {
+            match self.0 {}
+        }
+    }
+
     pub fn highlight(_text: &str, language: Language) -> Vec<Vec<Span>> {
         match language {}
     }
 }
 
+use engine::Parser;
 pub use engine::{Language, highlight, language};
 
 /// The tokens of the lines of one file that the diff shows. A line that is not here draws plain.
@@ -145,112 +177,137 @@ pub const fn side_of(row: &Row) -> Side {
     }
 }
 
-/// The tokens of the rows of `file` on `side`. With the text of the whole file, each row takes the
-/// tokens of its line, when the line still reads as the row does. Without it, the rows of each
-/// hunk on that side are highlighted as a snippet, which cannot know that the hunk starts inside
-/// a block comment or a string.
-fn side_tokens(
-    file: &DiffFile,
+/// A run of lines of one side of a file, parsed from its first line on.
+#[derive(Debug)]
+struct Part {
     side: Side,
-    text: Option<&str>,
-    language: Language,
-) -> HashMap<u32, Vec<Span>> {
-    let mut tokens = HashMap::new();
-    if let Some(text) = text {
+    parser: Parser,
+    text: String,
+    /// The byte of `text` the next line starts at.
+    at: usize,
+    /// The number of that line in the file.
+    line: u32,
+}
+
+/// The parts of `file` on `side`. With the text of the whole file it is one part, cut after the
+/// last line a hunk shows. Without it, the rows of each hunk on that side are a part of their own,
+/// which cannot know that the hunk starts inside a block comment or a string.
+fn parts(file: &DiffFile, side: Side, text: Option<String>, language: Language) -> Vec<Part> {
+    let part = |text, line| Part {
+        side,
+        parser: Parser::new(language),
+        text,
+        at: 0,
+        line,
+    };
+    if let Some(mut text) = text {
         let rows = file.hunks.iter().flat_map(|hunk| &hunk.rows);
         let needed = rows.filter_map(|row| row.line(side).filter(|_| side_of(row) == side));
         let last = needed.max().unwrap_or(0) as usize;
         // The parse has to start at line 1, but it can stop after the last line a hunk shows.
-        // ponytail: a hunk at the end of a 1 MiB file still parses the whole file on the UI
-        // thread. Move the parse to a worker thread if that stall shows up.
         let end = text
             .match_indices('\n')
             .nth(last.saturating_sub(1))
             .map_or(text.len(), |(at, _)| at + 1);
-        let prefix = text.get(..end).unwrap_or(text);
-        let mut lines = highlight(prefix, language);
-        // `row.text` has no `\r`, so the source lines must not have one either.
-        let source = prefix
-            .split('\n')
-            .map(|line| line.strip_suffix('\r').unwrap_or(line))
-            .collect::<Vec<_>>();
-        for row in file.hunks.iter().flat_map(|hunk| &hunk.rows) {
-            let Some(line) = row.line(side).filter(|_| side_of(row) == side) else {
-                continue;
-            };
-            let index = (line as usize).saturating_sub(1);
-            if source.get(index) == Some(&row.text.as_str()) {
-                let spans = lines.get_mut(index).map(std::mem::take);
-                tokens.insert(line, spans.unwrap_or_default());
-            }
-        }
-        return tokens;
+        text.truncate(end);
+        return vec![part(text, 1)];
     }
-    for hunk in &file.hunks {
-        let rows = hunk
-            .rows
-            .iter()
-            .filter_map(|row| Some((row, row.line(side)?)))
-            .collect::<Vec<_>>();
-        let mut snippet = String::new();
-        for (row, _) in &rows {
-            snippet.push_str(&row.text);
-            snippet.push('\n');
-        }
-        for ((row, line), spans) in rows.iter().zip(highlight(&snippet, language)) {
-            if side_of(row) == side {
-                tokens.insert(*line, spans);
-            }
-        }
-    }
-    tokens
+    let snippet = |hunk: &crate::diff::Hunk| {
+        let rows = hunk.rows.iter().filter(|row| row.line(side).is_some());
+        let first = rows.clone().next()?.line(side)?;
+        let text = rows.fold(String::new(), |text, row| text + &row.text + "\n");
+        Some(part(text, first))
+    };
+    file.hunks.iter().filter_map(snippet).collect()
 }
 
-/// The new side of `file` from the work tree, and its old side from `git show <rev>:<path>`. A
-/// side with no row to colour is not read. A side that cannot be read, is not UTF-8 or is over
-/// 1 MiB is `None`.
-fn tokenise(
-    root: &Path,
-    rev: &str,
-    file: &DiffFile,
-    language: Language,
-    git: &mut Git,
-) -> FileTokens {
-    let has = |side| {
-        let mut rows = file.hunks.iter().flat_map(|hunk| &hunk.rows);
-        rows.any(|row| side_of(row) == side)
-    };
-    let small = |text: &String| text.len() <= MAX_FILE;
-    let mut tokens = FileTokens::default();
-    if has(Side::New) {
-        let path = root.join(file.path.as_str());
-        let fits = std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= MAX_FILE as u64);
-        let text = fits.then(|| std::fs::read_to_string(&path).ok()).flatten();
-        tokens.new = side_tokens(file, Side::New, text.as_deref(), language);
+/// What is left to highlight of one file.
+#[derive(Debug)]
+struct Job {
+    /// The parts not parsed to their end yet, the next one last.
+    parts: Vec<Part>,
+    /// The text of each row to colour, by its side and line. A line of a part that reads
+    /// otherwise gets no tokens, since the file changed after the diff was taken.
+    rows: HashMap<(Side, u32), String>,
+}
+
+impl Job {
+    /// Read the new side of `file` from the work tree, and its old side from
+    /// `git show <rev>:<path>`. A side with no row to colour is not read. A side that cannot be
+    /// read, is not UTF-8 or is over 1 MiB is highlighted hunk by hunk.
+    fn open(root: &Path, rev: &str, file: &DiffFile, language: Language, git: &mut Git) -> Self {
+        let rows = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.rows)
+            .filter_map(|row| Some(((side_of(row), row.line(side_of(row))?), row.text.clone())))
+            .collect::<HashMap<_, _>>();
+        let has = |side| rows.keys().any(|(other, _)| *other == side);
+        let small = |text: &String| text.len() <= MAX_FILE;
+        let mut parts = Vec::new();
+        if has(Side::Old) {
+            let path = file.old_path.as_ref().unwrap_or(&file.path);
+            let args = [
+                "-C".to_owned(),
+                root.to_string_lossy().into_owned(),
+                "show".to_owned(),
+                format!("{rev}:{}", path.as_str()),
+            ];
+            // ponytail: git hands over the whole blob before its size is known. Ask `cat-file -s`
+            // first if large old sides turn out to cost time.
+            let text = git(&args)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .filter(small);
+            parts.extend(self::parts(file, Side::Old, text, language));
+        }
+        if has(Side::New) {
+            let path = root.join(file.path.as_str());
+            let fits = std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= MAX_FILE as u64);
+            let text = fits.then(|| std::fs::read_to_string(&path).ok()).flatten();
+            parts.extend(self::parts(file, Side::New, text, language));
+        }
+        // The new side is parsed first, and each side from its top.
+        parts.reverse();
+        Self { parts, rows }
     }
-    if has(Side::Old) {
-        let path = file.old_path.as_ref().unwrap_or(&file.path);
-        let args = [
-            "-C".to_owned(),
-            root.to_string_lossy().into_owned(),
-            "show".to_owned(),
-            format!("{rev}:{}", path.as_str()),
-        ];
-        // ponytail: git hands over the whole blob before its size is known. Ask `cat-file -s`
-        // first if large old sides turn out to cost time.
-        let text = git(&args)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(small);
-        tokens.old = side_tokens(file, Side::Old, text.as_deref(), language);
+
+    /// Parse the next line and keep its tokens in `tokens` when a row shows it. False when no
+    /// line is left.
+    // ponytail: one line is the smallest step, so a minified file of one long line still stalls
+    // the pane for as long as it takes. Move the parse to a worker thread if that shows up.
+    fn line(&mut self, tokens: &mut FileTokens) -> bool {
+        let Some(part) = self.parts.last_mut() else {
+            return false;
+        };
+        let rest = part.text.get(part.at..).unwrap_or_default();
+        let Some(line) = rest.split_inclusive('\n').next() else {
+            self.parts.pop();
+            return !self.parts.is_empty();
+        };
+        let spans = part.parser.line(line);
+        // `row.text` has no line ending, so the source line must not have one either.
+        let source = line.strip_suffix('\n').unwrap_or(line);
+        let source = source.strip_suffix('\r').unwrap_or(source);
+        if self.rows.get(&(part.side, part.line)).map(String::as_str) == Some(source) {
+            let lines = match part.side {
+                Side::Old => &mut tokens.old,
+                Side::New => &mut tokens.new,
+            };
+            lines.insert(part.line, spans);
+        }
+        part.at += line.len();
+        part.line += 1;
+        true
     }
-    tokens
 }
 
 /// The tokens of every file that has been on screen since the diff was loaded.
 #[derive(Debug, Default)]
 pub struct Cache {
     files: HashMap<String, FileTokens>,
+    /// The files of `files` that are not highlighted to their end yet.
+    jobs: HashMap<String, Job>,
 }
 
 impl Cache {
@@ -258,28 +315,58 @@ impl Cache {
     /// differently.
     pub fn clear(&mut self) {
         self.files.clear();
+        self.jobs.clear();
     }
 
     /// Keep the tokens of the files whose path `keep` accepts, and forget the rest.
     pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
         self.files.retain(|path, _| keep(path));
+        self.jobs.retain(|path, _| keep(path));
     }
 
-    /// The tokens of the file at `path`, when it has been highlighted.
+    /// The tokens `path` has so far, when its highlighting has started.
     pub fn file(&self, path: &str) -> Option<&FileTokens> {
         self.files.get(path)
     }
 
-    /// Highlight `file` unless it has been. `rev` is the revision the diff compares against. A
-    /// file in a language the engine does not know is remembered as having no tokens.
-    pub fn ensure(&mut self, root: &Path, rev: &str, file: &DiffFile, git: &mut Git) {
-        if self.files.contains_key(file.path.as_str()) {
-            return;
+    /// Whether `step` has lines of the file at `path` left to highlight.
+    pub fn pending(&self, path: &str) -> bool {
+        !self.files.contains_key(path) || self.jobs.contains_key(path)
+    }
+
+    /// Highlight more of `file`: read it when this is its first step, then parse at least one
+    /// line and go on for as long as `more` says so. `rev` is the revision the diff compares
+    /// against. A file in a language the engine does not know is remembered as having no tokens.
+    pub fn step(
+        &mut self,
+        root: &Path,
+        rev: &str,
+        file: &DiffFile,
+        git: &mut Git,
+        more: &mut dyn FnMut() -> bool,
+    ) {
+        let path = file.path.as_str();
+        if !self.files.contains_key(path) {
+            self.files.insert(path.to_owned(), FileTokens::default());
+            if let Some(language) = language(path) {
+                let job = Job::open(root, rev, file, language, git);
+                self.jobs.insert(path.to_owned(), job);
+            }
         }
-        let tokens = language(file.path.as_str())
-            .map(|language| tokenise(root, rev, file, language, git))
-            .unwrap_or_default();
-        self.files.insert(file.path.as_str().to_owned(), tokens);
+        let (Some(job), Some(tokens)) = (self.jobs.get_mut(path), self.files.get_mut(path)) else {
+            return;
+        };
+        while job.line(tokens) {
+            if !more() {
+                return;
+            }
+        }
+        self.jobs.remove(path);
+    }
+
+    /// Highlight `file` to its end unless it has been.
+    pub fn ensure(&mut self, root: &Path, rev: &str, file: &DiffFile, git: &mut Git) {
+        self.step(root, rev, file, git, &mut || true);
     }
 }
 
@@ -593,6 +680,40 @@ mod engine_tests {
         assert_eq!(tokens.line(Side::New, 200).unwrap(), whole(&new, 200));
         assert_eq!(tokens.line(Side::Old, 200).unwrap(), whole(&old, 200));
         assert!(tokens_of(&whole(&new, 200)).contains(&Token::Keyword));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_step_highlights_as_far_as_its_budget_and_the_steps_add_up_to_the_whole() {
+        let (old, new) = (
+            long(None, false),
+            long(Some((190, "let changed = 190;")), false),
+        );
+        let root = root("step", Some(&new));
+        let file = patch(&[(190, "let v190 = 190;", "let changed = 190;")], "");
+        let mut git = |_: &[String]| Ok(old.as_bytes().to_vec());
+        let mut cache = Cache::default();
+        assert!(cache.pending("app.js"));
+        // A budget that is spent at once still parses one line, so every step gets further.
+        cache.step(&root, "HEAD", &file, &mut git, &mut || false);
+        assert!(cache.pending("app.js"));
+        assert_eq!(cache.file("app.js").unwrap().line(Side::New, 190), None);
+        let mut steps = 1;
+        while cache.pending("app.js") {
+            let mut lines = 0;
+            cache.step(&root, "HEAD", &file, &mut git, &mut || {
+                lines += 1;
+                lines < 50
+            });
+            steps += 1;
+        }
+        // 190 lines of each side, 50 to a step.
+        assert_eq!(steps, 9);
+        let mut whole = Cache::default();
+        whole.ensure(&root, "HEAD", &file, &mut git);
+        assert!(!whole.pending("app.js"));
+        assert_eq!(cache.file("app.js"), whole.file("app.js"));
+        assert!(cache.file("app.js").unwrap().line(Side::Old, 190).is_some());
         let _ = std::fs::remove_dir_all(root);
     }
 
