@@ -4,6 +4,7 @@ use ratatui::crossterm::event::KeyModifiers;
 
 use super::*;
 use crate::diff::{MAX_PATCH, parse};
+use crate::icons::icon;
 use crate::store::{Anchor, Author, Comment, CommentId, Status, Thread};
 
 const PATCH: &str = "diff --git a/a.rs b/a.rs
@@ -1540,7 +1541,7 @@ fn the_status_letter_has_the_colour_of_its_change() {
     let diff = diff_of(PATCH);
     let theme = Theme::default();
     let letter_color = |file: usize, letter: &str| {
-        side_file_line(&diff.files[file], false, 24, &theme)
+        side_file_line(&diff.files[file], false, false, 24, &theme)
             .spans
             .iter()
             .find(|span| span.content == letter)
@@ -1552,6 +1553,64 @@ fn the_status_letter_has_the_colour_of_its_change() {
     let header = file_header(&diff.files[0], 30, &theme);
     assert_eq!(header.spans[0].content, "M");
     assert_eq!(header.spans[0].style.fg, Some(theme.warning));
+}
+
+fn side_row(file: usize, icons: bool, width: usize) -> Line<'static> {
+    side_file_line(
+        &diff_of(PATCH).files[file],
+        false,
+        icons,
+        width,
+        &Theme::default(),
+    )
+}
+
+fn text_of(line: &Line) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn an_icon_sits_between_the_letter_and_the_name_in_the_subtle_colour() {
+    let theme = Theme::default();
+    let line = side_row(0, true, 24);
+    assert_eq!(
+        text_of(&line),
+        format!(" M {} a.rs          +2 -1", icon("a.rs"))
+    );
+    assert_eq!(string_width(&text_of(&line)), 24);
+    let glyph = line
+        .spans
+        .iter()
+        .find(|span| span.content == icon("a.rs").to_string());
+    assert_eq!(glyph.and_then(|span| span.style.fg), Some(theme.subtle));
+}
+
+#[test]
+fn a_row_without_icons_is_the_row_as_it_was() {
+    let line = side_row(0, false, 24);
+    assert_eq!(text_of(&line), " M a.rs            +2 -1");
+    assert_eq!(string_width(&text_of(&line)), 24);
+}
+
+#[test]
+fn a_narrow_sidebar_cuts_the_name_and_keeps_the_icon_before_the_counts() {
+    let line = side_row(0, true, 11);
+    assert_eq!(text_of(&line), format!(" M {} …+2 -1", icon("a.rs")));
+    assert_eq!(string_width(&text_of(&line)), 11);
+}
+
+#[test]
+fn a_row_always_fits_its_width() {
+    // Below 5 cells the counts alone do not fit, which the name cannot help.
+    for icons in [false, true] {
+        for width in 5..30 {
+            let line = text_of(&side_row(0, icons, width));
+            assert_eq!(string_width(&line), width, "{icons} {width} {line:?}");
+        }
+    }
 }
 
 #[test]

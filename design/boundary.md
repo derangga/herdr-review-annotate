@@ -9,7 +9,7 @@ boundary never sees a raw string or `serde_json::Value`.
 |---|---|---|
 | `review.jsonl` line | `Event` | `Warning::SkippedLine`, the read continues |
 | `meta.json` | `Meta` | `Warning::MetaUnreadable`, an empty `Meta` is used and rewritten on the next save |
-| `config.toml` | `Keymap`, `Theme`, the sidebar's starting state | `Warning::Config`, defaults are used |
+| `config.toml` | `Keymap`, `Theme`, `SidebarConfig` (open, icons) | `Warning::Config`, defaults are used |
 | `git` stdout | `Diff` | `Change::Unparsed` for that file |
 | `herdr` stdout and stderr | `Target`, `AgentStatus`, `HerdrError` | `Refusal::AgentGone` or the raw message |
 | Environment | `Env` | A missing value is `None`. A pane id is trusted only after `agent get` confirms it |

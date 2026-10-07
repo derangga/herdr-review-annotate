@@ -48,16 +48,21 @@ name = "catppuccin-latte"
 - The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
   show the terminal's own background. The colours are 24-bit. A terminal without truecolor is not handled.
 
-The same file says whether the sidebar starts open:
+The same file says whether the sidebar starts open, and whether its file rows show an icon:
 
 ```toml
 [sidebar]
 open = false
+icons = false
 ```
 
 - `open` is `true` or `false`. A `config.toml` with no `[sidebar]`, or a `[sidebar]` with no `open`, starts
   with the sidebar shown.
-- An `open` that is not a boolean and a `sidebar` that is not a table are each one `Warning::Config`, and
-  the pane starts with the sidebar shown.
+- `icons` is `true` or `false` and is on when missing. The glyphs are Nerd Font glyphs, and the pane cannot
+  tell whether the terminal's font has them, so a user without one sets `icons = false`.
+- An `open` that is not a boolean, an `icons` that is not a boolean and a `sidebar` that is not a table are
+  each one `Warning::Config`. A bad `open` starts the sidebar shown, a bad `icons` shows icons, and each
+  falls back alone: a bad `icons` does not reset a good `open`, and the reverse. A bad `sidebar` table is one
+  warning and both defaults.
 - The table is read once when the pane starts, with `[keys]` and `[theme]`. `toggle_sidebar` flips the
   state for the session and writes nothing, so the next start takes the file's value again.

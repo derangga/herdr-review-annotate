@@ -7,7 +7,10 @@ Part of the [herdr-review design](../../DESIGN.md).
 ```
 -> load keymap                             R: env (config dir)   E: any -> escape, defaults + warning
 -> load theme                              R: env (config dir)   E: unknown name, bad table -> escape, mocha + warning
--> load sidebar state                      R: env (config dir)   E: not a boolean, bad table -> escape, shown + warning
+-> load sidebar config                     R: env (config dir)   E: open not a boolean -> escape, shown + warning
+                                                                 E: icons not a boolean -> escape, icons shown + warning
+                                                                 E: [sidebar] not a table -> escape, both defaults + one warning
+                                                                 E: file missing, unreadable, not TOML -> escape, defaults, no warning here
 -> find root, load meta                    R: git, dir           E: NotARepo -> message screen
 -> enter raw mode and alternate screen     R: term    scope: restored by a guard on exit, panic, SIGTERM, SIGHUP
 -> store read, fold                        R: dir     E: Io -> message screen with the path

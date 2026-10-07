@@ -37,8 +37,10 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
   diff's order, so a directory that comes again later gets a second heading. A file row is a `•` when a thread
   hung in it is unsent, a letter for how it changed (M modified, A added, D deleted, R renamed, ? untracked,
   B binary, S submodule, L too large, ! unparsed) in the colour of the change (M warning, A added,
-  D and ! removed, R accent, ? agent, B S L subtle), the file's name, and its added and removed line counts
-  against the right edge. The name is cut with `…` before the counts. The sidebar is left out below 50
+  D and ! removed, R accent, ? agent, B S L subtle), with `[sidebar] icons` on a Nerd Font glyph for the file's type after the letter (`icons.rs`:
+  a whole name such as `Cargo.toml` first, then the lower-cased extension, else a generic file glyph) in the
+  subtle colour, the file's name, and its added and removed line counts
+  against the right edge. The name is cut with `…` before the counts, and the icon always stays. The sidebar is left out below 50
   columns and follows the file under the cursor. With the sidebar focused, `up` and `down` move to the
   previous and next file, and the page keys move by a page of files. A click on a heading does nothing.
 - `toggle_sidebar` hides the sidebar and shows it again. While it is hidden the stream has the whole

@@ -29,6 +29,7 @@ Records:
 | `Diff` | `files`, `rev` (what the working tree was compared against), `spec`, `notices` (cap reached, base missing, and so on) |
 | `Select` | `row`, `half: Option<Side>`: where a range being selected started, and the half of a split row it started on. `View::select` holds one while visual mode is on, and `View::drag` is whether a left press in the stream is held. Neither is stored |
 | `Keymap` | Key to `Action`, plus `warnings` |
+| `SidebarConfig` | `open` (default true) and `icons` (default false), read once from `[sidebar]` into `View::sidebar` and `View::icons` |
 | `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |
 | `Env` | Every `HERDR_*` and `REVIEW_*` value, read once in `main.rs` |
 

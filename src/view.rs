@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::cards::{Card, Look, card};
 use crate::diff::{Change, Diff, DiffFile, Hunk, Placement, Row, RowKind, place};
+use crate::icons::icon;
 use crate::keymap::{Action, Keymap};
 use crate::store::{Anchor, AnchorTarget, CommentId, RelPath, Review, Side, Spec, Warning};
 use crate::syntax::{Cache, FileTokens, side_of};
@@ -703,33 +704,60 @@ pub fn areas(area: Rect, sidebar: bool) -> Areas {
     }
 }
 
-/// Whether the sidebar starts open: `[sidebar] open` in the `config.toml` at `path`, and what was
-/// wrong with that table. A file that is missing, unreadable or not TOML is open with no warning
-/// here, because the keymap reads the same file and reports it.
-pub fn sidebar_open(path: Option<&Path>) -> (bool, Vec<Warning>) {
-    path.and_then(|path| std::fs::read_to_string(path).ok())
-        .map_or_else(|| (true, Vec::new()), |text| sidebar_open_from_toml(&text))
+/// What `[sidebar]` in the `config.toml` sets: whether the sidebar starts open, and whether its file
+/// rows show an icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarConfig {
+    pub open: bool,
+    pub icons: bool,
 }
 
-/// The starting state of the sidebar for the text of a `config.toml`. Anything but a boolean is
-/// a warning and an open sidebar.
-pub fn sidebar_open_from_toml(text: &str) -> (bool, Vec<Warning>) {
-    let fallback = |what: &str| {
-        let message = format!("{what}, showing the sidebar");
-        (true, vec![Warning::Config(message)])
-    };
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self {
+            open: true,
+            icons: true,
+        }
+    }
+}
+
+/// The `[sidebar]` table of the `config.toml` at `path`, and what was wrong with it. A file that
+/// is missing, unreadable or not TOML gives the defaults with no warning here, because the keymap
+/// reads the same file and reports it.
+pub fn sidebar_config(path: Option<&Path>) -> (SidebarConfig, Vec<Warning>) {
+    path.and_then(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(
+            || (SidebarConfig::default(), Vec::new()),
+            |text| sidebar_config_from_toml(&text),
+        )
+}
+
+/// The sidebar config for the text of a `config.toml`. Each value that is not a boolean is one
+/// warning and falls back to its default alone.
+pub fn sidebar_config_from_toml(text: &str) -> (SidebarConfig, Vec<Warning>) {
+    let mut config = SidebarConfig::default();
+    let mut warnings = Vec::new();
+    let mut warn = |message: &str| warnings.push(Warning::Config(message.to_owned()));
     let Ok(table) = text.parse::<toml::Table>() else {
-        return (true, Vec::new());
+        return (config, warnings);
     };
     match table.get("sidebar") {
-        None => (true, Vec::new()),
-        Some(toml::Value::Table(sidebar)) => match sidebar.get("open") {
-            None => (true, Vec::new()),
-            Some(toml::Value::Boolean(open)) => (*open, Vec::new()),
-            Some(_) => fallback("[sidebar] open is not true or false"),
-        },
-        Some(_) => fallback("[sidebar] is not a table"),
+        None => {}
+        Some(toml::Value::Table(sidebar)) => {
+            match sidebar.get("open") {
+                None => {}
+                Some(toml::Value::Boolean(open)) => config.open = *open,
+                Some(_) => warn("[sidebar] open is not true or false, showing the sidebar"),
+            }
+            match sidebar.get("icons") {
+                None => {}
+                Some(toml::Value::Boolean(icons)) => config.icons = *icons,
+                Some(_) => warn("[sidebar] icons is not true or false, showing icons"),
+            }
+        }
+        Some(_) => warn("[sidebar] is not a table, showing the sidebar"),
     }
+    (config, warnings)
 }
 
 /// Where the cursor was, to put it back after the rows change.
@@ -765,6 +793,8 @@ pub struct View {
     pub area: Rect,
     /// The user wants the sidebar. A pane under 50 columns leaves it out all the same.
     pub sidebar: bool,
+    /// Each file row of the sidebar shows an icon. Set once from the config.
+    pub icons: bool,
     /// Where a range started, while one is being selected. This is visual mode.
     pub select: Option<Select>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
@@ -802,6 +832,7 @@ impl Default for View {
             help: false,
             area: Rect::default(),
             sidebar: true,
+            icons: false,
             select: None,
             forced: None,
             hscroll: 0,
@@ -1748,9 +1779,15 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
     Rect::new(stream.x, stream.y + y, stream.width, height)
 }
 
-/// One file of the sidebar: a mark for unsent comments, the letter, the name, and the counts
-/// pushed to the right edge. The name gives way first.
-fn side_file_line(file: &DiffFile, unsent: bool, width: usize, theme: &Theme) -> Line<'static> {
+/// One file of the sidebar: a mark for unsent comments, the letter, an icon when `icons` is on, the
+/// name, and the counts pushed to the right edge. The name gives way first.
+fn side_file_line(
+    file: &DiffFile,
+    unsent: bool,
+    icons: bool,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
     let (added, removed) = file.stat();
     let mut counts = Vec::new();
     if added > 0 {
@@ -1775,26 +1812,34 @@ fn side_file_line(file: &DiffFile, unsent: bool, width: usize, theme: &Theme) ->
         .rsplit_once('/')
         .map_or(file.path.as_str(), |(_, name)| name);
     let mark = if unsent { '•' } else { ' ' };
-    let head = format!(
-        "{mark}{} {}",
-        glyph(file.change),
-        sanitize_terminal_text(name)
-    );
+    let letter = glyph(file.change);
     let room = width.saturating_sub(counts_width + usize::from(counts_width > 0));
-    let head = head_to_width(&head, room);
-    let pad = width.saturating_sub(string_width(&head) + counts_width);
-    // The mark and the letter are one character each, so they are the first two of `head`.
-    let letter_at = head.chars().next().map_or(0, char::len_utf8);
-    let letter_end = letter_at + head[letter_at..].chars().next().map_or(0, char::len_utf8);
-    let mut spans = vec![
-        Span::raw(head[..letter_at].to_owned()),
-        Span::styled(
-            head[letter_at..letter_end].to_owned(),
-            Style::new().fg(glyph_color(file.change, theme)),
-        ),
-        Span::raw(head[letter_end..].to_owned()),
-        Span::raw(" ".repeat(pad)),
-    ];
+    // The mark, the letter and a space, then the icon and a space. All of them are one cell each.
+    let prefix_width = if icons { 5 } else { 3 };
+    let mut spans = if room < prefix_width {
+        let plain = format!("{mark}{letter} {}", if icons { icon(name) } else { ' ' });
+        vec![Span::raw(truncate_to_width(&plain, room))]
+    } else {
+        let mut spans = vec![
+            Span::raw(mark.to_string()),
+            Span::styled(
+                letter.to_string(),
+                Style::new().fg(glyph_color(file.change, theme)),
+            ),
+            Span::raw(" "),
+        ];
+        if icons {
+            spans.push(Span::styled(icon(name).to_string(), theme.dim()));
+            spans.push(Span::raw(" "));
+        }
+        let name = sanitize_terminal_text(name);
+        spans.push(Span::raw(head_to_width(&name, room - prefix_width)));
+        spans
+    };
+    let used: usize = spans.iter().map(|span| string_width(&span.content)).sum();
+    spans.push(Span::raw(
+        " ".repeat(width.saturating_sub(used + counts_width)),
+    ));
     spans.extend(counts);
     Line::from(spans)
 }
@@ -1820,7 +1865,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, view: &View, diff: &Diff, theme: 
             SideRow::Heading(text) => Line::styled(tail_to_width(text, width), theme.dim()),
             SideRow::File(index) => diff.files.get(*index).map_or_else(Line::default, |file| {
                 let unsent = view.stream.unsent.get(*index).copied().unwrap_or(false);
-                side_file_line(file, unsent, width, theme)
+                side_file_line(file, unsent, view.icons, width, theme)
             }),
         })
         .collect::<Vec<_>>();

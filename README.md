@@ -178,6 +178,7 @@ name = "catppuccin-latte"     # mocha (default), macchiato, frappe, latte
 
 [sidebar]
 open = false                  # start with the sidebar hidden
+icons = false                 # hide the file-type glyph on each file row, which needs a Nerd Font
 ```
 
 - Spell keys as Herdr does: `ctrl+`, `shift+`, `alt+`, and names such as `enter`, `tab`, `pageup`.

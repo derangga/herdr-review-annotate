@@ -12,6 +12,7 @@ pub mod edit_keys;
 pub mod editor;
 pub mod env;
 pub mod herdr;
+pub mod icons;
 pub mod keymap;
 pub mod message;
 pub mod message_action;

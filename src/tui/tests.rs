@@ -2072,13 +2072,22 @@ fn the_sidebar_key_hides_and_shows_it_and_the_cards_follow_the_stream_s_width() 
         let mut app = opened(&fixture, patch_text());
         let last = usize::from(width) - 1;
         assert_eq!(card_span(&mut app, width), (shown, last));
-        assert!(drawn(&mut app, width).0.join("\n").contains("•M a.rs"));
+        assert!(
+            drawn(&mut app, width)
+                .0
+                .join("\n")
+                .contains(&format!("•M {} a.rs", crate::icons::icon("a.rs")))
+        );
         act(&fixture, &mut app, Action::ToggleSidebar);
         assert!(!app.view.sidebar_drawn());
         assert_eq!(card_span(&mut app, width), (hidden, last));
         let (rows, _) = drawn(&mut app, width);
         assert!(rows[0].starts_with("M a.rs"), "{}", rows[0]);
-        assert!(!rows.join("\n").contains("•M a.rs"));
+        assert!(
+            !rows
+                .join("\n")
+                .contains(&format!("•M {} a.rs", crate::icons::icon("a.rs")))
+        );
         act(&fixture, &mut app, Action::ToggleSidebar);
         assert!(app.view.sidebar_drawn());
         assert_eq!(card_span(&mut app, width), (shown, last));
@@ -2250,6 +2259,95 @@ fn a_sidebar_table_of_the_wrong_shape_warns_and_starts_shown() {
         assert_eq!(app.warnings, [Warning::Config(warning.to_owned())]);
         assert!(screen_of(&app).contains(warning), "{config}");
     }
+}
+
+/// The sidebar's rows of an 80 column pane started with `config`, cut to the sidebar's width.
+fn sidebar_rows(fixture: &Fixture, config: &str) -> (App, Vec<String>) {
+    let mut app = configured(fixture, config);
+    let rows = drawn(&mut app, 80)
+        .0
+        .iter()
+        .map(|row| row.chars().take(20).collect())
+        .collect();
+    (app, rows)
+}
+
+fn first_file_row(rows: &[String]) -> &str {
+    rows.iter()
+        .find(|row| row.contains("a.rs"))
+        .map_or("", String::as_str)
+}
+
+#[test]
+fn icons_true_draws_the_icon_after_the_letter() {
+    let fixture = Fixture::new("sidebar-icons");
+    let (app, rows) = sidebar_rows(&fixture, "[sidebar]\nicons = true\n");
+    assert!(app.warnings.is_empty(), "{:?}", app.warnings);
+    let glyph = crate::icons::icon("a.rs");
+    assert!(
+        first_file_row(&rows).starts_with(&format!(" M {glyph} a.rs")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn icons_are_on_without_a_config_and_icons_false_turns_them_off() {
+    let fixture = Fixture::new("sidebar-no-icons");
+    let glyph = crate::icons::icon("a.rs");
+    for config in ["", "[keys]\n", "[sidebar]\n"] {
+        let (app, rows) = sidebar_rows(&fixture, config);
+        assert!(app.warnings.is_empty(), "{config}");
+        assert!(
+            first_file_row(&rows).starts_with(&format!(" M {glyph} a.rs")),
+            "{config} {rows:?}"
+        );
+    }
+    let (app, rows) = sidebar_rows(&fixture, "[sidebar]\nicons = false\n");
+    assert!(app.warnings.is_empty());
+    assert!(first_file_row(&rows).starts_with(" M a.rs"), "{rows:?}");
+}
+
+#[test]
+fn icons_that_is_not_a_boolean_warns_and_leaves_open_alone() {
+    let fixture = Fixture::new("sidebar-icons-bad");
+    let warning = "[sidebar] icons is not true or false, showing icons";
+    let (app, rows) = sidebar_rows(&fixture, "[sidebar]\nicons = \"yes\"\n");
+    assert_eq!(app.warnings, [Warning::Config(warning.to_owned())]);
+    assert!(app.view.sidebar_drawn());
+    let glyph = crate::icons::icon("a.rs");
+    assert!(
+        first_file_row(&rows).starts_with(&format!(" M {glyph} a.rs")),
+        "{rows:?}"
+    );
+    let app = configured(&fixture, "[sidebar]\nopen = false\nicons = \"yes\"\n");
+    assert_eq!(app.warnings, [Warning::Config(warning.to_owned())]);
+    assert!(!app.view.sidebar_drawn());
+}
+
+#[test]
+fn open_that_is_not_a_boolean_warns_and_leaves_icons_alone() {
+    let fixture = Fixture::new("sidebar-open-bad");
+    let (app, rows) = sidebar_rows(&fixture, "[sidebar]\nopen = \"no\"\nicons = false\n");
+    assert_eq!(
+        app.warnings,
+        [Warning::Config(
+            "[sidebar] open is not true or false, showing the sidebar".to_owned()
+        )]
+    );
+    assert!(first_file_row(&rows).starts_with(" M a.rs"), "{rows:?}");
+}
+
+#[test]
+fn a_bad_sidebar_table_is_one_warning_and_both_defaults() {
+    let fixture = Fixture::new("sidebar-table-bad");
+    let (app, rows) = sidebar_rows(&fixture, "sidebar = false\n");
+    assert_eq!(app.warnings.len(), 1, "{:?}", app.warnings);
+    assert!(app.view.sidebar_drawn());
+    let glyph = crate::icons::icon("a.rs");
+    assert!(
+        first_file_row(&rows).starts_with(&format!(" M {glyph} a.rs")),
+        "{rows:?}"
+    );
 }
 
 #[test]

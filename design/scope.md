@@ -50,6 +50,7 @@ herdr-review/
     actions.rs         what the user's actions write: comment, reply, edit, delete, resolve, reopen
     editor.rs          multi-line comment editor   (adapted from herdr-annotate)
     edit_keys.rs       editor key map              (from herdr-annotate)
+    icons.rs           the Nerd Font glyph for a file name, for the sidebar rows
     width.rs           display width helpers       (from herdr-annotate)
     agent_delivery.rs  readiness check and prompt  (from herdr-annotate)
     herdr.rs           herdr CLI wrapper           (from herdr-annotate)

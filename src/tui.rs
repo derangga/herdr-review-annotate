@@ -42,7 +42,9 @@ use crate::store::{
 use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
-use crate::view::{View, areas, draw, editor_rect, key_style, note_box, popup_block, sidebar_open};
+use crate::view::{
+    View, areas, draw, editor_rect, key_style, note_box, popup_block, sidebar_config,
+};
 use crate::width::{string_width, truncate_to_width};
 
 /// How long the loop waits for a key before it checks the store and the signal flag.
@@ -223,7 +225,7 @@ impl App {
             .map(|dir| Path::new(dir).join("config.toml"));
         let keymap = Keymap::load(config.as_deref());
         let (theme, theme_warnings) = Theme::load(config.as_deref());
-        let (sidebar, sidebar_warnings) = sidebar_open(config.as_deref());
+        let (sidebar, sidebar_warnings) = sidebar_config(config.as_deref());
         let mut warnings = keymap.warnings.clone();
         warnings.extend(theme_warnings);
         warnings.extend(sidebar_warnings);
@@ -252,7 +254,8 @@ impl App {
             compose: None,
             now: real_now,
         };
-        app.view.sidebar = sidebar;
+        app.view.sidebar = sidebar.open;
+        app.view.icons = sidebar.icons;
         app
     }
 
