@@ -1,6 +1,6 @@
 id = "review"
 name = "Review"
-version = "0.3.1"
+version = "0.4.0"
 min_herdr_version = "0.9.1"
 description = "Review a diff in a pane and send the comments to an agent."
 platforms = ["macos", "linux"]
