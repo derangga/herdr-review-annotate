@@ -30,8 +30,11 @@ Part of the [herdr-review design](../DESIGN.md).
     with a cell for every pair of tokens.
   - The cursor's row, the rows of a selection and the rows the open editor comments on keep the marks: the
     bar colours every cell of the row but the marked ones (`bar` in `view.rs`).
-  - The marks are computed when a row is drawn, for the rows in the window, and nothing is kept. They
-    follow the sideways scroll with the code. There is no key and no config entry to turn them off, and
+  - The marks of a row are compared the first time the row is drawn, so only for rows that reach the
+    window, and kept in the stream (`Stream::marks`) until it is laid out again. A later frame looks them
+    up. Without that, a screen of long lines cost about 4 ms a frame, and the frames drawn between slices
+    of highlighting compared the same lines again each time. They follow the sideways scroll with the
+    code. There is no key and no config entry to turn them off, and
     they do not need the `syntax` feature.
 - A row of a split diff has two halves. `comment` and `select_range` use the new half, or the old half of a
   row with no new line. A click on a half chooses it for that row until the cursor moves. A range takes the

@@ -5,7 +5,8 @@
 //! header and its lines. `Stream` keeps only where each file starts, so a row is looked up when it
 //! is drawn and nothing is laid out for files that are off screen.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::Path;
@@ -29,7 +30,7 @@ use crate::syntax::{Cache, FileTokens, side_of};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, tail_to_width, truncate_to_width};
-use crate::words::changed;
+use crate::words::{Marks, changed};
 
 /// Rows the mouse wheel moves per notch.
 const WHEEL_ROWS: usize = 3;
@@ -380,7 +381,23 @@ pub struct Stream {
     /// Per file, the threads a collapsed file hides, in the order their cards would be in. Their
     /// row is the file's header, so a thread jump reaches them. An open file hides none.
     hidden: Vec<Vec<usize>>,
+    marks: MarkCache,
 }
+
+/// The changed words of the code rows that have been drawn, by stream row: those of the removed
+/// line, or the old half, then those of the added line, or the new half. Drawing fills it, so a
+/// frame compares a pair of lines once and looks the answer up afterwards. A new layout starts
+/// empty, and it takes no part in comparing two streams.
+#[derive(Debug, Clone, Default)]
+struct MarkCache(RefCell<HashMap<usize, (Marks, Marks)>>);
+
+impl PartialEq for MarkCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for MarkCache {}
 
 /// One row of the sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -761,15 +778,32 @@ impl Stream {
         })
     }
 
-    /// The row a unified code row is paired with, for the words that differ between the two.
-    fn pair_of<'a>(&self, diff: &'a Diff, row: usize) -> Option<&'a Row> {
-        let Some(At::Base { file, offset }) = self.at(row) else {
+    /// The words to mark on stream row `row`: those of the removed line of its pair, then those of
+    /// the added line. A split row draws both and a unified row the one that is its own. They are
+    /// compared the first time the row is drawn and kept until the stream is laid out again.
+    fn marks(&self, diff: &Diff, row: usize) -> (Marks, Marks) {
+        let mut cache = self.marks.0.borrow_mut();
+        let compare = || self.compare(diff, row).unwrap_or_default();
+        cache.entry(row).or_insert_with(compare).clone()
+    }
+
+    /// `marks`, compared now. `None` for a row that is no pair of a removed and an added line.
+    fn compare(&self, diff: &Diff, row: usize) -> Option<(Marks, Marks)> {
+        let At::Base { file, offset } = self.at(row)? else {
             return None;
         };
-        let FileRow::Line { hunk, pair, .. } = *self.files.get(file)?.get(offset)? else {
-            return None;
+        let hunks = &diff.files.get(file)?.hunks;
+        let line = |hunk: usize, row: usize| hunks.get(hunk)?.rows.get(row);
+        let (first, second) = match *self.files.get(file)?.get(offset)? {
+            FileRow::Line { hunk, row, pair } => (line(hunk, row)?, line(hunk, pair?)?),
+            FileRow::Pair { hunk, old, new } => (line(hunk, old?)?, line(hunk, new?)?),
+            _ => return None,
         };
-        diff.files.get(file)?.hunks.get(hunk)?.rows.get(pair?)
+        match (first.kind, second.kind) {
+            (RowKind::Removed, RowKind::Added) => changed(&first.text, &second.text),
+            (RowKind::Added, RowKind::Removed) => changed(&second.text, &first.text),
+            _ => None,
+        }
     }
 
     /// The kind of file row a stream row is, when it is one.
@@ -1951,7 +1985,7 @@ fn row_line(
     skip: usize,
     theme: &Theme,
     tokens: Option<&FileTokens>,
-    pair: Option<&Row>,
+    (was, now): &(Marks, Marks),
     index: usize,
 ) -> Line<'static> {
     match row {
@@ -1979,14 +2013,9 @@ fn row_line(
         }
         RowRef::Pair { old, new } => {
             let (left, right) = split_widths(width);
-            let (was, now) = old
-                .zip(new)
-                .filter(|(old, new)| old.kind == RowKind::Removed && new.kind == RowKind::Added)
-                .and_then(|(old, new)| changed(&old.text, &new.text))
-                .unwrap_or_default();
-            let mut spans = half_spans(old, Side::Old, left, skip, theme, tokens, &was);
+            let mut spans = half_spans(old, Side::Old, left, skip, theme, tokens, was);
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
-            spans.extend(half_spans(new, Side::New, right, skip, theme, tokens, &now));
+            spans.extend(half_spans(new, Side::New, right, skip, theme, tokens, now));
             Line::from(spans)
         }
         RowRef::Line(row) => {
@@ -1999,15 +2028,13 @@ fn row_line(
                 Span::styled(gutter, theme.dim().patch(tint)),
                 Span::styled(sign.to_string(), style.patch(tint)),
             ];
-            let marks = pair
-                .and_then(|pair| match row.kind {
-                    RowKind::Removed => Some(changed(&row.text, &pair.text)?.0),
-                    RowKind::Added => Some(changed(&pair.text, &row.text)?.1),
-                    RowKind::Context => None,
-                })
-                .unwrap_or_default();
+            let marks = if row.kind == RowKind::Removed {
+                was
+            } else {
+                now
+            };
             spans.extend(code_text(
-                row, room, skip, style, tint, tokens, &marks, theme,
+                row, room, skip, style, tint, tokens, marks, theme,
             ));
             Line::from(spans)
         }
@@ -2063,9 +2090,9 @@ pub fn draw(
             let index = view.stream.file_at(at);
             let tokens = diff.files.get(index);
             let tokens = tokens.and_then(|file| syntax.file(file.path.as_str()));
-            let pair = view.stream.pair_of(diff, at);
+            let marks = view.stream.marks(diff, at);
             let skip = view.hscroll;
-            row_line(&view.stream, row, width, skip, theme, tokens, pair, index)
+            row_line(&view.stream, row, width, skip, theme, tokens, &marks, index)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);

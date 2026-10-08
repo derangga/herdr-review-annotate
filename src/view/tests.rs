@@ -2093,3 +2093,27 @@ fn a_collapsed_file_keeps_its_threads_at_its_header_in_the_order_of_their_lines(
     assert_eq!(view.jump_thread(false), None);
     assert!(view.cursor < start);
 }
+
+#[test]
+fn the_marks_of_a_row_are_compared_once_and_forgotten_by_a_new_layout() {
+    let diff = diff_of(WORDS_PATCH);
+    let mut view = view(&diff, &Review::default(), 80, 12);
+    assert!(view.stream.marks.0.borrow().is_empty());
+    let before = fresh(&view, &diff);
+    // Every row of the window is kept, the ones with nothing to mark too, so none is compared
+    // again.
+    let kept = view.stream.marks.0.borrow().clone();
+    assert_eq!(kept.len(), view.stream.len());
+    // `count` of the removed row and `count_all` of the added one, as bytes of each row's text.
+    // Both rows of the pair hold both.
+    assert_eq!(
+        (kept[&3].0.first(), kept[&3].1.first()),
+        (Some(&(16..21)), Some(&(16..25)))
+    );
+    assert_eq!(kept[&5], kept[&3]);
+    assert_eq!(kept[&4], (Vec::new(), Vec::new()));
+    assert_eq!(fresh(&view, &diff), before);
+    assert_eq!(*view.stream.marks.0.borrow(), kept);
+    view.rebuild(&diff, &Review::default(), None, &Look::test());
+    assert!(view.stream.marks.0.borrow().is_empty());
+}
