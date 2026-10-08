@@ -111,7 +111,7 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
     `no file here to collapse`.
   - A collapsed file is not read for syntax colours while it is collapsed.
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
-  inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
+  inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card. A thread jump to a card that is off screen puts the line the card hangs from on the top row, so the whole card shows. A card already on screen leaves the scroll alone.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).
 - The sideways keys move the code of every diff row 8 cells at a time, in the unified and the split layout
   alike, and stop where the widest line of the diff ends. The line numbers, the sign, hunk headers and cards

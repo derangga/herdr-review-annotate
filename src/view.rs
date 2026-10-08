@@ -1294,7 +1294,7 @@ impl View {
             stream.thread_rows.iter().rev().find(|&&row| row < cursor)
         };
         let row = *row?;
-        self.move_to(row);
+        self.move_to_card(row);
         let hidden = self.stream.hidden(self.stream.hiding_at(row)?);
         let thread = if forward {
             hidden.first()
@@ -1433,16 +1433,22 @@ impl View {
         self.stream.ids.get(thread)
     }
 
+    fn card_row(&self, id: &CommentId) -> Option<usize> {
+        let thread = self.stream.ids.iter().position(|other| other == id)?;
+        self.stream.card_rows.get(thread).copied()
+    }
+
     /// Put the cursor on the first row of the card of the thread whose root is `id`.
     pub fn focus_thread(&mut self, id: &CommentId) {
-        let row = self
-            .stream
-            .ids
-            .iter()
-            .position(|other| other == id)
-            .and_then(|thread| self.stream.card_rows.get(thread));
-        if let Some(&row) = row {
+        if let Some(row) = self.card_row(id) {
             self.move_to(row);
+        }
+    }
+
+    /// `focus_thread` for a jump: a card that was off screen is brought to the top of the window.
+    pub fn jump_to_thread(&mut self, id: &CommentId) {
+        if let Some(row) = self.card_row(id) {
+            self.move_to_card(row);
         }
     }
 
@@ -1549,6 +1555,17 @@ impl View {
         self.half = None;
         self.cursor = row.min(self.stream.len().saturating_sub(1));
         self.ensure_visible();
+    }
+
+    /// The cursor to the first row of a card. When that scrolls the window, the line the card hangs
+    /// from goes on the top row so the whole card is on screen, not just its first row at the bottom.
+    fn move_to_card(&mut self, row: usize) {
+        let before = self.scroll;
+        self.move_to(row);
+        if self.scroll != before {
+            let max_scroll = self.stream.len().saturating_sub(self.height());
+            self.scroll = self.cursor.saturating_sub(1).min(max_scroll);
+        }
     }
 
     /// The cursor to the header of file `file`, on the top row so the file's changes are below it.

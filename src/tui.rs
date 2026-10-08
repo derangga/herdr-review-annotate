@@ -563,7 +563,7 @@ impl App {
             self.view.expand(diff, file);
         }
         self.rebuild_view();
-        self.view.focus_thread(&id);
+        self.view.jump_to_thread(&id);
     }
 
     /// `toggle_sidebar`: show or hide the sidebar and lay the stream out at its new width. A pane

@@ -307,6 +307,22 @@ fn next_and_previous_thread_jump_between_cards() {
 }
 
 #[test]
+fn a_thread_jump_that_scrolls_puts_the_line_above_the_card_on_the_top_row() {
+    let diff = diff_of(PATCH);
+    let review = review();
+    let mut view = view(&diff, &review, 80, 6);
+    assert_eq!(view.height(), 4);
+    view.apply(Action::NextThread);
+    assert_eq!((view.cursor, view.scroll), (1, 0));
+    // The card at row 11 is off screen, so its line (row 10) goes on the top row.
+    view.apply(Action::NextThread);
+    assert_eq!((view.cursor, view.scroll), (11, 10));
+    // A card already in the window leaves the scroll alone.
+    view.apply(Action::PrevThread);
+    assert_eq!((view.cursor, view.scroll), (1, 0));
+}
+
+#[test]
 fn the_focused_thread_is_the_card_the_cursor_is_in_or_the_first_under_its_line() {
     let diff = diff_of(PATCH);
     let review = review();
