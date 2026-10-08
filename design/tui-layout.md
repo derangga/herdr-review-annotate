@@ -11,7 +11,8 @@ Part of the [herdr-review design](../DESIGN.md).
   run's extra lines sit opposite an empty half. A context line is on both halves with its own numbers.
 - Side by side marks the lines the diff leaves out, above the first hunk and between hunks, with a row that
   says `▾ N unchanged lines`. Unified does not, so its rows are the diff's rows.
-- A file header has its name on the left and the added and removed counts on the right. Removed and added
+- A file header has a `▾`, the letter of its change and its name on the left, and the added and removed
+  counts on the right. A collapsed file's header is in `tui.md`. Removed and added
   rows are tinted across the row.
 - A removed line and the added line that replaced it show which words changed, in both layouts. The pairs
   are the ones side by side draws on one row: a run of removed lines pairs with the run of added lines

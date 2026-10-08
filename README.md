@@ -158,6 +158,7 @@ effect.
 | `reload` | `R` | reload the diff |
 | `switch_spec` | `b` | switch diff spec |
 | `toggle_layout` | `t` | side by side or unified |
+| `collapse` | `z` | collapse or expand the file |
 | `help` | `?` | show this help |
 | `quit` | `q` | quit |
 

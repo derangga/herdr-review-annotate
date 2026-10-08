@@ -125,6 +125,32 @@ Nothing here fails outside the state. Every `E:` line is a state the user can re
 escape: ignore the key or show a line. The typed characters pass through `sanitize_terminal_text` when
 drawn, like every string that reaches the screen.
 
+## Collapse a file
+
+```
+collapse action                            R: view, diff
+-> a file under the cursor?                (pure)   E: the not-in-diff block, an empty diff, no diff -> notice
+-> path in View::collapsed? remove it      (pure)
+   else insert it, cursor to the header    (pure)
+-> rebuild the view                        (pure)   visual mode ends
+
+next_thread, prev_thread                   R: view, diff
+-> the next thread row after, or the last before, the cursor   (pure)   none -> stay
+   forward, the cursor's own row counts when it is a header that hides threads
+-> landed on a collapsed header that hides threads?   (pure)   no -> done
+  -> remove the path, rebuild the view
+  -> cursor to the card of the file's first thread, or its last going back
+
+save a new comment                         R: view
+-> remove the anchor's path from View::collapsed   (pure)   then fold and lay out as below
+
+Stream::build                              R: View::collapsed
+-> per file: collapsed? its rows are the header alone   (pure)
+-> per thread placed in a collapsed file: no card, its row is the header   (pure)
+```
+
+Nothing here touches the disk. Every `E:` line is a state the user can reach.
+
 ## User comment, reply, edit, delete, resolve
 
 ```

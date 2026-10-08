@@ -27,6 +27,7 @@ in a unified or a side-by-side layout.
 | `reload` | `shift+r` | Reload the diff |
 | `switch_spec` | `b` | Switch diff spec |
 | `toggle_layout` | `t` | Side by side or unified |
+| `collapse` | `z` | Collapse the cursor's file to its header, or open it again |
 | `help` | `?` | Show every action with its current keys |
 | `quit` | `q` | Quit. With unsent comments, ask send, keep, or stay |
 
@@ -86,6 +87,29 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
   under 50 columns the key still flips the state, which shows once the pane is wider, and the status
   line says the pane is too narrow to show the sidebar. The state is not saved: `areas` in `view.rs` is
   the one place that decides whether the sidebar is drawn, from the state and the width.
+- `collapse` folds a file of the stream to its header row, to get a lockfile or a generated file out of the
+  way. It acts on the file the cursor is in, from any of its rows and cards, and on the file chosen in the
+  sidebar while the sidebar has the keys. From inside the file the cursor goes to the header. The same key
+  on a collapsed file opens it.
+  - Every header starts with `▾`, and a collapsed one with `▸`. After its name a collapsed header says
+    what it hides, in the subtle colour, as `120 lines, 2 threads`: the rows of its hunks and the threads
+    placed in it. A part that is zero is left out, and the text gives way to the name and the counts in a
+    narrow stream. The sidebar draws a collapsed file's name in the subtle colour.
+  - The cards of its threads are hidden with its rows. The threads are still in the review: `send` sends
+    them, the unsent chip counts them and the sidebar keeps its `•`. `reply`, `edit`, `delete`, `resolve`
+    and `resend` on the header find no thread.
+  - Three things open a collapsed file: the key, a thread jump, and saving a file comment written on its
+    header. The hidden threads are at the header for `next_thread` and `prev_thread`. A jump that lands
+    there opens the file and goes to a card: the file's first thread going forward, also from the header
+    itself, and its last going back. An agent's reply, a reload and a mouse click do not open it.
+  - The collapsed files are kept by path in `View::collapsed` for the pane's session. A reload, a spec
+    switch, a layout change and a store change leave them collapsed, and a file that leaves the diff and
+    comes back is still collapsed. Nothing is written to `meta.json`, so a new pane has every file open.
+  - Hunk jumps pass over a collapsed file, since it has no hunk row. `comment` on its header writes a file
+    comment, as on any header. The key ends visual mode, as every new layout does. With the cursor on the
+    block of comments not in the diff, or with no file in the diff, the status line says
+    `no file here to collapse`.
+  - A collapsed file is not read for syntax colours while it is collapsed.
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
   inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).

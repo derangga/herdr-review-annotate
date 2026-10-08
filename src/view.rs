@@ -5,6 +5,7 @@
 //! header and its lines. `Stream` keeps only where each file starts, so a row is looked up when it
 //! is drawn and nothing is laid out for files that are off screen.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::Path;
@@ -370,9 +371,15 @@ pub struct Stream {
     side: Vec<SideRow>,
     /// Per file, whether a thread hung in it has not been sent.
     unsent: Vec<bool>,
-    /// The rows of each file, for the layout the stream was built for.
+    /// The rows of each file, for the layout the stream was built for. A collapsed file has its
+    /// header only.
     files: Vec<Vec<FileRow>>,
     layout: DiffLayout,
+    /// Per file, whether it is collapsed to its header.
+    folded: Vec<bool>,
+    /// Per file, the threads a collapsed file hides, in the order their cards would be in. Their
+    /// row is the file's header, so a thread jump reaches them. An open file hides none.
+    hidden: Vec<Vec<usize>>,
 }
 
 /// One row of the sidebar.
@@ -434,14 +441,21 @@ fn sidebar_rows(diff: &Diff, query: Option<&str>) -> Vec<SideRow> {
 }
 
 impl Stream {
-    /// Lay out `diff` and the threads of `review` for a stream `width` cells wide.
+    /// Lay out `diff` and the threads of `review` for a stream `width` cells wide. A file whose
+    /// path is in `collapsed` is its header alone, and the cards of its threads are left out.
     pub fn build(
         diff: &Diff,
         review: &Review,
         width: usize,
         layout: DiffLayout,
         look: &Look,
+        collapsed: &HashSet<RelPath>,
     ) -> Self {
+        let folded = diff
+            .files
+            .iter()
+            .map(|file| collapsed.contains(&file.path))
+            .collect::<Vec<_>>();
         let files = diff
             .files
             .iter()
@@ -480,6 +494,7 @@ impl Stream {
         };
         let mut block = Vec::new();
         let mut hung = vec![Vec::<(usize, usize)>::new(); diff.files.len()];
+        let mut tucked = hung.clone();
         for (index, (thread, placement)) in review.threads.iter().zip(&placements).enumerate() {
             let line = match placement {
                 Placement::NotInDiff => None,
@@ -505,10 +520,22 @@ impl Stream {
                 .zip(line)
                 .and_then(|((file, rows), line)| offset_of(file, rows, side, line))
                 .unwrap_or(0);
-            if let Some(list) = hung.get_mut(file) {
+            let lists = if folded.get(file) == Some(&true) {
+                &mut tucked
+            } else {
+                &mut hung
+            };
+            if let Some(list) = lists.get_mut(file) {
                 list.push((offset, index));
             }
         }
+        // The offsets above are rows of the whole file, so a collapsed file's threads keep the
+        // order of their lines.
+        let files = files
+            .into_iter()
+            .zip(&folded)
+            .map(|(rows, folded)| if *folded { vec![FileRow::Header] } else { rows })
+            .collect::<Vec<_>>();
         let height = |thread: usize| cards.get(thread).map_or(0, |card| card.lines.len());
         let mut total = 0;
         if !block.is_empty() {
@@ -527,7 +554,14 @@ impl Stream {
         if diff.files.is_empty() {
             total += 1;
         }
-        for (rows, mut list) in files.iter().zip(hung) {
+        for ((rows, mut list), mut tucked) in files.iter().zip(hung).zip(tucked) {
+            tucked.sort_unstable();
+            for (_, thread) in &tucked {
+                stream.set_card_row(*thread, total);
+            }
+            stream
+                .hidden
+                .push(tucked.into_iter().map(|(_, thread)| thread).collect());
             list.sort_by_key(|(offset, _)| *offset);
             let slots = list
                 .into_iter()
@@ -573,7 +607,32 @@ impl Stream {
         stream.cards = cards;
         stream.placements = placements;
         stream.files = files;
+        stream.folded = folded;
         stream
+    }
+
+    /// Whether file `file` is collapsed to its header.
+    pub fn folded(&self, file: usize) -> bool {
+        self.folded.get(file) == Some(&true)
+    }
+
+    /// The threads file `file` hides while it is collapsed.
+    fn hidden(&self, file: usize) -> &[usize] {
+        self.hidden.get(file).map_or(&[], Vec::as_slice)
+    }
+
+    /// The collapsed file whose header is `row`, when it hides a thread.
+    fn hiding_at(&self, row: usize) -> Option<usize> {
+        match self.at(row)? {
+            At::Base { file, offset: 0 } if !self.hidden(file).is_empty() => Some(file),
+            _ => None,
+        }
+    }
+
+    /// What a collapsed file hides, for its header: its lines of code and its threads.
+    fn fold_of(&self, file: usize, diff: &DiffFile) -> Option<(usize, usize)> {
+        let lines = diff.hunks.iter().map(|hunk| hunk.rows.len()).sum();
+        self.folded(file).then(|| (lines, self.hidden(file).len()))
     }
 
     fn set_card_row(&mut self, thread: usize, row: usize) {
@@ -877,6 +936,8 @@ pub struct View {
     pub select: Option<Select>,
     /// The sidebar lists only the files that match. `None` lists them all.
     pub filter: Option<Filter>,
+    /// The files collapsed to their header, by path, so they stay collapsed through a reload.
+    pub collapsed: HashSet<RelPath>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
     forced: Option<DiffLayout>,
     /// Cells of code hidden on the left of every row, and the file they were set for.
@@ -915,6 +976,7 @@ impl Default for View {
             icons: false,
             select: None,
             filter: None,
+            collapsed: HashSet::new(),
             forced: None,
             hscroll: 0,
             hfile: 0,
@@ -1158,6 +1220,57 @@ impl View {
         }
     }
 
+    /// Collapse the cursor's file to its header, or open it again. From inside the file the
+    /// cursor goes to the header. False when the cursor is on no file. The caller lays the stream
+    /// out again.
+    pub fn toggle_collapse(&mut self, diff: &Diff) -> bool {
+        let file = self.stream.file_at(self.cursor);
+        let on_file = self.cursor >= self.stream.top || self.panel == Panel::Sidebar;
+        let (true, Some(start), Some(file)) =
+            (on_file, self.stream.file_start(file), diff.files.get(file))
+        else {
+            return false;
+        };
+        if !self.collapsed.remove(&file.path) {
+            self.collapsed.insert(file.path.clone());
+            self.move_to(start);
+        }
+        true
+    }
+
+    /// Open file `file` again. The caller lays the stream out again.
+    pub fn expand(&mut self, diff: &Diff, file: usize) {
+        if let Some(file) = diff.files.get(file) {
+            self.collapsed.remove(&file.path);
+        }
+    }
+
+    /// `next_thread` and `prev_thread`. The threads a collapsed file hides are at its header, and
+    /// going forward from that header reaches them too. When the jump lands there, this is the
+    /// file to open and the thread to go to: its first going forward, its last going back.
+    pub fn jump_thread(&mut self, forward: bool) -> Option<(usize, CommentId)> {
+        let (stream, cursor) = (&self.stream, self.cursor);
+        let row = if forward {
+            let hides = |row| row == cursor && stream.hiding_at(row).is_some();
+            stream
+                .thread_rows
+                .iter()
+                .find(|&&row| row > cursor || hides(row))
+        } else {
+            stream.thread_rows.iter().rev().find(|&&row| row < cursor)
+        };
+        let row = *row?;
+        self.move_to(row);
+        let hidden = self.stream.hidden(self.stream.hiding_at(row)?);
+        let thread = if forward {
+            hidden.first()
+        } else {
+            hidden.last()
+        };
+        let id = self.stream.ids.get(*thread?)?.clone();
+        Some((self.stream.file_at(row), id))
+    }
+
     /// Start a range at the cursor, or drop the one being selected.
     pub fn toggle_select(&mut self) {
         self.select = match self.select {
@@ -1306,7 +1419,14 @@ impl View {
     /// Lay the new diff out. The cursor returns to its spot when it is still there: its line of
     /// the same card, else its row in the same file.
     pub fn rebuild(&mut self, diff: &Diff, review: &Review, spot: Option<Spot>, look: &Look) {
-        self.stream = Stream::build(diff, review, self.stream_width(), self.layout(), look);
+        self.stream = Stream::build(
+            diff,
+            review,
+            self.stream_width(),
+            self.layout(),
+            look,
+            &self.collapsed,
+        );
         self.refilter(diff);
         self.select = None;
         self.drag = false;
@@ -1442,13 +1562,9 @@ impl View {
             .clamp(self.scroll, (self.scroll + height - 1).min(last));
     }
 
-    /// Move to the next or previous row of the hunk headers or the thread rows.
-    fn jump(&mut self, hunks: bool, forward: bool) {
-        let rows = if hunks {
-            &self.stream.hunk_rows
-        } else {
-            &self.stream.thread_rows
-        };
+    /// Move to the next or previous hunk header.
+    fn jump_hunk(&mut self, forward: bool) {
+        let rows = &self.stream.hunk_rows;
         let target = if forward {
             rows.iter().find(|&&row| row > self.cursor)
         } else {
@@ -1471,10 +1587,11 @@ impl View {
             Action::PageDown if files => self.step_files(true, self.height()),
             Action::PageUp => self.page(false),
             Action::PageDown => self.page(true),
-            Action::PrevHunk => self.jump(true, false),
-            Action::NextHunk => self.jump(true, true),
-            Action::PrevThread => self.jump(false, false),
-            Action::NextThread => self.jump(false, true),
+            Action::PrevHunk => self.jump_hunk(false),
+            Action::NextHunk => self.jump_hunk(true),
+            Action::PrevThread | Action::NextThread => {
+                self.jump_thread(action == Action::NextThread);
+            }
             Action::SwitchPanel if !self.sidebar_drawn() => {}
             Action::SwitchPanel => {
                 self.panel = match self.panel {
@@ -1755,8 +1872,15 @@ fn half_spans(
     spans
 }
 
-/// A file's header: its name on the left, the added and removed counts on the right.
-fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
+/// A file's header: a `▾`, or a `▸` while it is collapsed, its name, and the added and removed
+/// counts on the right. `fold` is what a collapsed file hides, its lines and its threads, which
+/// the header says after the name.
+fn file_header(
+    file: &DiffFile,
+    width: usize,
+    theme: &Theme,
+    fold: Option<(usize, usize)>,
+) -> Line<'static> {
     let mut text = sanitize_terminal_text(file.path.as_str());
     if let Some(old) = &file.old_path {
         let _ = write!(text, " <- {}", sanitize_terminal_text(old.as_str()));
@@ -1772,15 +1896,36 @@ fn file_header(file: &DiffFile, width: usize, theme: &Theme) -> Line<'static> {
         (a, r) => format!("+{a} -{r}"),
     };
     let room = width.saturating_sub(string_width(&counts) + 1);
-    let head = fitted(&text, room.saturating_sub(2));
+    let count = |n: usize, noun: &str| {
+        let plural = if n == 1 { "" } else { "s" };
+        (n > 0).then(|| format!("{n} {noun}{plural}"))
+    };
+    let hidden = fold.map_or_else(String::new, |(lines, threads)| {
+        let parts = [count(lines, "line"), count(threads, "thread")];
+        let parts = parts.into_iter().flatten().collect::<Vec<_>>();
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", parts.join(", "))
+        }
+    });
+    // The marker, the letter and their two spaces come before the name.
+    let name = truncate_to_width(&text, room.saturating_sub(4));
+    let hidden = fitted(&hidden, room.saturating_sub(4 + string_width(&name)));
     let bold = Style::new().bg(theme.header).add_modifier(Modifier::BOLD);
+    let marker = if fold.is_some() { "▸ " } else { "▾ " };
     let mut spans = vec![
         Span::styled(
-            glyph(file.change).to_string(),
+            truncate_to_width(marker, room),
+            theme.dim().bg(theme.header),
+        ),
+        Span::styled(
+            truncate_to_width(&glyph(file.change).to_string(), room.saturating_sub(2)),
             bold.fg(glyph_color(file.change, theme)),
         ),
-        Span::styled(" ", bold),
-        Span::styled(head, bold),
+        Span::styled(truncate_to_width(" ", room.saturating_sub(3)), bold),
+        Span::styled(name, bold),
+        Span::styled(hidden, theme.dim().bg(theme.header)),
     ];
     let counts_width = string_width(&counts);
     spans.push(Span::styled(
@@ -1807,6 +1952,7 @@ fn row_line(
     theme: &Theme,
     tokens: Option<&FileTokens>,
     pair: Option<&Row>,
+    index: usize,
 ) -> Line<'static> {
     match row {
         RowRef::BlockHeader(count) => Line::styled(
@@ -1820,7 +1966,7 @@ fn row_line(
             .cloned()
             .unwrap_or_default(),
         RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
-        RowRef::File(file) => file_header(file, width, theme),
+        RowRef::File(file) => file_header(file, width, theme, stream.fold_of(index, file)),
         RowRef::Note(file) => Line::styled(format!("  {}", note(file)), theme.dim()),
         RowRef::Hunk(hunk) => Line::styled(
             truncate_to_width(&sanitize_terminal_text(&hunk.header), width),
@@ -1914,10 +2060,12 @@ pub fn draw(
     let lines = (view.scroll..view.scroll + height)
         .filter_map(|at| Some((at, view.stream.locate(diff, at)?)))
         .map(|(at, row)| {
-            let file = diff.files.get(view.stream.file_at(at));
-            let tokens = file.and_then(|file| syntax.file(file.path.as_str()));
+            let index = view.stream.file_at(at);
+            let tokens = diff.files.get(index);
+            let tokens = tokens.and_then(|file| syntax.file(file.path.as_str()));
             let pair = view.stream.pair_of(diff, at);
-            row_line(&view.stream, row, width, view.hscroll, theme, tokens, pair)
+            let skip = view.hscroll;
+            row_line(&view.stream, row, width, skip, theme, tokens, pair, index)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
@@ -2013,13 +2161,15 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
 }
 
 /// One file of the sidebar: a mark for unsent comments, the letter, an icon when `icons` is on, the
-/// name, and the counts pushed to the right edge. The name gives way first.
+/// name, and the counts pushed to the right edge. The name gives way first. The name of a `folded`
+/// file, one collapsed in the stream, is in the subtle colour.
 fn side_file_line(
     file: &DiffFile,
     unsent: bool,
     icons: bool,
     width: usize,
     theme: &Theme,
+    folded: bool,
 ) -> Line<'static> {
     let (added, removed) = file.stat();
     let mut counts = Vec::new();
@@ -2066,7 +2216,11 @@ fn side_file_line(
             spans.push(Span::raw(" "));
         }
         let name = sanitize_terminal_text(name);
-        spans.push(Span::raw(head_to_width(&name, room - prefix_width)));
+        let style = if folded { theme.dim() } else { Style::new() };
+        spans.push(Span::styled(
+            head_to_width(&name, room - prefix_width),
+            style,
+        ));
         spans
     };
     let used: usize = spans.iter().map(|span| string_width(&span.content)).sum();
@@ -2153,7 +2307,8 @@ fn draw_sidebar(
             SideRow::Heading(text) => Line::styled(tail_to_width(text, width), theme.dim()),
             SideRow::File(index) => diff.files.get(*index).map_or_else(Line::default, |file| {
                 let unsent = view.stream.unsent.get(*index).copied().unwrap_or(false);
-                side_file_line(file, unsent, view.icons, width, theme)
+                let folded = view.stream.folded(*index);
+                side_file_line(file, unsent, view.icons, width, theme, folded)
             }),
         })
         .collect::<Vec<_>>();

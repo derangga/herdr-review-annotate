@@ -30,6 +30,8 @@ Part of the [herdr-review design](../DESIGN.md).
   spec, are listed in a block at the top of the stream under "Comments not in this diff". With an empty
   diff the block is shown above the message. A
   thread in the block is reached with next and previous thread, like any other.
+- A collapsed file shows no card. Its threads are reached with next and previous thread, which open the
+  file (`collapse` in `tui.md`).
 - The thread a key acts on is the one whose card holds the cursor, or the first one hung under the line the
   cursor is on. A card's height is its number of lines, so the stream is laid out again when the pane's
   width changes. Both borders of a box belong to its root comment, so `edit` and `delete` on the bottom
@@ -75,7 +77,7 @@ Part of the [herdr-review design](../DESIGN.md).
   is a key the user presses, so it still works there and ends visual mode.
 - A saved comment, reply, edit, delete, resolve or reopen is written with `actions.rs`, then the pane reads the
   log again and lays the stream out. It does not reload the diff. A new comment or reply moves the cursor to
-  its thread's card.
+  its thread's card. A file comment written on a collapsed header opens the file first.
 - `reply` replies to the thread the cursor is on. `edit` and `delete` act on the comment whose line of the card
   the cursor is on, or on the root when it is on the line above the card. They refuse an agent's comment.
   Deleting a root deletes its thread and nothing asks first. `resolve` flips any thread, whoever wrote it.

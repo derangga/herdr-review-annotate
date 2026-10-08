@@ -1606,7 +1606,7 @@ fn the_status_letter_has_the_colour_of_its_change() {
     let diff = diff_of(PATCH);
     let theme = Theme::default();
     let letter_color = |file: usize, letter: &str| {
-        side_file_line(&diff.files[file], false, false, 24, &theme)
+        side_file_line(&diff.files[file], false, false, 24, &theme, false)
             .spans
             .iter()
             .find(|span| span.content == letter)
@@ -1615,9 +1615,10 @@ fn the_status_letter_has_the_colour_of_its_change() {
     assert_eq!(letter_color(0, "M"), Some(theme.warning));
     assert_eq!(letter_color(1, "A"), Some(theme.added));
     assert_eq!(letter_color(2, "B"), Some(theme.subtle));
-    let header = file_header(&diff.files[0], 30, &theme);
-    assert_eq!(header.spans[0].content, "M");
-    assert_eq!(header.spans[0].style.fg, Some(theme.warning));
+    let header = file_header(&diff.files[0], 30, &theme, None);
+    assert_eq!(header.spans[0].content, "▾ ");
+    assert_eq!(header.spans[1].content, "M");
+    assert_eq!(header.spans[1].style.fg, Some(theme.warning));
 }
 
 fn side_row(file: usize, icons: bool, width: usize) -> Line<'static> {
@@ -1627,6 +1628,7 @@ fn side_row(file: usize, icons: bool, width: usize) -> Line<'static> {
         icons,
         width,
         &Theme::default(),
+        false,
     )
 }
 
@@ -2038,4 +2040,56 @@ fn the_marks_move_with_the_code_when_it_is_scrolled_sideways() {
     // 16 cells in, the row starts at `count_all`, and a `‹` takes the cell of its first letter.
     assert_eq!(behind(&terminal, 5, theme.added_word), "ount_all");
     assert_eq!(behind(&terminal, 3, theme.removed_word), "ount");
+}
+
+#[test]
+fn a_collapsed_header_says_what_it_hides_and_an_open_one_does_not() {
+    let (diff, theme) = (diff_of(PATCH), Theme::default());
+    let header = |fold| text_of(&file_header(&diff.files[0], 40, &theme, fold));
+    assert!(header(None).starts_with("▾ M a.rs  "));
+    assert!(header(Some((7, 2))).starts_with("▸ M a.rs  7 lines, 2 threads "));
+    assert!(header(Some((1, 1))).starts_with("▸ M a.rs  1 line, 1 thread "));
+    assert!(header(Some((0, 3))).starts_with("▸ M a.rs  3 threads "));
+    assert!(header(Some((0, 0))).starts_with("▸ M a.rs   "));
+    // Every header is as wide as the stream, with the counts against the right edge.
+    for fold in [None, Some((7, 2))] {
+        assert_eq!(string_width(&header(fold)), 40);
+        assert!(header(fold).ends_with("+2 -1"), "{}", header(fold));
+    }
+    // What is hidden gives way to the name in a narrow stream.
+    assert_eq!(
+        header(Some((7, 2))).chars().take(16).collect::<String>(),
+        "▸ M a.rs  7 line"
+    );
+}
+
+#[test]
+fn a_collapsed_file_keeps_its_threads_at_its_header_in_the_order_of_their_lines() {
+    let diff = diff_of(PATCH);
+    let mut view = view(&diff, &review(), 80, 30);
+    let open = view.stream.len();
+    view.collapsed.insert(RelPath::parse("a.rs").unwrap());
+    view.rebuild(&diff, &review(), None, &Look::test());
+    // u4 is in the block above the files. a.rs hides u3 on line 3 and u1, outdated, near line 4.
+    let start = view.stream.file_start(0).unwrap();
+    assert!(view.stream.folded(0) && !view.stream.folded(1));
+    assert_eq!(view.stream.hidden(0), [2, 0]);
+    assert_eq!(view.stream.hiding_at(start), Some(0));
+    assert_eq!(view.stream.thread_at(start), None);
+    assert!(view.stream.len() < open);
+    assert_eq!(view.stream.file_start(1), Some(start + 1));
+    // b.rs is open, so its file comment is still a card.
+    view.cursor = start;
+    assert_eq!(
+        view.jump_thread(true),
+        Some((0, CommentId::parse("u3").unwrap()))
+    );
+    view.cursor = start + 1;
+    assert_eq!(
+        view.jump_thread(false),
+        Some((0, CommentId::parse("u1").unwrap()))
+    );
+    view.cursor = start;
+    assert_eq!(view.jump_thread(false), None);
+    assert!(view.cursor < start);
 }

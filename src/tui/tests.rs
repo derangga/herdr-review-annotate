@@ -626,7 +626,7 @@ fn a_key_with_no_binding_is_ignored_and_quit_ends_the_loop() {
     let exit = drive(
         &fixture,
         &mut app,
-        vec![Some(key('z')), Some(Event::FocusLost)],
+        vec![Some(key('w')), Some(Event::FocusLost)],
         |_| {},
     );
     assert_eq!(exit, Exit::Terminated);
@@ -2098,7 +2098,7 @@ fn the_sidebar_key_hides_and_shows_it_and_the_cards_follow_the_stream_s_width() 
         assert!(!app.view.sidebar_drawn());
         assert_eq!(card_span(&mut app, width), (hidden, last));
         let (rows, _) = drawn(&mut app, width);
-        assert!(rows[0].starts_with("M a.rs"), "{}", rows[0]);
+        assert!(rows[0].starts_with("▾ M a.rs"), "{}", rows[0]);
         assert!(
             !rows
                 .join("\n")
@@ -2239,7 +2239,7 @@ fn the_config_starts_the_pane_with_the_sidebar_hidden_and_the_key_shows_it() {
     let mut app = configured(&fixture, "[sidebar]\nopen = false\n");
     assert!(!app.view.sidebar_drawn());
     assert!(app.warnings.is_empty(), "{:?}", app.warnings);
-    assert!(drawn(&mut app, 80).0[0].starts_with("M a.rs"));
+    assert!(drawn(&mut app, 80).0[0].starts_with("▾ M a.rs"));
     press(&fixture, &mut app, [key('f')]);
     assert!(app.view.sidebar_drawn());
     // The key does not write the file, so the next start is hidden again.
@@ -3398,4 +3398,148 @@ fn the_box_is_always_drawn_and_its_hint_names_the_key_of_the_filter() {
     .unwrap();
     let mut app = filter_pane(&fixture);
     assert_eq!(sidebar(&mut app)[0], "> filter 4/4");
+}
+
+// Collapsing a file. `TWO_FILES` has a.rs at rows 0 to 5 and b.rs at 6 to 9.
+
+/// The rows of the stream at 80 columns, without the sidebar.
+fn stream_rows(app: &mut App) -> Vec<String> {
+    stream_columns(&drawn(app, 80).0)
+}
+
+#[test]
+fn the_collapse_key_folds_the_cursors_file_to_its_header_and_opens_it_again() {
+    let fixture = Fixture::new("collapse");
+    let mut app = opened(&fixture, TWO_FILES);
+    assert_eq!(app.view.stream.len(), 10);
+    assert!(stream_rows(&mut app)[0].starts_with("▾ M a.rs"));
+    // From a row inside the file the cursor goes to the header.
+    press(&fixture, &mut app, [key('j'), key('j'), key('j'), key('z')]);
+    assert_eq!((app.view.cursor, app.view.stream.len()), (0, 5));
+    let rows = stream_rows(&mut app);
+    assert!(rows[0].starts_with("▸ M a.rs  4 lines"), "{}", rows[0]);
+    assert!(rows[1].starts_with("▾ M b.rs"), "{}", rows[1]);
+    press(&fixture, &mut app, [key('z')]);
+    assert_eq!((app.view.cursor, app.view.stream.len()), (0, 10));
+    assert!(stream_rows(&mut app)[0].starts_with("▾ M a.rs "));
+}
+
+#[test]
+fn the_collapse_key_folds_the_file_chosen_in_the_sidebar_and_its_name_is_subtle_there() {
+    let fixture = Fixture::new("collapse-sidebar");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(
+        &fixture,
+        &mut app,
+        [Event::Key(KeyEvent::from(KeyCode::Tab)), key('j'), key('z')],
+    );
+    assert_eq!(app.view.stream.len(), 7);
+    let (rows, buffer) = drawn(&mut app, 80);
+    let name = |file: &str| {
+        let y = rows.iter().position(|row| row.contains(file)).unwrap();
+        let x = rows[y].chars().position(|c| c == '.').unwrap();
+        buffer[(u16::try_from(x).unwrap(), u16::try_from(y).unwrap())].fg
+    };
+    assert_eq!(name("b.rs"), app.theme.subtle);
+    assert_eq!(name("a.rs"), app.theme.text);
+    assert!(stream_columns(&rows)[6].starts_with("▸ M b.rs  2 lines"));
+}
+
+#[test]
+fn a_thread_jump_opens_the_collapsed_file_that_hides_the_thread() {
+    let fixture = Fixture::new("collapse-threads");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('j'), key('j'), key('c')]);
+    press(&fixture, &mut app, chars("first"));
+    press(&fixture, &mut app, [ctrl_s(), key('j'), key('j'), key('j')]);
+    press(&fixture, &mut app, [key('j'), key('j'), key('j'), key('c')]);
+    press(&fixture, &mut app, chars("second"));
+    press(&fixture, &mut app, [ctrl_s()]);
+    assert_eq!(app.review.threads.len(), 2);
+    let cards = |app: &mut App| stream_rows(app).join("\n").matches("Your note").count();
+    assert_eq!(cards(&mut app), 2);
+    // Collapsing from a card hides both cards, and the header counts them. They stay unsent.
+    press(&fixture, &mut app, [key('z')]);
+    assert_eq!(app.view.cursor, 0);
+    assert_eq!(app.view.focused(), None);
+    let rows = stream_rows(&mut app);
+    assert!(
+        rows[0].starts_with("▸ M a.rs  4 lines, 2 threads"),
+        "{}",
+        rows[0]
+    );
+    assert_eq!(cards(&mut app), 0);
+    assert!(screen_of(&app).contains(" 2 unsent "));
+    assert!(drawn(&mut app, 80).0.join("\n").contains("•M"));
+    // Forward from the header goes into the file, to its first thread.
+    press(&fixture, &mut app, [key('n')]);
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.focused(), Some(0));
+    assert_eq!(
+        cards(&mut app),
+        1,
+        "the first card is on screen, the second is below it"
+    );
+    // Backward from the file below goes to its last thread.
+    press(&fixture, &mut app, [key('z'), key('j')]);
+    assert!(stream_rows(&mut app)[1].starts_with("▾ M b.rs"));
+    press(&fixture, &mut app, [key('N')]);
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.focused(), Some(1));
+    // Backward from the header of a collapsed file leaves it collapsed.
+    press(&fixture, &mut app, [key('z'), key('N')]);
+    assert_eq!((app.view.cursor, app.view.collapsed.len()), (0, 1));
+}
+
+#[test]
+fn a_file_comment_saved_on_a_collapsed_header_opens_the_file() {
+    let fixture = Fixture::new("collapse-comment");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('z'), key('c')]);
+    assert!(screen_of(&app).contains("╭ Draft note - a.rs ─"));
+    press(&fixture, &mut app, chars("whole file"));
+    press(&fixture, &mut app, [ctrl_s()]);
+    assert_eq!(app.review.threads[0].anchor.target, AnchorTarget::File);
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.focused(), Some(0));
+    // The ten rows of the diff and the four of the card.
+    assert_eq!(app.view.stream.len(), 14);
+}
+
+#[test]
+fn a_collapsed_file_stays_collapsed_through_a_reload_and_a_hunk_jump_passes_it() {
+    let fixture = Fixture::new("collapse-reload");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('z'), key('R')]);
+    assert_eq!(app.view.stream.len(), 5);
+    assert!(stream_rows(&mut app)[0].starts_with("▸ M a.rs"));
+    // The next hunk is b.rs's: a.rs has no hunk row while it is collapsed.
+    press(&fixture, &mut app, [key(']')]);
+    assert_eq!(app.view.cursor, 2);
+    // A pane that starts later has every file open.
+    assert_eq!(opened(&fixture, TWO_FILES).view.stream.len(), 10);
+}
+
+#[test]
+fn collapsing_ends_visual_mode_and_a_collapsed_file_is_not_highlighted() {
+    let fixture = Fixture::new("collapse-visual");
+    std::fs::write(fixture.root.join("a.rs"), "new\n").unwrap();
+    let mut app = opened(&fixture, patch_text());
+    // An open file on screen waits to be read, with or without the `syntax` feature.
+    assert!(app.highlight_pending());
+    press(&fixture, &mut app, [key('j'), key('j'), key('v'), key('j')]);
+    assert!(app.view.select.is_some());
+    press(&fixture, &mut app, [key('z')]);
+    assert!(app.view.select.is_none());
+    assert_eq!(app.view.stream.len(), 1);
+    assert!(!app.highlight_pending());
+}
+
+#[test]
+fn the_collapse_key_with_no_file_under_the_cursor_says_so() {
+    let fixture = Fixture::new("collapse-nothing");
+    let mut app = opened(&fixture, "");
+    press(&fixture, &mut app, [key('z')]);
+    assert_eq!(app.message(), Some("no file here to collapse"));
+    assert!(app.view.collapsed.is_empty());
 }

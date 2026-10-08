@@ -38,13 +38,14 @@ pub enum Action {
     Reload,
     SwitchSpec,
     ToggleLayout,
+    Collapse,
     Help,
     Quit,
 }
 
 impl Action {
     /// In the order of the table in design/tui.md, which is the order of the help overlay.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -71,6 +72,7 @@ impl Action {
         Self::Reload,
         Self::SwitchSpec,
         Self::ToggleLayout,
+        Self::Collapse,
         Self::Help,
         Self::Quit,
     ];
@@ -104,6 +106,7 @@ impl Action {
             Self::Reload => "reload",
             Self::SwitchSpec => "switch_spec",
             Self::ToggleLayout => "toggle_layout",
+            Self::Collapse => "collapse",
             Self::Help => "help",
             Self::Quit => "quit",
         }
@@ -138,6 +141,7 @@ impl Action {
             Self::Reload => "reload the diff",
             Self::SwitchSpec => "switch diff spec",
             Self::ToggleLayout => "side by side or unified",
+            Self::Collapse => "collapse or expand the file",
             Self::Help => "show this help",
             Self::Quit => "quit",
         }
@@ -175,6 +179,7 @@ impl Action {
             Self::Reload => &["shift+r"],
             Self::SwitchSpec => &["b"],
             Self::ToggleLayout => &["t"],
+            Self::Collapse => &["z"],
             Self::Help => &["?"],
             Self::Quit => &["q"],
         }
@@ -515,12 +520,13 @@ mod tests {
             (KeyCode::Char('s'), KeyModifiers::NONE, Action::Resend),
             (KeyCode::Char('S'), KeyModifiers::SHIFT, Action::Send),
             (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::Reload),
+            (KeyCode::Char('z'), KeyModifiers::NONE, Action::Collapse),
             (KeyCode::Char('?'), KeyModifiers::NONE, Action::Help),
             (KeyCode::Char('q'), KeyModifiers::NONE, Action::Quit),
         ] {
             assert_eq!(keymap.action(&press(code, mods)), Some(action), "{code:?}");
         }
-        assert_eq!(keymap.action(&char_key('z')), None);
+        assert_eq!(keymap.action(&char_key('w')), None);
         for action in Action::ALL {
             assert!(!keymap.keys(action).is_empty(), "{}", action.name());
         }
@@ -617,14 +623,14 @@ mod tests {
 
     #[test]
     fn an_unknown_action_is_skipped_with_a_warning() {
-        let keymap = Keymap::from_toml("[keys]\nfly = \"z\"\nquit = \"Q\"\n");
+        let keymap = Keymap::from_toml("[keys]\nfly = \"w\"\nquit = \"Q\"\n");
         assert_eq!(warnings(&keymap).len(), 1);
         assert!(warnings(&keymap)[0].contains("unknown action 'fly'"));
         assert_eq!(
             keymap.action(&press(KeyCode::Char('Q'), KeyModifiers::SHIFT)),
             Some(Action::Quit)
         );
-        assert_eq!(keymap.action(&char_key('z')), None);
+        assert_eq!(keymap.action(&char_key('w')), None);
     }
 
     #[test]

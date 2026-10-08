@@ -378,8 +378,10 @@ impl App {
         let rest = self.view.visible_files().filter(move |file| *file != first);
         let diff = self.diff.as_ref().filter(|_| self.screen == Screen::Review);
         std::iter::once(first).chain(rest).filter(move |file| {
+            // A collapsed file shows no code, so it is not read.
+            let open = !self.view.stream.folded(*file);
             let file = diff.and_then(|diff| diff.files.get(*file));
-            file.is_some_and(|file| self.syntax.pending(file.path.as_str()))
+            open && file.is_some_and(|file| self.syntax.pending(file.path.as_str()))
         })
     }
 
@@ -522,6 +524,10 @@ impl App {
                 self.view.toggle_layout();
                 self.rebuild_view();
             }
+            Action::Collapse => self.toggle_collapse(),
+            Action::NextThread | Action::PrevThread => {
+                self.jump_thread(action == Action::NextThread);
+            }
             Action::ToggleSidebar => self.toggle_sidebar(),
             Action::Filter => self.open_filter(),
             Action::Comment => self.start_comment(),
@@ -535,6 +541,29 @@ impl App {
                 self.view.apply(action);
             }
         }
+    }
+
+    /// `collapse`: fold the cursor's file to its header or open it again, and lay the stream out.
+    fn toggle_collapse(&mut self) {
+        let diff = self.diff.as_ref();
+        if diff.is_some_and(|diff| self.view.toggle_collapse(diff)) {
+            self.rebuild_view();
+        } else {
+            self.notice("no file here to collapse");
+        }
+    }
+
+    /// `next_thread` and `prev_thread`. A jump that lands on a thread hidden in a collapsed file
+    /// opens the file and goes to the thread's card.
+    fn jump_thread(&mut self, forward: bool) {
+        let Some((file, id)) = self.view.jump_thread(forward) else {
+            return;
+        };
+        if let Some(diff) = &self.diff {
+            self.view.expand(diff, file);
+        }
+        self.rebuild_view();
+        self.view.focus_thread(&id);
     }
 
     /// `toggle_sidebar`: show or hide the sidebar and lay the stream out at its new width. A pane
@@ -889,6 +918,10 @@ impl App {
         };
         match written {
             Ok(focus) => {
+                // A file comment written on a collapsed header opens the file, so its card shows.
+                if let Draft::Comment(anchor) = &compose.draft {
+                    self.view.collapsed.remove(&anchor.path);
+                }
                 self.compose = None;
                 self.refold();
                 if let Some(id) = focus {
