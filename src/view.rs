@@ -430,10 +430,6 @@ impl Stream {
             .iter()
             .zip(&placements)
             .map(|(thread, placement)| {
-                // A resolved thread is one line across the stream. An open one is a docked box.
-                if !thread.is_open() {
-                    return card(thread, *placement, width, look);
-                }
                 let side = thread
                     .anchor
                     .side()

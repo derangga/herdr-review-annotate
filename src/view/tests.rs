@@ -430,7 +430,7 @@ fn a_card_is_docked_to_the_half_its_line_is_on_in_the_side_by_side_layout() {
 }
 
 #[test]
-fn a_resolved_outdated_thread_is_one_line_with_no_tag() {
+fn a_resolved_outdated_thread_is_a_box_with_no_tag() {
     let diff = diff_of(PATCH);
     let mut review = review();
     review.threads[0].status = Status::Resolved {
@@ -446,15 +446,16 @@ fn a_resolved_outdated_thread_is_one_line_with_no_tag() {
         edited_since_sent: false,
     });
     let view = view(&diff, &review, 120, 30);
-    // The thread is still placed as outdated, and its card is one row.
+    // The thread is still placed as outdated, and its card is a box of five rows.
     assert_eq!(
         view.stream.placements[0],
         Placement::Outdated { near: Some(3) }
     );
-    assert_eq!(view.stream.len(), 31);
+    assert_eq!(view.stream.len(), 35);
     let screen = fresh(&view, &diff);
+    assert!(screen.contains("[resolved by agent:claude]"), "{screen}");
     assert!(
-        screen.contains("✓ u1 resolved by agent:claude: Added with_capacity"),
+        screen.contains("↳ agent:claude: Added with_capacity"),
         "{screen}"
     );
     assert!(!screen.contains("outdated"), "{screen}");

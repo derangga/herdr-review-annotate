@@ -127,10 +127,6 @@ fn name(author: &Author) -> String {
     sanitize_terminal_text(&author.to_string())
 }
 
-fn first_line(text: &str) -> String {
-    sanitize_terminal_text(text.lines().next().unwrap_or_default())
-}
-
 fn side_letter(side: Side) -> char {
     match side {
         Side::Old => 'L',
@@ -159,43 +155,9 @@ fn was(anchor: &Anchor) -> Option<&str> {
     }
 }
 
-/// The one line of a resolved thread: a green check, its id, `[new]` while an agent's resolve has
-/// not been looked at, where it pointed when it is not in the diff, who resolved it, and the first
-/// line of its last comment.
-fn resolved(thread: &Thread, by: &Author, in_block: bool, width: usize, theme: &Theme) -> Card {
-    let last = thread.comments().last().unwrap_or(&thread.root);
-    let place = if in_block {
-        format!(" {}", place(&thread.anchor))
-    } else {
-        String::new()
-    };
-    let id = format!(" {}", thread.root.id);
-    let tag = if thread.is_new { " [new]" } else { "" };
-    let rest = format!(
-        "{place} resolved by {}: {}",
-        name(by),
-        first_line(&last.body)
-    );
-    let left = width.saturating_sub(1 + string_width(&id) + string_width(tag));
-    let mut card = Card::default();
-    card.push(
-        Line::from(vec![
-            Span::styled("✓", Style::new().fg(theme.success)),
-            Span::styled(id, theme.dim()),
-            Span::styled(
-                tag,
-                Style::new().fg(theme.success).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(truncate_to_width(&rest, left), theme.dim()),
-        ]),
-        thread.replies.len(),
-    );
-    card
-}
-
-/// The top border of a box: a bullet, who wrote the note, how long ago, where it points, and the
-/// badges. The place is cut from the left when the line is too long, and left out when there is
-/// no room for it at all.
+/// The top border of a box: a bullet, or a check on a resolved thread, who wrote the note, how
+/// long ago, where it points, and the badges. The place is cut from the left when the line is too
+/// long, and left out when there is no room for it at all.
 fn top(thread: &Thread, outdated: bool, width: usize, look: &Look, border: Style) -> Line<'static> {
     let theme = look.theme;
     let author = match &thread.root.author {
@@ -204,8 +166,9 @@ fn top(thread: &Thread, outdated: bool, width: usize, look: &Look, border: Style
         Author::Agent(Some(name)) => sanitize_terminal_text(name),
     };
     let age = ago(&thread.root.at, look.now);
+    let bullet = if thread.is_open() { "● " } else { "✓ " };
     let mut head = vec![
-        Span::styled("● ", border),
+        Span::styled(bullet, border),
         Span::styled(author, border.add_modifier(Modifier::BOLD)),
     ];
     if !age.is_empty() {
@@ -214,6 +177,9 @@ fn top(thread: &Thread, outdated: bool, width: usize, look: &Look, border: Style
     let mut badges = Vec::new();
     if outdated {
         badges.push(Span::styled(" [outdated]", Style::new().fg(theme.warning)));
+    }
+    if let Status::Resolved { by } = &thread.status {
+        badges.push(Span::styled(format!(" [resolved by {}]", name(by)), border));
     }
     if thread.is_new {
         badges.push(Span::styled(
@@ -273,21 +239,22 @@ fn box_bottom(keys: &str, width: usize, border: Style, theme: &Theme) -> Line<'s
     ])
 }
 
-/// The lines of one thread at `width` cells. A resolved thread is one line. An open thread is a
-/// rounded box `width` cells wide: the top border says who wrote it, when and where, then comes an
-/// empty row, the body and each reply are wrapped inside with a space at each side, and the
-/// bottom border names the keys that act on it. The
-/// `outdated` tag is on open threads only, and an outdated thread, or one that is not in the diff,
-/// says what its line was.
+/// The lines of one thread at `width` cells: a rounded box `width` cells wide. The top border says
+/// who wrote it, when and where, then comes an empty row, the body and each reply are wrapped
+/// inside with a space at each side, and the bottom border names the keys that act on it. A
+/// resolved thread has a green box that says who resolved it. The `outdated` tag and what the line
+/// was are on open threads only, for one that is outdated or not in the diff.
 pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) -> Card {
     let theme = look.theme;
     let in_block = placement == Placement::NotInDiff;
-    let outdated = matches!(placement, Placement::Outdated { .. });
-    if let Status::Resolved { by } = &thread.status {
-        return resolved(thread, by, in_block, width, theme);
-    }
+    let open = thread.is_open();
+    let outdated = open && matches!(placement, Placement::Outdated { .. });
     let own = thread.root.author.is_user();
-    let border = Style::new().fg(if own { theme.warning } else { theme.agent });
+    let border = Style::new().fg(match (open, own) {
+        (false, _) => theme.success,
+        (true, true) => theme.warning,
+        (true, false) => theme.agent,
+    });
     // A side and a space at each end of a row.
     let room = width.saturating_sub(4).max(8);
     let row = |text: String, style: Style| box_row(text, style, room, border);
@@ -296,6 +263,7 @@ pub fn card(thread: &Thread, placement: Placement, width: usize, look: &Look) ->
     // An empty row under the top border, as the editor has.
     card.push(row(String::new(), Style::new()), 0);
     if let Some(text) = was(&thread.anchor)
+        && open
         && (in_block || outdated)
     {
         let text = format!("was: {}", sanitize_terminal_text(text.trim()));
@@ -674,42 +642,50 @@ mod tests {
         };
         open.replies
             .push(comment("a1", Author::Agent(None), "Added with_capacity"));
-        let lines = text(&card(&open, placement, 80, &Look::test()));
-        assert_eq!(
-            lines,
-            ["✓ u1 resolved by agent:claude: Added with_capacity"]
+        let lines = boxed(&open, placement, 80);
+        assert!(
+            lines[0].starts_with(
+                "╭ ✓ Your note · 10m · src/a.rs R7 [resolved by agent:claude] [unsent] ─"
+            ),
+            "{}",
+            lines[0]
         );
+        assert!(!lines.iter().any(|line| line.contains("was:")));
     }
 
     #[test]
-    fn a_resolved_thread_says_new_until_it_has_been_seen() {
+    fn a_resolved_thread_is_a_green_box_with_every_reply_in_full() {
         let mut thread = thread("fix");
         thread.status = Status::Resolved {
             by: Author::Agent(Some("claude".into())),
         };
-        thread
-            .replies
-            .push(comment("a1", Author::Agent(None), "Added with_capacity"));
+        thread.unsent = false;
         thread.is_new = true;
-        let new = card(&thread, MATCHED, 80, &Look::test());
+        thread.replies.push(comment(
+            "a1",
+            Author::Agent(None),
+            "Added with_capacity, one two three four five",
+        ));
+        let lines = boxed(&thread, MATCHED, 60);
         assert_eq!(
-            text(&new),
-            ["✓ u1 [new] resolved by agent:claude: Added with_capacity"]
+            lines,
+            [
+                "╭ ✓ Your note · 10m · …R7 [resolved by agent:claude] [new] ╮",
+                "│                                                          │",
+                "│ fix                                                      │",
+                "│   ↳ agent: Added with_capacity, one two three four five  │",
+                "╰─────────────────────────────── r reply  e edit  d delete ╯",
+            ]
         );
-        // The check is green, in place of the bullet of an open note.
-        assert_eq!(new.lines[0].spans[0].content, "✓");
-        assert_eq!(
-            new.lines[0].spans[0].style.fg,
-            Some(Theme::default().success)
-        );
+        // Every border is green, whoever wrote the thread.
+        let success = Some(Theme::default().success);
+        for line in &card(&thread, MATCHED, 60, &Look::test()).lines {
+            assert_eq!(line.spans[0].style.fg, success, "{line}");
+            assert_eq!(line.spans.last().unwrap().style.fg, success, "{line}");
+        }
+        // The tag goes once the resolve has been looked at.
         thread.is_new = false;
-        let seen = text(&card(&thread, MATCHED, 80, &Look::test()));
-        assert_eq!(seen, ["✓ u1 resolved by agent:claude: Added with_capacity"]);
-        // The tag survives a cut: it is before what gets truncated.
-        thread.is_new = true;
-        let cut = text(&card(&thread, MATCHED, 30, &Look::test()));
-        assert!(cut[0].contains("[new]"));
-        assert!(string_width(&cut[0]) <= 30);
+        assert!(!boxed(&thread, MATCHED, 60)[0].contains("[new]"));
     }
 
     #[test]
@@ -738,9 +714,11 @@ mod tests {
         assert!(lines[0].contains(" · src/a.rs [unsent] "), "{}", lines[0]);
         assert_eq!(lines.len(), 4, "a file comment has no line text to show");
         file.status = Status::Resolved { by: Author::User };
-        assert_eq!(
-            text(&card(&file, Placement::NotInDiff, 60, &Look::test())),
-            ["✓ u1 src/a.rs resolved by user: fix"]
+        let lines = boxed(&file, Placement::NotInDiff, 70);
+        assert!(
+            lines[0].starts_with("╭ ✓ Your note · 10m · src/a.rs [resolved by user] [unsent] ─"),
+            "{}",
+            lines[0]
         );
     }
 
@@ -818,8 +796,11 @@ mod tests {
             card(&thread, placement, 40, &look).owners,
             [0, 0, 0, 0, 0, 1, 2, 0]
         );
-        // A resolved thread is one line, which shows its last comment.
+        // A resolved thread keeps its lines, without the old text.
         thread.status = Status::Resolved { by: Author::User };
-        assert_eq!(card(&thread, placement, 40, &look).owners, [2]);
+        assert_eq!(
+            card(&thread, placement, 40, &look).owners,
+            [0, 0, 0, 0, 1, 2, 0]
+        );
     }
 }

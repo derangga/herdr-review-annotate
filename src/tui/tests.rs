@@ -1587,8 +1587,9 @@ fn x_resolves_the_thread_and_reopens_it() {
     press(&fixture, &mut app, [key('x')]);
     assert!(!app.review.threads[0].is_open());
     assert!(screen_of(&app).contains("resolved u1"));
-    // The card is one line now, and the cursor is still in the thread.
-    assert!(screen_of(&app).contains("✓ u1 resolved by user: fix"));
+    // The card is a green box now, and the cursor is still in the thread.
+    assert!(screen_of(&app).contains("╭ ✓ Your note"));
+    assert!(screen_of(&app).contains("[resolved by user]"));
     press(&fixture, &mut app, [key('x')]);
     assert!(app.review.threads[0].is_open());
     assert!(screen_of(&app).contains("reopened u1"));
@@ -1683,7 +1684,7 @@ fn an_agent_resolve_shows_new_until_the_cursor_reaches_it_and_stays_cleared_afte
     write_log(&fixture, &events);
     let mut app = opened(&fixture, patch_text());
     assert!(app.review.threads[0].is_new);
-    assert!(screen_of(&app).contains("✓ u1 [new] resolved by agent:claude"));
+    assert!(screen_of(&app).contains("[resolved by agent:claude] [new]"));
     // Rows 1 and 2 are not the thread. Row 3 is the line its card hangs under.
     drive(
         &fixture,
@@ -1734,7 +1735,7 @@ fn a_resolve_written_by_another_process_while_the_pane_is_open_shows_new_with_no
         }
     });
     assert!(app.review.threads[0].is_new);
-    assert!(screen_of(&app).contains("✓ u1 [new] resolved by agent:claude: done"));
+    assert!(screen_of(&app).contains("[resolved by agent:claude] [new]"));
     // No key was pressed, so nothing was marked seen.
     assert_eq!(seen_events(&fixture), 0);
 }
@@ -2446,8 +2447,11 @@ fn archive_asks_first_and_then_moves_the_resolved_threads_out_of_the_pane() {
     assert_eq!(app.unsent(), 0);
     let screen = screen_of(&app);
     assert!(screen.contains("archived 2"), "{screen}");
-    assert!(!screen.contains("✓ u1") && !screen.contains("✓ u2"));
-    assert!(screen.contains("✓ u4 [new]"), "{screen}");
+    assert!(!screen.contains("[resolved by user]"), "{screen}");
+    assert!(
+        screen.contains("[resolved by agent:claude] [new]"),
+        "{screen}"
+    );
     let moved = log_of(&fixture, "archive.jsonl");
     assert!(moved.contains("\"id\":\"u1\"") && moved.contains("\"id\":\"u2\""));
     assert!(!moved.contains("\"id\":\"u3\"") && !moved.contains("\"id\":\"u4\""));
@@ -2568,7 +2572,7 @@ fn an_archive_by_another_pane_is_picked_up_because_the_log_got_shorter() {
     assert!(after.len() < before.len());
     assert_eq!(thread_ids(&app), ["u3", "u4"]);
     assert!(app.warnings.is_empty(), "{:?}", app.warnings);
-    assert!(!screen_of(&app).contains("✓ u1"));
+    assert!(!screen_of(&app).contains("[resolved by user]"));
 }
 
 #[test]

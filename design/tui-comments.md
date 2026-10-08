@@ -12,7 +12,7 @@ Part of the [herdr-review design](../DESIGN.md).
   an agent's. The top border reads `● <author> · <age> · <path> R<line>`: the author is `Your note` for the
   user and the agent's name otherwise (`agent` when it has none), the side letter is `L` or `R`, a range is
   `R101-110`, and a file comment has the bare path. Then come the badges `[outdated]` (on an open thread
-  only), `[new]`, `(edited since sent)` and `[unsent]`. A path that does not fit is cut from the left with `…`,
+  only), `[resolved by <who>]`, `[new]`, `(edited since sent)` and `[unsent]`. A path that does not fit is cut from the left with `…`,
   and is left out when there is no room for it. The id is not on an open card.
 - Inside the box are an empty row, then the line text as it was when the comment was written, for a thread
   that is outdated or not in the diff, then the body wrapped to the box, then each reply indented under it.
@@ -23,11 +23,12 @@ Part of the [herdr-review design](../DESIGN.md).
 - The age is `now` under a minute, then `2m`, `3h`, `2d`, counted from the `at` of the comment's `add` event
   to the time the stream was laid out. No timer runs, so the age on an idle pane is as old as its last layout.
   A comment whose time is not RFC 3339 has no age.
-- A resolved thread is one line: a green `✓` in place of the bullet, the id, `[new]`, who resolved it and the
-  first line of its last comment, with no `outdated` tag.
+- A resolved thread is the same box in the theme's success colour, whoever wrote it, with `✓` in place of
+  the bullet and a `[resolved by <who>]` badge. It keeps its body, every reply and the keys. It has no
+  `outdated` tag and does not show what its line was.
 - Threads that are not in the diff, because their file is not in it or they were written against the other
-  spec, are listed in a block at the top of the stream under "Comments not in this diff". A resolved one
-  also says the path and line it pointed at, which an open card has on its border. With an empty diff the block is shown above the message. A
+  spec, are listed in a block at the top of the stream under "Comments not in this diff". With an empty
+  diff the block is shown above the message. A
   thread in the block is reached with next and previous thread, like any other.
 - The thread a key acts on is the one whose card holds the cursor, or the first one hung under the line the
   cursor is on. A card's height is its number of lines, so the stream is laid out again when the pane's
