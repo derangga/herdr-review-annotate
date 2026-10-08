@@ -1363,11 +1363,12 @@ impl View {
         self.ensure_visible();
     }
 
-    /// The cursor to the header of file `file`.
+    /// The cursor to the header of file `file`, on the top row so the file's changes are below it.
     fn move_to_file(&mut self, file: usize) {
         let file = file.min(self.stream.files().saturating_sub(1));
         if let Some(start) = self.stream.file_start(file) {
             self.move_to(start);
+            self.scroll = start.min(self.stream.len().saturating_sub(self.height()));
         }
     }
 
@@ -1853,16 +1854,12 @@ pub fn draw(
         }
     }
     if view.cursor >= view.scroll && view.cursor < view.scroll + height {
-        let style = if view.panel == Panel::Stream {
-            cursor_style
-        } else {
-            theme.dim()
-        };
+        // The same bar whichever panel has the keys, so the file chosen in the sidebar stands out.
         highlight(
             frame.buffer_mut(),
             areas.stream,
             view.cursor - view.scroll,
-            style,
+            cursor_style,
         );
     }
     if let Some(rows) = mark {

@@ -515,6 +515,40 @@ fn a_narrow_stream_wraps_a_long_body_into_more_rows() {
 }
 
 #[test]
+fn a_file_chosen_in_the_sidebar_has_its_header_on_the_top_row_from_either_direction() {
+    let diff = diff_of(PATCH);
+    let mut view = view(&diff, &Review::default(), 80, 6);
+    assert_eq!(view.height(), 4);
+    view.apply(Action::SwitchPanel);
+    view.apply(Action::Down);
+    assert_eq!((view.cursor, view.scroll), (10, 10));
+    // The last file is shorter than the window, so the stream stops at its end.
+    view.apply(Action::Down);
+    assert_eq!((view.cursor, view.scroll), (14, 12));
+    view.apply(Action::Up);
+    assert_eq!((view.cursor, view.scroll), (10, 10));
+    view.apply(Action::Up);
+    assert_eq!((view.cursor, view.scroll), (0, 0));
+}
+
+#[test]
+fn the_cursor_row_of_the_stream_keeps_its_bar_and_its_text_colour_while_the_sidebar_is_focused() {
+    let (diff, mut view) = plain();
+    let theme = Theme::default();
+    let cell = |view: &View| {
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        render(&mut terminal, view, &diff, &Keymap::default());
+        let stream = view.areas().stream;
+        let cell = &terminal.backend().buffer()[(stream.x + 2, stream.y)];
+        (cell.bg, cell.fg)
+    };
+    let focused = cell(&view);
+    assert_eq!(focused.0, theme.cursor);
+    view.apply(Action::SwitchPanel);
+    assert_eq!(cell(&view), focused);
+}
+
+#[test]
 fn the_switch_panel_key_moves_up_and_down_between_files_in_the_sidebar() {
     let (_, mut view) = plain();
     assert_eq!(view.panel, Panel::Stream);
