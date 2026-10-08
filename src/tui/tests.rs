@@ -2741,16 +2741,19 @@ fn a_code_row_is_drawn_in_token_colours_over_its_tint_once_its_file_is_highlight
     assert_eq!(buffer[number].fg, expect(app.theme.number, app.theme.added));
     // The sign keeps the colour of its kind, and the tint stays behind all of it.
     assert_eq!(buffer[(31, 3)].fg, app.theme.added);
-    for x in [31, 32, 40, 70] {
+    for x in [31, 32, 70] {
         assert_eq!(buffer[(x, 3)].bg, app.theme.added_bg, "column {x}");
     }
+    // `42` replaced `41`, so the number has the stronger green behind it and keeps its colour.
+    assert_eq!(buffer[number].bg, app.theme.added_word);
     // The removed row comes from the old side, which this git cannot show: its hunk is
     // highlighted as a snippet.
     assert_eq!(
         buffer[(40, 2)].fg,
         expect(app.theme.number, app.theme.removed)
     );
-    assert_eq!(buffer[(40, 2)].bg, app.theme.removed_bg);
+    assert_eq!(buffer[(40, 2)].bg, app.theme.removed_word);
+    assert_eq!(buffer[(32, 2)].bg, app.theme.removed_bg);
     // Side by side, the new half starts after the 32 column sidebar and the 49 column old half.
     let (rows, buffer) = drawn(&mut app, 130);
     let column = rows[2].chars().position(|c| c == '+').unwrap();

@@ -6,6 +6,7 @@
 //! is drawn and nothing is laid out for files that are off screen.
 
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::path::Path;
 
 use ratatui::Frame;
@@ -27,6 +28,7 @@ use crate::syntax::{Cache, FileTokens, side_of};
 use crate::theme::Theme;
 use crate::tui::sanitize_terminal_text;
 use crate::width::{char_width, string_width, tail_to_width, truncate_to_width};
+use crate::words::changed;
 
 /// Rows the mouse wheel moves per notch.
 const WHEEL_ROWS: usize = 3;
@@ -139,6 +141,9 @@ enum FileRow {
     Line {
         hunk: usize,
         row: usize,
+        /// The row of the hunk this one is paired with: the added line that replaced a removed
+        /// one, or the removed line an added one replaced.
+        pair: Option<usize>,
     },
     Pair {
         hunk: usize,
@@ -211,7 +216,29 @@ fn file_rows(file: &DiffFile, layout: DiffLayout) -> Vec<FileRow> {
         rows.push(FileRow::Hunk(index));
         match layout {
             DiffLayout::Unified => {
-                rows.extend((0..hunk.rows.len()).map(|row| FileRow::Line { hunk: index, row }));
+                // The same pairs as side by side, so both layouts mark the same words.
+                let mut pair = vec![None; hunk.rows.len()];
+                for row in pairs(index, &hunk.rows) {
+                    if let FileRow::Pair {
+                        old: Some(old),
+                        new: Some(new),
+                        ..
+                    } = row
+                        && old != new
+                    {
+                        for (at, other) in [(old, new), (new, old)] {
+                            if let Some(slot) = pair.get_mut(at) {
+                                *slot = Some(other);
+                            }
+                        }
+                    }
+                }
+                let lines = pair.into_iter().enumerate();
+                rows.extend(lines.map(|(row, pair)| FileRow::Line {
+                    hunk: index,
+                    row,
+                    pair,
+                }));
             }
             DiffLayout::Split => rows.extend(pairs(index, &hunk.rows)),
         }
@@ -301,7 +328,7 @@ fn offset_of(file: &DiffFile, rows: &[FileRow], side: Side, line: u32) -> Option
         row.line(side)
     };
     rows.iter().position(|row| match *row {
-        FileRow::Line { hunk, row } => line_of(hunk, Some(row)) == Some(line),
+        FileRow::Line { hunk, row, .. } => line_of(hunk, Some(row)) == Some(line),
         FileRow::Pair { hunk, old, new } => {
             let on_side = if side == Side::Old { old } else { new };
             line_of(hunk, on_side) == Some(line)
@@ -667,12 +694,23 @@ impl Stream {
             FileRow::Note => RowRef::Note(file),
             FileRow::Gap(count) => RowRef::Gap(count),
             FileRow::Hunk(hunk) => RowRef::Hunk(file.hunks.get(hunk)?),
-            FileRow::Line { hunk, row: at } => RowRef::Line(row(hunk, Some(at))?),
+            FileRow::Line { hunk, row: at, .. } => RowRef::Line(row(hunk, Some(at))?),
             FileRow::Pair { hunk, old, new } => RowRef::Pair {
                 old: row(hunk, old),
                 new: row(hunk, new),
             },
         })
+    }
+
+    /// The row a unified code row is paired with, for the words that differ between the two.
+    fn pair_of<'a>(&self, diff: &'a Diff, row: usize) -> Option<&'a Row> {
+        let Some(At::Base { file, offset }) = self.at(row) else {
+            return None;
+        };
+        let FileRow::Line { hunk, pair, .. } = *self.files.get(file)?.get(offset)? else {
+            return None;
+        };
+        diff.files.get(file)?.hunks.get(hunk)?.rows.get(pair?)
     }
 
     /// The kind of file row a stream row is, when it is one.
@@ -1601,7 +1639,8 @@ fn fitted(text: &str, width: usize) -> String {
 /// A row that was highlighted is drawn token by token, in the theme's colour for each, and what
 /// lies between tokens is plain text. A row that was not is drawn whole in `plain`, the colour of
 /// its kind. A `‹` takes the first cell when the row is cut off on the left, and a `›` the last
-/// when it is cut off on the right.
+/// when it is cut off on the right. `marks` are the byte ranges of the row's text that the row it
+/// is paired with does not have, and they have a stronger green or red behind them than the tint.
 fn code_text(
     row: &Row,
     room: usize,
@@ -1609,30 +1648,42 @@ fn code_text(
     plain: Style,
     tint: Style,
     tokens: Option<&FileTokens>,
+    marks: &[Range<usize>],
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let side = side_of(row);
     let spans = tokens.and_then(|tokens| tokens.line(side, row.line(side)?));
-    let mut pieces = Vec::new();
-    let mut push = |piece: &str, style: Style| {
-        pieces.push((sanitize_terminal_text(piece), style));
-    };
+    let mut parts = Vec::new();
     let mut at = 0;
     for (range, token) in spans.unwrap_or_default() {
-        push(
-            row.text.get(at..range.start).unwrap_or_default(),
-            Style::new(),
-        );
-        push(
-            row.text.get(range.clone()).unwrap_or_default(),
-            Style::new().fg(theme.token(*token)),
-        );
+        parts.push((at..range.start, Style::new()));
+        parts.push((range.clone(), Style::new().fg(theme.token(*token))));
         at = range.end;
     }
     let rest = if spans.is_some() { Style::new() } else { plain };
-    push(row.text.get(at..).unwrap_or_default(), rest);
+    parts.push((at..row.text.len(), rest));
+    let word = Style::new().bg(match row.kind {
+        RowKind::Removed => theme.removed_word,
+        RowKind::Added | RowKind::Context => theme.added_word,
+    });
+    let mut pieces = Vec::new();
+    let mut push = |range: Range<usize>, style: Style| {
+        let piece = row.text.get(range).unwrap_or_default();
+        pieces.push((sanitize_terminal_text(piece), style));
+    };
+    for (range, style) in parts {
+        let mut at = range.start;
+        let inside = |mark: &&Range<usize>| mark.start < range.end && mark.end > range.start;
+        for mark in marks.iter().filter(inside) {
+            let (from, to) = (mark.start.max(at), mark.end.min(range.end));
+            push(at..from, style.patch(tint));
+            push(from..to, style.patch(word));
+            at = to;
+        }
+        push(at..range.end, style.patch(tint));
+    }
     if row.no_newline {
-        push("  [no newline at end of file]", rest);
+        pieces.push(("  [no newline at end of file]".to_owned(), rest.patch(tint)));
     }
     let total: usize = pieces.iter().map(|(text, _)| string_width(text)).sum();
     let left = skip > 0 && total > skip;
@@ -1660,7 +1711,7 @@ fn code_text(
             .collect();
         used += string_width(&kept);
         if !kept.is_empty() {
-            out.push(Span::styled(kept, style.patch(tint)));
+            out.push(Span::styled(kept, style));
         }
     }
     if right && room > 0 {
@@ -1680,6 +1731,7 @@ fn half_spans(
     skip: usize,
     theme: &Theme,
     tokens: Option<&FileTokens>,
+    marks: &[Range<usize>],
 ) -> Vec<Span<'static>> {
     let Some(row) = row else {
         return vec![Span::styled(
@@ -1697,7 +1749,9 @@ fn half_spans(
         truncate_to_width(&gutter, width),
         theme.dim().patch(tint),
     )];
-    spans.extend(code_text(row, room, skip, text_style, tint, tokens, theme));
+    spans.extend(code_text(
+        row, room, skip, text_style, tint, tokens, marks, theme,
+    ));
     spans
 }
 
@@ -1752,6 +1806,7 @@ fn row_line(
     skip: usize,
     theme: &Theme,
     tokens: Option<&FileTokens>,
+    pair: Option<&Row>,
 ) -> Line<'static> {
     match row {
         RowRef::BlockHeader(count) => Line::styled(
@@ -1778,9 +1833,14 @@ fn row_line(
         }
         RowRef::Pair { old, new } => {
             let (left, right) = split_widths(width);
-            let mut spans = half_spans(old, Side::Old, left, skip, theme, tokens);
+            let (was, now) = old
+                .zip(new)
+                .filter(|(old, new)| old.kind == RowKind::Removed && new.kind == RowKind::Added)
+                .and_then(|(old, new)| changed(&old.text, &new.text))
+                .unwrap_or_default();
+            let mut spans = half_spans(old, Side::Old, left, skip, theme, tokens, &was);
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
-            spans.extend(half_spans(new, Side::New, right, skip, theme, tokens));
+            spans.extend(half_spans(new, Side::New, right, skip, theme, tokens, &now));
             Line::from(spans)
         }
         RowRef::Line(row) => {
@@ -1793,7 +1853,16 @@ fn row_line(
                 Span::styled(gutter, theme.dim().patch(tint)),
                 Span::styled(sign.to_string(), style.patch(tint)),
             ];
-            spans.extend(code_text(row, room, skip, style, tint, tokens, theme));
+            let marks = pair
+                .and_then(|pair| match row.kind {
+                    RowKind::Removed => Some(changed(&row.text, &pair.text)?.0),
+                    RowKind::Added => Some(changed(&pair.text, &row.text)?.1),
+                    RowKind::Context => None,
+                })
+                .unwrap_or_default();
+            spans.extend(code_text(
+                row, room, skip, style, tint, tokens, &marks, theme,
+            ));
             Line::from(spans)
         }
     }
@@ -1809,6 +1878,20 @@ fn empty_message(spec: &Spec) -> String {
 pub(crate) fn highlight(buffer: &mut Buffer, area: Rect, row: usize, style: Style) {
     let y = area.y + u16::try_from(row).unwrap_or(0);
     buffer.set_style(Rect::new(area.x, y, area.width, 1), style);
+}
+
+/// `highlight` for a row of the stream: a cell behind a changed word keeps its colour, so the
+/// cursor and a selection do not hide which words changed.
+fn bar(buffer: &mut Buffer, area: Rect, row: usize, style: Style, theme: &Theme) {
+    let y = area.y + u16::try_from(row).unwrap_or(0);
+    for x in area.left()..area.right() {
+        if let Some(cell) = buffer.cell_mut((x, y))
+            && cell.bg != theme.added_word
+            && cell.bg != theme.removed_word
+        {
+            cell.set_style(style);
+        }
+    }
 }
 
 /// Draw the sidebar and the stream, and the help overlay when it is open. Only the rows in the
@@ -1833,7 +1916,8 @@ pub fn draw(
         .map(|(at, row)| {
             let file = diff.files.get(view.stream.file_at(at));
             let tokens = file.and_then(|file| syntax.file(file.path.as_str()));
-            row_line(&view.stream, row, width, view.hscroll, theme, tokens)
+            let pair = view.stream.pair_of(diff, at);
+            row_line(&view.stream, row, width, view.hscroll, theme, tokens, pair)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Clear, areas.stream);
@@ -1841,21 +1925,23 @@ pub fn draw(
     if let Some(select) = view.select {
         let (low, high) = (select.row.min(view.cursor), select.row.max(view.cursor));
         for row in low.max(view.scroll)..=high.min(view.scroll + height.saturating_sub(1)) {
-            highlight(
+            bar(
                 frame.buffer_mut(),
                 areas.stream,
                 row - view.scroll,
                 Style::new().bg(theme.selection),
+                theme,
             );
         }
     }
     if view.cursor >= view.scroll && view.cursor < view.scroll + height {
         // The same bar whichever panel has the keys, so the file chosen in the sidebar stands out.
-        highlight(
+        bar(
             frame.buffer_mut(),
             areas.stream,
             view.cursor - view.scroll,
             cursor_style,
+            theme,
         );
     }
     if let Some(rows) = mark {
@@ -1892,11 +1978,12 @@ fn draw_mark(frame: &mut Frame, view: &View, (low, high): (usize, usize), theme:
     let last = view.scroll + usize::from(area.height).saturating_sub(1);
     for row in low.max(view.scroll)..=high.min(last) {
         let at = row - view.scroll;
-        highlight(
+        bar(
             frame.buffer_mut(),
             area,
             at,
             Style::new().bg(theme.selection),
+            theme,
         );
         let y = area.y + u16::try_from(at).unwrap_or(0);
         if let Some(cell) = frame.buffer_mut().cell_mut((area.x, y))

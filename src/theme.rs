@@ -111,6 +111,9 @@ const FLAVORS: [(&str, &Palette); 4] = [
 /// How much of the green or the red is mixed into the base for the tint of a changed row.
 const TINT_PERCENT: u32 = 15;
 
+/// How much of the green or the red is mixed into the base behind a changed word of a row.
+const WORD_PERCENT: u32 = 35;
+
 /// How much of the accent is mixed into the base behind a range being selected.
 const SELECTION_PERCENT: u32 = 30;
 
@@ -210,6 +213,9 @@ pub struct Theme {
     /// Behind an added and a removed row.
     pub added_bg: Color,
     pub removed_bg: Color,
+    /// Behind the words of an added and of a removed row that its paired row does not have.
+    pub added_word: Color,
+    pub removed_word: Color,
     /// The half of a split row that has no line.
     pub filler: Color,
     /// Behind a file header and the unchanged-lines row.
@@ -249,6 +255,8 @@ impl Theme {
             removed: rgb(palette.red),
             added_bg: blend(palette.green, palette.base, TINT_PERCENT),
             removed_bg: blend(palette.red, palette.base, TINT_PERCENT),
+            added_word: blend(palette.green, palette.base, WORD_PERCENT),
+            removed_word: blend(palette.red, palette.base, WORD_PERCENT),
             filler: rgb(palette.mantle),
             header: rgb(palette.surface0),
             popup: rgb(palette.mantle),
@@ -412,6 +420,13 @@ mod tests {
         let latte = Theme::named("catppuccin-latte").unwrap();
         assert_ne!(latte.added_bg, Theme::default().added_bg);
         assert_ne!(latte.removed_bg, latte.added_bg);
+    }
+
+    #[test]
+    fn a_changed_word_has_more_of_the_green_or_red_behind_it_than_its_row() {
+        // 35 parts of a6e3a1 and 65 of 1e1e2e.
+        assert_eq!(Theme::default().added_word, Color::Rgb(77, 98, 86));
+        assert_eq!(Theme::default().removed_word, Color::Rgb(104, 68, 88));
     }
 
     #[test]

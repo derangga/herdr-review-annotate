@@ -26,5 +26,6 @@ pub mod theme;
 pub mod tui;
 pub mod view;
 pub mod width;
+pub mod words;
 
 mod termination;

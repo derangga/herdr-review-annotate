@@ -13,9 +13,9 @@ The core loop:
 
 Built around it: both diff specs, replies, resolve and reopen by either side, the `new` marker, the
 `outdated` tag, resend, the quit prompt, edit and delete of your own comments, archive, a side-by-side
-layout, syntax colours, and message review, the agent's newest message reviewed like a diff (`message-review.md`).
+layout, syntax colours, the changed words of a line marked, and message review, the agent's newest message reviewed like a diff (`message-review.md`).
 
-Not built yet, in this order: paste mode, word-level diff, Codex and pi, staged and single-commit
+Not built yet, in this order: paste mode, Codex and pi, staged and single-commit
 specs, a reviewer agent.
 
 Not planned: daemon, file watcher, outbox file, startup hook, generated skill, highlight marks, markup,
@@ -52,6 +52,7 @@ herdr-review/
     edit_keys.rs       editor key map              (from herdr-annotate)
     icons.rs           the Nerd Font glyph for a file name, for the sidebar rows
     width.rs           display width helpers       (from herdr-annotate)
+    words.rs           the words that differ between a removed line and the added line paired with it
     agent_delivery.rs  readiness check and prompt  (from herdr-annotate)
     herdr.rs           herdr CLI wrapper           (from herdr-annotate)
     termination.rs     the flag that SIGTERM and SIGHUP set (from herdr-annotate)

@@ -13,6 +13,25 @@ Part of the [herdr-review design](../DESIGN.md).
   says `▾ N unchanged lines`. Unified does not, so its rows are the diff's rows.
 - A file header has its name on the left and the added and removed counts on the right. Removed and added
   rows are tinted across the row.
+- A removed line and the added line that replaced it show which words changed, in both layouts. The pairs
+  are the ones side by side draws on one row: a run of removed lines pairs with the run of added lines
+  after it, the first with the first. A line of the longer run with no partner has no marks.
+  - `changed` in `words.rs` cuts both lines into tokens: a run of letters, digits and underscores, a run of
+    spaces, and every other character on its own. The tokens of a line that are not in the longest
+    sequence the two lines share are marked. Marked tokens next to each other are one mark, and a change
+    of indent marks the spaces.
+  - A mark is a stronger background than the tint: the flavor's green or red mixed 35 parts in a hundred
+    into its base (`added_word` and `removed_word` in `Theme`). The text keeps its colour, from the syntax
+    tokens or from the row's kind.
+  - A pair gets no marks when under half of its tokens that are not spaces are common to both lines,
+    counted against the line that has more of them. Such a line was rewritten, and it draws as a row with
+    no partner does. A line of more than 200 tokens gets none either, since the comparison builds a table
+    with a cell for every pair of tokens.
+  - The cursor's row, the rows of a selection and the rows the open editor comments on keep the marks: the
+    bar colours every cell of the row but the marked ones (`bar` in `view.rs`).
+  - The marks are computed when a row is drawn, for the rows in the window, and nothing is kept. They
+    follow the sideways scroll with the code. There is no key and no config entry to turn them off, and
+    they do not need the `syntax` feature.
 - A row of a split diff has two halves. `comment` and `select_range` use the new half, or the old half of a
   row with no new line. A click on a half chooses it for that row until the cursor moves. A range takes the
   side of its first row and ends at the last line on that side.
@@ -47,7 +66,7 @@ Part of the [herdr-review design](../DESIGN.md).
   colours follow the flavor. The innermost scope with an entry decides. Text between tokens is the theme's
   text colour.
 - A token's colour replaces the green or red of an added or removed row. The sign keeps that colour, and the
-  tint stays behind the whole row.
+  tint stays behind the whole row, but for the words marked as changed.
 - The language comes from the file's name, then its extension. A file in a language `syntect` and `two-face`
   do not know is drawn as before, each row in the colour of its kind.
 - A file is highlighted against its whole text, so a row inside a block comment or a multi-line string is

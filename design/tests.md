@@ -13,6 +13,7 @@ Each `E:` line above is one test, and each test swaps only the parameters listed
 | Load diff | fixture `git` | Every row of the cases in `diff.md`, and a failed reload keeps the old diff |
 | TUI loop | `TestBackend`, key list, temp `dir` | A write from another process appears, a failed save keeps the editor text, termination with a draft saves it |
 | Filter the files | `TestBackend`, key list | Every `E:` line of the graph, each decision of `filter` in `tui.md`, and `matches` and `sidebar_rows` directly. The fixture is a diff of four files in two directories |
+| Changed words | `TestBackend`, a patch of one hunk | `changed` directly: the tokens, a renamed identifier, tokens added to one line, neighbours joined, an indent, the half-shared rule at and under the line, the 200 token limit, a repeated token. Drawn: the marks in the unified and the split layout, a rewritten line and a line with no partner have none, the cursor's row and a selected row keep them, the marks follow the sideways scroll |
 | Highlight | recording `git`, temp repo dir, a budget that counts lines | A side that cannot be read falls back to its hunks, so does one over 1 MiB, an unknown extension reads nothing, steps of 50 lines add up to the tokens of one whole pass, the loop reads no file while keys are waiting |
 | Send | recording `herdr`, temp `dir` | Each `Refusal`, a stale pane id falls through to the list, `Ambiguous`, `sent` not recorded still reports success |
 

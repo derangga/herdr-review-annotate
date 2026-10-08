@@ -43,9 +43,10 @@ name = "catppuccin-latte"
   each one `Warning::Config`, and the pane starts in mocha.
 - The table is read once when the pane starts, with `[keys]`.
 - `theme.rs` is the only module that names a colour. Every other module draws with a role of `Theme`: base,
-  text, subtle text, border, accent, agent, cursor, selection, visual, added, removed, their two tints, filler,
-  header, popup, warning and success. The tint behind an added or a removed row is the flavor's green or red
-  mixed 15 parts in a hundred into its base, so it follows the flavor.
+  text, subtle text, border, accent, agent, cursor, selection, visual, added, removed, their two tints, their
+  two changed-word backgrounds, filler, header, popup, warning and success. The tint behind an added or a
+  removed row is the flavor's green or red mixed 15 parts in a hundred into its base, and the background of a
+  changed word is the same mix at 35 parts, so both follow the flavor.
 - The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
   show the terminal's own background. The colours are 24-bit. A terminal without truecolor is not handled.
 

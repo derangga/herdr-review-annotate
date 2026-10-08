@@ -1942,3 +1942,100 @@ fn a_directory_with_no_match_has_no_heading_and_matches_around_a_skipped_file_sh
         ]
     );
 }
+
+const WORDS_PATCH: &str = "diff --git a/w.rs b/w.rs
+--- a/w.rs
++++ b/w.rs
+@@ -1,4 +1,5 @@
+ fn main() {
+-    let total = count(items);
+-    old();
++    let total = count_all(items);
++    something(else, entirely);
++    extra();
+ }
+";
+// Unified rows: header 0, hunk 1, `fn main` 2, `-count` 3, `-old` 4, `+count_all` 5,
+// `+something` 6, `+extra` 7, `}` 8. Split rows: header 0, hunk 1, `fn main` 2, the count pair 3,
+// `old` beside `something` 4, `extra` alone 5, `}` 6.
+
+/// The text of row `y` that has `colour` behind it.
+fn behind(terminal: &Terminal<TestBackend>, y: u16, colour: Color) -> String {
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.width)
+        .filter(|x| buffer[(*x, y)].bg == colour)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
+}
+
+fn words_drawn(width: u16, change: impl FnOnce(&mut View)) -> Terminal<TestBackend> {
+    let diff = diff_of(WORDS_PATCH);
+    let mut view = view(&diff, &Review::default(), width, 12);
+    view.sidebar = false;
+    view.rebuild(&diff, &Review::default(), None, &Look::test());
+    change(&mut view);
+    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+    render(&mut terminal, &view, &diff, &Keymap::default());
+    terminal
+}
+
+#[test]
+fn the_words_a_paired_line_does_not_share_are_marked_in_the_unified_layout() {
+    let theme = Theme::default();
+    let terminal = words_drawn(80, |_| ());
+    assert_eq!(behind(&terminal, 3, theme.removed_word), "count");
+    assert_eq!(behind(&terminal, 5, theme.added_word), "count_all");
+    // The rest of both rows keeps the tint.
+    assert!(behind(&terminal, 3, theme.removed_bg).contains("let total = (items);"));
+    assert!(behind(&terminal, 5, theme.added_bg).contains("let total = (items);"));
+}
+
+#[test]
+fn a_rewritten_line_and_a_line_with_no_partner_are_not_marked() {
+    let theme = Theme::default();
+    // Only the `count` pair is marked: rows 3 and 5 of the unified layout, row 3 side by side.
+    for (width, expected) in [(80, vec![3, 5]), (140, vec![3])] {
+        let terminal = words_drawn(width, |_| ());
+        let marked = (0..12)
+            .filter(|y| {
+                let words = behind(&terminal, *y, theme.removed_word)
+                    + &behind(&terminal, *y, theme.added_word);
+                !words.is_empty()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(marked, expected, "width {width}");
+    }
+}
+
+#[test]
+fn the_words_are_marked_on_both_halves_of_a_split_row() {
+    let theme = Theme::default();
+    let terminal = words_drawn(140, |_| ());
+    assert_eq!(behind(&terminal, 3, theme.removed_word), "count");
+    assert_eq!(behind(&terminal, 3, theme.added_word), "count_all");
+}
+
+#[test]
+fn the_cursor_row_and_a_selected_row_keep_the_marks() {
+    let theme = Theme::default();
+    let terminal = words_drawn(80, |view| view.cursor = 5);
+    assert_eq!(behind(&terminal, 5, theme.added_word), "count_all");
+    assert!(behind(&terminal, 5, theme.cursor).contains("let total = (items);"));
+    let terminal = words_drawn(80, |view| {
+        view.cursor = 3;
+        view.toggle_select();
+        view.cursor = 5;
+    });
+    assert_eq!(behind(&terminal, 3, theme.removed_word), "count");
+    assert!(behind(&terminal, 3, theme.selection).contains("let total = (items);"));
+    assert!(behind(&terminal, 4, theme.selection).contains("old();"));
+}
+
+#[test]
+fn the_marks_move_with_the_code_when_it_is_scrolled_sideways() {
+    let theme = Theme::default();
+    let terminal = words_drawn(80, |view| view.hscroll = 16);
+    // 16 cells in, the row starts at `count_all`, and a `‹` takes the cell of its first letter.
+    assert_eq!(behind(&terminal, 5, theme.added_word), "ount_all");
+    assert_eq!(behind(&terminal, 3, theme.removed_word), "ount");
+}
