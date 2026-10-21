@@ -128,7 +128,7 @@ fn code(pane: &mut Pane, code: KeyCode) {
     pane.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn drawn(pane: &mut Pane, width: u16, height: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
+fn drawn(pane: &mut Pane, width: u16, height: u16) -> (Vec<String>, Buffer) {
     pane.resize(Rect::new(0, 0, width, height));
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| render(frame, pane)).unwrap();
@@ -162,7 +162,7 @@ const PROSE: &str =
     "alpha beta gamma delta epsilon zeta eta theta iota kappa\nsecond line\n\nfourth line";
 
 #[test]
-fn a_wrapped_line_is_several_rows_and_the_cursor_moves_over_it_as_one() {
+fn j_steps_through_the_rows_of_a_wrapped_line_and_keeps_the_column() {
     let fixture = Fixture::new("wrapped", PROSE);
     let mut pane = fixture.pane();
     pane.load();
@@ -170,17 +170,50 @@ fn a_wrapped_line_is_several_rows_and_the_cursor_moves_over_it_as_one() {
     let (rows, _) = drawn(&mut pane, 20, 12);
     assert_eq!(rows[0].trim_end(), " 1 alpha beta gamma");
     assert!(rows[1].starts_with("   "), "{rows:?}");
-    assert!(pane.layout.rows_of(0).len() > 1);
+    let wrapped = pane.layout.rows_of(0).len();
+    assert_eq!(wrapped, 4);
     assert_eq!(pane.layout.rows_of(1).len(), 1);
-    assert_eq!(pane.cursor, 0);
+    // The second row starts "delta": three cells in is its "t".
+    press(&mut pane, "lll");
+    assert_eq!(pane.pos(), (0, 3));
     press(&mut pane, "j");
-    assert_eq!(pane.cursor, 1);
-    press(&mut pane, "jj");
-    assert_eq!(pane.cursor, 3);
+    assert_eq!(pane.pos(), (0, "alpha beta gamma del".len()));
+    press(&mut pane, "jjj");
+    assert_eq!(pane.pos(), (1, 3), "the next line keeps the column");
+    press(&mut pane, "j");
+    assert_eq!(pane.pos(), (2, 0), "an empty line has one place");
+    press(&mut pane, "j");
+    assert_eq!(
+        pane.pos(),
+        (3, 3),
+        "the column comes back after the empty line"
+    );
     press(&mut pane, "j");
     assert_eq!(pane.cursor, 3, "stops on the last line");
-    press(&mut pane, "kkk");
-    assert_eq!(pane.cursor, 0);
+    press(&mut pane, &"k".repeat(wrapped + 2));
+    assert_eq!(pane.pos(), (0, 3));
+}
+
+#[test]
+fn h_l_0_and_dollar_move_within_the_line() {
+    let fixture = Fixture::new("horizontal", "ab日c\nxy");
+    let mut pane = fixture.pane();
+    pane.load();
+    drawn(&mut pane, 40, 8);
+    press(&mut pane, "lll");
+    assert_eq!(pane.col, 5, "a wide character is one step");
+    press(&mut pane, "l");
+    assert_eq!(pane.col, 5, "l stops on the last character");
+    press(&mut pane, "h");
+    assert_eq!(pane.col, 2);
+    press(&mut pane, "0");
+    assert_eq!(pane.col, 0);
+    press(&mut pane, "$");
+    assert_eq!(pane.col, 5);
+    press(&mut pane, "j");
+    assert_eq!(pane.pos(), (1, 1), "the column clamps to a shorter line");
+    press(&mut pane, "w");
+    assert_eq!(pane.pos(), (1, 1), "w on the last word stays");
 }
 
 #[test]
@@ -223,17 +256,24 @@ fn page_keys_scroll_by_rows() {
 }
 
 #[test]
-fn moving_past_the_window_scrolls_it_and_a_tall_line_shows_its_start() {
+fn moving_past_the_window_scrolls_it_a_row_at_a_time() {
     let text = format!("{}\nshort", "word ".repeat(60));
     let fixture = Fixture::new("tall", &text);
     let mut pane = fixture.pane();
     pane.load();
     drawn(&mut pane, 14, 6);
-    assert!(pane.layout.rows_of(0).len() > 4);
-    press(&mut pane, "j");
+    let tall = pane.layout.rows_of(0).len();
+    assert!(tall > 4);
+    press(&mut pane, "jjjj");
+    assert_eq!(
+        (pane.cursor, pane.scroll),
+        (0, 1),
+        "the fifth row scrolls one"
+    );
+    press(&mut pane, &"j".repeat(tall));
     assert_eq!(pane.cursor, 1);
     assert_eq!(pane.scroll, pane.layout.rows_of(1).end - 4);
-    press(&mut pane, "k");
+    press(&mut pane, &"k".repeat(tall));
     assert_eq!((pane.cursor, pane.scroll), (0, 0));
 }
 
@@ -265,6 +305,7 @@ fn a_reload_shows_a_newer_message_from_its_start() {
     let fixture = Fixture::new("newer", PROSE);
     let mut pane = fixture.pane();
     pane.load();
+    pane.resize(Rect::new(0, 0, 80, 8));
     press(&mut pane, "jj");
     fixture.write_message("m2", "a newer message");
     press(&mut pane, "R");
@@ -349,7 +390,8 @@ fn a_key_the_pane_does_not_act_on_does_nothing() {
     let fixture = Fixture::new("ignored", PROSE);
     let mut pane = fixture.pane();
     pane.load();
-    // `r` is reply, `x` is resolve, `f` is the sidebar.
+    // `r` is reply, `x` is resolve, `f` is the sidebar, `t` is the layout. `b` is a word back,
+    // which at the start goes nowhere.
     press(&mut pane, "rxfbt");
     assert_eq!((pane.cursor, pane.select, pane.quit), (0, None, false));
     assert_eq!(pane.status, None);
@@ -375,17 +417,25 @@ fn the_status_line_names_the_agent_and_says_when_it_was_working() {
 }
 
 #[test]
-fn visual_mode_selects_lines_and_escape_leaves_it() {
+fn capital_v_selects_lines_and_escape_leaves_it() {
     let fixture = Fixture::new("visual", PROSE);
     let mut pane = fixture.pane();
     pane.load();
-    press(&mut pane, "jv");
-    assert_eq!(pane.select, Some(1));
+    pane.resize(Rect::new(0, 0, 100, 8));
+    press(&mut pane, "jV");
+    assert_eq!(
+        pane.select,
+        Some(Select {
+            at: (1, 0),
+            lines: true
+        })
+    );
     press(&mut pane, "jj");
     assert_eq!(pane.range(), 1..4);
+    assert_eq!(pane.chars(), None);
     let text = screen(&mut pane, 100, 8);
     let last = text.lines().last().unwrap();
-    assert!(last.contains("VISUAL"), "{last}");
+    assert!(last.contains("VISUAL LINE"), "{last}");
     assert!(last.contains("lines 2-4 (3 lines)"), "{last}");
     assert!(last.contains("v/esc cancel"), "{last}");
     press(&mut pane, "k");
@@ -393,8 +443,93 @@ fn visual_mode_selects_lines_and_escape_leaves_it() {
     code(&mut pane, KeyCode::Esc);
     assert_eq!(pane.select, None);
     assert_eq!(pane.range(), 2..3);
-    press(&mut pane, "vv");
+    press(&mut pane, "VV");
     assert_eq!(pane.select, None);
+}
+
+#[test]
+fn v_then_e_selects_a_word_and_the_comment_names_it() {
+    let (fixture, mut pane) = opened("word", "Use a global lock.\nnext");
+    press(&mut pane, "wwv");
+    assert_eq!(pane.pos(), (0, 6));
+    press(&mut pane, "ee");
+    assert_eq!(pane.chars(), Some((6, 17)));
+    let text = screen(&mut pane, 60, 24);
+    let last = text.lines().last().unwrap();
+    assert!(last.starts_with(" VISUAL  line 1 (11 chars)"), "{last}");
+    comment(&mut pane, "Why global?");
+    assert_eq!(
+        pane.comments,
+        [MessageComment {
+            start: 1,
+            end: 1,
+            chars: Some((6, 17)),
+            body: "Why global?".to_owned()
+        }]
+    );
+    assert_eq!(
+        pane.pos(),
+        (0, 16),
+        "the cursor lands on the last character"
+    );
+    send(&mut pane);
+    let calls = calls_but_get(&fixture);
+    assert!(
+        calls[0].ends_with("- line 1, \"global lock\":\n  > Use a global lock.\n  Why global?"),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn v_and_capital_v_switch_modes_and_a_whole_line_is_a_line_comment() {
+    let (_fixture, mut pane) = opened("modes", NOTE);
+    press(&mut pane, "lv");
+    assert_eq!(pane.select.map(|s| s.lines), Some(false));
+    press(&mut pane, "V");
+    assert_eq!(pane.select.map(|s| s.lines), Some(true));
+    assert_eq!(pane.select.map(|s| s.at), Some((0, 1)), "the start stays");
+    press(&mut pane, "v");
+    assert_eq!(pane.select.map(|s| s.lines), Some(false));
+    press(&mut pane, "v");
+    assert_eq!(pane.select, None);
+    press(&mut pane, "0v$");
+    assert_eq!(
+        pane.chars(),
+        None,
+        "every character of the line is the line"
+    );
+    comment(&mut pane, "x");
+    assert_eq!(pane.comments[0].chars, None);
+}
+
+#[test]
+fn a_selection_crosses_lines_from_its_start_to_the_cursor() {
+    let (_fixture, mut pane) = opened("across", NOTE);
+    press(&mut pane, "jlllll");
+    press(&mut pane, "vjb");
+    assert_eq!(pane.pos(), (2, 0));
+    assert_eq!(pane.range(), 1..3);
+    assert_eq!(pane.chars(), Some((5, 1)));
+    press(&mut pane, "kk");
+    assert_eq!(pane.pos(), (0, 0));
+    assert_eq!(pane.range(), 0..2, "backwards, the cursor is the start");
+    assert_eq!(pane.chars(), Some((0, 6)));
+}
+
+#[test]
+fn a_pane_action_wins_over_the_vim_table_and_visual_mode_hands_e_to_it() {
+    let (_fixture, mut pane) = opened("e-key", NOTE);
+    comment(&mut pane, "mine");
+    press(&mut pane, "e");
+    assert!(pane.compose.is_some(), "e edits in normal mode");
+    code(&mut pane, KeyCode::Esc);
+    press(&mut pane, "ve");
+    assert!(pane.compose.is_none());
+    assert_eq!(pane.pos(), (0, 3), "e is the end of a word in visual mode");
+    press(&mut pane, "d");
+    assert_eq!(pane.comments.len(), 1, "delete is off in visual mode");
+    press(&mut pane, "n");
+    assert_eq!(pane.status, None, "so is the next comment");
 }
 
 #[test]
@@ -403,13 +538,45 @@ fn the_selected_lines_and_the_cursor_are_tinted() {
     let mut pane = fixture.pane();
     pane.load();
     pane.resize(Rect::new(0, 0, 80, 10));
-    press(&mut pane, "jvj");
+    press(&mut pane, "jVj");
     let (_, buffer) = drawn(&mut pane, 80, 10);
     let bg = |row: u16| buffer[(10, row)].bg;
     // Each line takes one row at this width. The range is lines 2 and 3, and the cursor is on 3.
     assert_ne!(bg(0), pane.theme.selection);
     assert_eq!(bg(1), pane.theme.selection);
     assert_eq!(bg(2), pane.theme.cursor);
+}
+
+#[test]
+fn a_character_selection_tints_its_cells_and_the_cursor_is_reversed() {
+    let (_fixture, mut pane) = opened("char-tint", NOTE);
+    press(&mut pane, "lvl");
+    let (_, buffer) = drawn(&mut pane, 60, 24);
+    // Three cells of line numbers, then "line one": the selection is "in".
+    assert_eq!(buffer[(4, 0)].bg, pane.theme.selection);
+    assert_eq!(buffer[(5, 0)].bg, pane.theme.selection);
+    assert_eq!(
+        buffer[(3, 0)].bg,
+        pane.theme.cursor,
+        "outside it, the cursor's line"
+    );
+    assert_eq!(buffer[(6, 0)].bg, pane.theme.cursor);
+    assert!(buffer[(5, 0)].modifier.contains(Modifier::REVERSED));
+    assert!(!buffer[(4, 0)].modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn a_character_comment_underlines_its_text() {
+    let (_fixture, mut pane) = opened("underline", NOTE);
+    press(&mut pane, "wve");
+    comment(&mut pane, "which?");
+    press(&mut pane, "j");
+    let (_, buffer) = drawn(&mut pane, 60, 24);
+    let underlined = |x: u16| buffer[(x, 0)].modifier.contains(Modifier::UNDERLINED);
+    // "line one": "one" is cells 8 to 10.
+    assert!(!underlined(7));
+    assert!(underlined(8) && underlined(10));
+    assert!(!underlined(11));
 }
 
 #[test]
@@ -426,10 +593,19 @@ fn the_wheel_scrolls_and_a_click_or_a_drag_selects_lines() {
     assert_eq!((pane.scroll, pane.cursor), (3, 3));
     pane.mouse(mouse(MouseEventKind::ScrollUp, 5, 3));
     assert_eq!(pane.scroll, 0);
+    // Three cells of line numbers: column 5 is the third character.
     pane.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 4));
-    assert_eq!((pane.cursor, pane.select), (4, None));
-    pane.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 7));
-    assert_eq!((pane.cursor, pane.select), (7, Some(4)));
+    assert_eq!((pane.pos(), pane.select), ((4, 2), None));
+    pane.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 7));
+    assert_eq!(pane.pos(), (7, 4));
+    assert_eq!(
+        pane.select,
+        Some(Select {
+            at: (4, 2),
+            lines: false
+        })
+    );
+    assert_eq!(pane.chars(), Some((2, 5)));
     pane.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 7));
     pane.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 9));
     assert_eq!(pane.cursor, 7, "a drag with no press selects nothing");
@@ -437,7 +613,7 @@ fn the_wheel_scrolls_and_a_click_or_a_drag_selects_lines() {
     assert_eq!(pane.select, None, "a click drops the range");
     pane.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 11));
     assert_eq!(
-        (pane.select, pane.scroll),
+        (pane.select.map(|s| s.at.0), pane.scroll),
         (Some(2), 1),
         "below the text scrolls"
     );
@@ -527,7 +703,8 @@ fn a_resize_wraps_again_and_keeps_the_first_line_on_screen() {
     let mut pane = fixture.pane();
     pane.load();
     drawn(&mut pane, 20, 5);
-    press(&mut pane, "jj");
+    // Line 1 takes four rows at this width.
+    press(&mut pane, "jjjjj");
     let before = pane.layout.line_at(pane.scroll);
     drawn(&mut pane, 60, 5);
     assert_eq!(pane.layout.rows_of(0).len(), 1);
@@ -586,7 +763,7 @@ fn the_loop_draws_on_change_and_quits_on_q() {
     let exit = run_loop(&mut pane, &mut terminal, poll, || false);
     assert_eq!(exit, Exit::Quit);
     assert_eq!(polls.get(), 3);
-    assert_eq!(pane.cursor, 1);
+    assert_eq!(pane.layout.row_at(pane.cursor, pane.col), 1);
 }
 
 #[test]
@@ -623,13 +800,14 @@ fn row_of(rows: &[String], text: &str) -> usize {
 #[test]
 fn a_range_comment_draws_as_a_box_under_the_last_line_it_covers() {
     let (_fixture, mut pane) = opened("range", NOTE);
-    press(&mut pane, "jvj");
+    press(&mut pane, "jVj");
     comment(&mut pane, "why two?");
     assert_eq!(
         pane.comments,
         [MessageComment {
             start: 2,
             end: 3,
+            chars: None,
             body: "why two?".to_owned()
         }]
     );
@@ -734,7 +912,7 @@ fn escape_leaves_the_editor_without_a_comment_and_an_empty_one_saves_nothing() {
 #[test]
 fn the_editor_is_drawn_under_the_lines_it_comments_on() {
     let (_fixture, mut pane) = opened("editor", NOTE);
-    press(&mut pane, "jvj");
+    press(&mut pane, "jVj");
     press(&mut pane, "c");
     press(&mut pane, "hello");
     let (rows, buffer) = drawn(&mut pane, 60, 24);
@@ -929,7 +1107,7 @@ fn send(pane: &mut Pane) {
 #[test]
 fn send_prompts_the_agent_with_the_comments_and_the_pane_leaves() {
     let (fixture, mut pane) = opened("send", NOTE);
-    press(&mut pane, "jvj");
+    press(&mut pane, "jVj");
     comment(&mut pane, "Why two?");
     press(&mut pane, "jj");
     comment(&mut pane, "Drop this.\nPlease.");

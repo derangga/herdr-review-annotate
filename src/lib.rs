@@ -18,6 +18,7 @@ pub mod message;
 pub mod message_action;
 pub mod message_tui;
 pub mod meta;
+pub mod motion;
 pub mod open;
 pub mod send;
 pub mod store;

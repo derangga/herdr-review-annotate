@@ -299,7 +299,15 @@ fn comment(start: u32, end: u32, body: &str) -> MessageComment {
     MessageComment {
         start,
         end,
+        chars: None,
         body: body.to_owned(),
+    }
+}
+
+fn on_chars(start: u32, end: u32, chars: (usize, usize), body: &str) -> MessageComment {
+    MessageComment {
+        chars: Some(chars),
+        ..comment(start, end, body)
     }
 }
 
@@ -404,4 +412,40 @@ fn a_range_past_the_end_of_the_message_quotes_what_is_there() {
         "{prompt:?}"
     );
     assert!(prompt.contains("- line 9:\n  y"), "{prompt:?}");
+}
+
+#[test]
+fn a_character_comment_names_its_text_after_the_lines() {
+    let lines = ["Use a global lock.".to_owned()];
+    let prompt = format_prompt(&lines, &[on_chars(1, 1, (6, 17), "Why global?")]);
+    assert_eq!(
+        prompt.lines().skip(2).collect::<Vec<_>>(),
+        [
+            "- line 1, \"global lock\":",
+            "  > Use a global lock.",
+            "  Why global?"
+        ]
+    );
+}
+
+#[test]
+fn a_selection_across_lines_joins_them_with_spaces() {
+    let lines = [
+        "first line".to_owned(),
+        String::new(),
+        "third line".to_owned(),
+    ];
+    let prompt = format_prompt(&lines, &[on_chars(1, 3, (6, 5), "x")]);
+    assert!(
+        prompt.contains("- lines 1-3, \"line  third\":"),
+        "{prompt:?}"
+    );
+}
+
+#[test]
+fn text_over_sixty_characters_is_cut() {
+    let lines = ["é".repeat(70)];
+    let prompt = format_prompt(&lines, &[on_chars(1, 1, (0, 138), "x")]);
+    let head = prompt.lines().nth(2).unwrap();
+    assert_eq!(head, format!("- line 1, \"{}…\":", "é".repeat(60)));
 }

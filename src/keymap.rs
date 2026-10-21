@@ -130,7 +130,7 @@ impl Action {
             Self::ToggleSidebar => "show or hide the sidebar",
             Self::Filter => "filter the files in the sidebar",
             Self::Comment => "comment on the line, range or file",
-            Self::SelectRange => "select lines (visual mode)",
+            Self::SelectRange => "select a range (visual mode)",
             Self::Reply => "reply to the thread",
             Self::Edit => "edit your comment",
             Self::Delete => "delete your comment",

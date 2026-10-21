@@ -82,21 +82,35 @@ a repository, so it needs no git. A stale id fails `herdr pane get` and the acti
 
 ## Pane
 
-- One row per source line of the message, as raw Markdown, wrapped to the pane width. A wrapped line
-  is several screen rows with one cursor position. The cursor, visual mode and comments work on source
-  lines. A comment on a paragraph quotes the whole paragraph. A column of line numbers sits on the
-  left, on the first row of each line, because the prompt cites lines by number.
+- One row per source line of the message, as raw Markdown, wrapped to the pane width. A column of line
+  numbers sits on the left, on the first row of each line, because the prompt cites lines by number.
+- The cursor is a character: a line and a byte in it. `j` and `k` move by screen row, so they step
+  through a wrapped paragraph, and keep the column the cursor last moved to, as vim's `gj` and `gk`.
+  The cursor's line is tinted, since `c` comments on it, and its character is drawn reversed.
+- `v` selects characters from the cursor, as vim's `v`, and the selection may cross lines. `V` selects
+  whole lines. `v` in `V` mode switches to characters, `V` in `v` mode to lines, and the same key again
+  or `Esc` leaves. `c` comments on the selection, or with none on the cursor's whole line. A character
+  selection that covers whole lines is a line comment.
 - Colours come from `syntax::highlight` with the Markdown grammar. Without the `syntax` feature the
   text draws plain.
-- A comment draws as a note box under the last line it covers, like a diff thread's card. Several
-  comments may cover the same lines. `edit` and `delete` act on the comment whose box hangs under the
-  cursor's line, and `next_thread` and `prev_thread` land on one: they go through the comments in
-  line order, then in the order written, so with several on one line they step through them. The
-  box of that comment is tinted like the cursor's row. `delete` asks nothing.
+- A comment draws as a note box under the last line it covers, like a diff thread's card. The
+  characters of a character comment are underlined. Several comments may cover the same lines. `edit`
+  and `delete` act on the comment whose box hangs under the cursor's line, and `next_thread` and
+  `prev_thread` land on one, on the last character it covers: they go through the comments in line
+  order, then in the order written, so with several on one line they step through them. The box of
+  that comment is tinted like the cursor's row. `delete` asks nothing.
 - Keys come from the same `[keys]` table as the diff pane. The pane acts on `up`, `down`, `page_up`,
   `page_down`, `prev_thread`, `next_thread` (move between comments), `comment`, `select_range`, `edit`,
-  `delete`, `send`, `reload`, `help` and `quit`. The rest do nothing, and the footer and help overlay
-  leave them out. The mouse wheel scrolls, and a click or a drag selects lines, as in the diff pane.
+  `delete`, `send`, `reload`, `help` and `quit`. In visual mode it acts only on `up`, `down`,
+  `page_up`, `page_down`, `comment`, `select_range`, `help` and `quit`. A key that is not bound to one
+  of those falls to a fixed vim table: `h` `l` (and the arrows) by character within the line, `j` `k`
+  by row, `0` and `Home` to the line's start, `$` and `End` to its last character, `w` `b` `e` by
+  vim's small word (letters, digits and `_` form a word, a run of other non-space characters is one,
+  and an empty line is a stop for `w` and `b`), and `V`. So `e` is `edit` in normal mode and the end
+  of a word in visual mode, and a remapped key keeps its action. The footer leaves out the actions
+  the pane does not act on, and the help overlay adds one line for the vim table.
+- The mouse wheel scrolls. A click puts the cursor on the character under it, and a drag selects
+  characters from the press, as `v` does.
 - `reload` loads the newest message again. With comments it first asks "discard N comments and load
   the newest message?". A failed reload keeps the message on screen and shows the error, and the
   comments too: they are dropped only once the new message is loaded.
@@ -115,12 +129,14 @@ Feedback on your last message. Address each point.
   > Move events into the new file and drop the old one.
   > The fold reads only the new file.
   Why not keep the old file and read both?
-- line 30:
+- line 30, "global lock":
   > Use a global lock.
   Fine for now, add a ponytail note.
 ```
 
 - Comments go in line order, and in the order they were written when they start on the same line.
+- A character comment names its text after the lines, in double quotes. The line breaks of a selection
+  across lines become spaces. Text longer than 60 characters shows its first 60 and `…`.
 - A quote holds at most 6 lines. A longer range shows its first 5 lines and then
   `  > … (N more lines)`. The agent has the whole message in its context, so the quote only has to
   locate the comment.
@@ -135,7 +151,7 @@ Feedback on your last message. Address each point.
 | `Session` | `Id(String)`, `Path(PathBuf)` |
 | `MessageAgent` | `pane: PaneId`, `terminal: TerminalId`, `cwd`, `status: AgentStatus`, `session: Option<Session>`, `name: String` |
 | `AgentMessage` | `id: String`, `lines: Vec<String>`, `transcript: PathBuf` |
-| `MessageComment` | `start: u32`, `end: u32` (source lines, 1-based, inclusive), `body: String` |
+| `MessageComment` | `start: u32`, `end: u32` (source lines, 1-based, inclusive), `chars: Option<(usize, usize)>` (for a character comment, the byte it starts at in the first line and the byte it ends before in the last; `None` for whole lines), `body: String` |
 | `MessageError` | `NotAnAgent`, `Unsupported(String)`, `NoSession`, `NoTranscript { id }`, `NoMessage { path }`, `Io { path, kind }`, `Herdr(HerdrError)` |
 
 ## Call graphs
@@ -195,16 +211,17 @@ change. On the termination flag the pane leaves the loop and the comments are lo
 |---|---|---|
 | Find the message | temp `HOME` with transcript fixtures | Not claude, no session, a `path` session, the id under `CLAUDE_CONFIG_DIR`, under `~/.claude`, under `~/.claude-work`, no file, a bad JSON line skipped, sidechain and `<synthetic>` skipped, thinking and `tool_use` dropped, one id over three lines joined, the last id with text wins over a later `tool_use`-only line, no text at all |
 | `message` action | recording `herdr`, `Env` literal, temp state base | No context, not an agent, open pane focused, stale pane id opens a new one, no message notifies and opens nothing |
-| Pane | `TestBackend`, key list, recording `herdr` | Wrapped line moves as one, a range comment draws under its last line, reload asks when comments exist, a failed reload keeps the message, quit asks with comments |
-| Prompt | (pure) | Line order, a 7-line range cut to 5 plus the count, a multi-line body indented |
+| Pane | `TestBackend`, key list, recording `herdr` | `j` steps through the rows of a wrapped line and keeps the column, `v` then `e` selects a word, `V` selects lines, `v` and `V` switch modes, a pane action's key wins over the vim table, visual mode drops `edit` so `e` moves, a click puts the cursor on a character and a drag selects characters, a character comment underlines its text, a range comment draws under its last line, reload asks when comments exist, a failed reload keeps the message, quit asks with comments |
+| Motions | (pure) | `w` `b` `e` over words and punctuation, across lines, stopping at an empty line for `w` and `b`, at the message's ends |
+| Prompt | (pure) | Line order, a 7-line range cut to 5 plus the count, a multi-line body indented, a character comment names its text, a selection across lines joins with spaces, text over 60 characters is cut |
 | Send | recording `herdr` | Refused keeps the comments and the pane, success exits, a changed terminal refuses |
 
 Manual checks in Herdr:
 
 - With Claude Code idle, `prefix+o` opens a split on the agent's final message. A second press focuses
   it.
-- Comment on one line and on a range, then press `S`. The agent receives the prompt and the pane
-  closes.
+- Comment on one line, on a range, and on a few words selected with `v`, then press `S`. The agent
+  receives the prompt and the pane closes.
 - With the agent working, the pane opens with ` working ` and `S` queues the prompt.
 - With Claude Code started under `CLAUDE_CONFIG_DIR=~/.claude-work`, the message is found.
 - In a Codex or shell pane, `prefix+o` shows a notification and opens nothing.

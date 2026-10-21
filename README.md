@@ -91,15 +91,19 @@ that runs another agent, or none, the key shows a notification and opens nothing
    the key again focuses it. Text the agent wrote between tool calls belongs to earlier messages and is
    not shown. If the agent is still working, the status line says `working` and the pane shows the
    newest message so far. After `/clear` there is no message yet, and the notification says so.
-2. Move with `j` and `k`. A wrapped line is one stop. Press `c`, write the comment, and save it with
-   `ctrl+s`. For a range, press `v`, move or drag the mouse over the lines, then press `c`. The comment
-   is a box under the last line it covers. `e` edits and `d` deletes the comment under the cursor, and
-   `n` and `N` jump between comments.
+2. Move as in vim: `j` and `k` by screen row, so they step through a wrapped paragraph, `h` and `l` by
+   character, `w`, `b` and `e` by word, `0` and `$` to the ends of the line. Press `c`, write the
+   comment, and save it with `ctrl+s`. `c` alone comments on the cursor's line. To point at a few
+   words, press `v`, move to the last one (`e` is handy), then press `c`. `V` selects whole lines, and
+   a drag of the mouse selects characters. The comment is a box under the last line it covers, and the
+   words it is about are underlined. `e` edits and `d` deletes the comment under the cursor, and `n`
+   and `N` jump between comments.
 3. Press `S`. Every comment goes to the agent as one prompt, and the pane closes. The agent answers in
    its next message, and `prefix+o` opens that one if you want to go on. If the agent is waiting on a
    permission prompt, the send is refused, the pane stays, and the comments are kept.
 
-The prompt quotes each comment's lines, at most six, so the agent can find them:
+The prompt quotes each comment's lines, at most six, so the agent can find them. A comment on some
+words names them too, cut at 60 characters:
 
 ```
 Feedback on your last message. Address each point.
@@ -109,7 +113,7 @@ Feedback on your last message. Address each point.
   > Move events into the new file and drop the old one.
   > The fold reads only the new file.
   Why not keep the old file and read both?
-- line 30:
+- line 30, "global lock":
   > Use a global lock.
   Fine for now, add a ponytail note.
 ```
@@ -119,7 +123,10 @@ live only in the pane: nothing is written to disk, and closing the pane without 
 
 The pane reads the same `[keys]` table as the diff pane and acts on `up`, `down`, `page_up`,
 `page_down`, `prev_thread`, `next_thread`, `comment`, `select_range`, `edit`, `delete`, `send`,
-`reload`, `help` and `quit`. The other actions do nothing there, and `?` lists only these.
+`reload`, `help` and `quit`. The other actions do nothing there, and `?` lists only these. In visual
+mode it acts only on the moves, `comment`, `select_range`, `help` and `quit`. Any key not bound to one
+of these is read as a vim motion (`h j k l w b e 0 $`, `V`), so `e` edits in normal mode and moves to
+the end of a word in visual mode.
 
 To find the transcript the pane takes the session id from `herdr agent get`, then looks under
 `$CLAUDE_CONFIG_DIR`, `~/.claude` and every other `~/.claude*` directory. Herdr's own environment is
@@ -147,7 +154,7 @@ effect.
 | `toggle_sidebar` | `f` | show or hide the sidebar |
 | `filter` | `/` | narrow the sidebar to the files whose path matches what you type; `enter` keeps it, `esc` clears it |
 | `comment` | `c` | comment on the line, range or file |
-| `select_range` | `v` | select lines (visual mode) |
+| `select_range` | `v` | select a range (visual mode) |
 | `reply` | `r` | reply to the thread |
 | `edit` | `e` | edit your comment |
 | `delete` | `d` | delete your comment |

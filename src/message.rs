@@ -61,7 +61,33 @@ pub struct MessageComment {
     /// The first and the last line it covers, from 1, both included.
     pub start: u32,
     pub end: u32,
+    /// For a comment on some characters: the byte it starts at in the first line and the byte it
+    /// ends before in the last. `None` when it covers the whole lines.
+    pub chars: Option<(usize, usize)>,
     pub body: String,
+}
+
+/// Longest text a character comment names in the prompt.
+const QUOTE_CHARS: usize = 60;
+
+impl MessageComment {
+    /// The characters it covers in `lines`, the line breaks as spaces, or `None` for a line comment.
+    pub fn text(&self, lines: &[String]) -> Option<String> {
+        let (from, to) = self.chars?;
+        let (first, last) = ((self.start as usize).saturating_sub(1), self.end as usize);
+        let covered = lines.get(first..last.min(lines.len()))?;
+        let count = covered.len();
+        let parts = covered.iter().enumerate().map(|(at, line)| {
+            let start = if at == 0 { from.min(line.len()) } else { 0 };
+            let end = if at + 1 == count {
+                to.min(line.len())
+            } else {
+                line.len()
+            };
+            line.get(start..end.max(start)).unwrap_or_default()
+        });
+        Some(parts.collect::<Vec<_>>().join(" "))
+    }
 }
 
 /// The text of one assistant message.
@@ -326,11 +352,21 @@ pub fn format_prompt(lines: &[String], comments: &[MessageComment]) -> String {
     ];
     for comment in order {
         let (start, end) = (comment.start as usize, comment.end as usize);
-        out.push(if start == end {
-            format!("- line {start}:")
+        let mut head = if start == end {
+            format!("- line {start}")
         } else {
-            format!("- lines {start}-{end}:")
-        });
+            format!("- lines {start}-{end}")
+        };
+        if let Some(text) = comment.text(lines) {
+            let mut text = text.chars().take(QUOTE_CHARS + 1).collect::<String>();
+            if text.chars().count() > QUOTE_CHARS {
+                text.pop();
+                text.push('…');
+            }
+            head = format!("{head}, \"{text}\"");
+        }
+        head.push(':');
+        out.push(head);
         let quoted = lines
             .get(start.saturating_sub(1)..end.min(lines.len()))
             .unwrap_or_default();

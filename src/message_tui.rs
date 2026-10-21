@@ -12,8 +12,10 @@ use std::time::Duration;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::layout::{Constraint, Layout as Split, Rect};
 use ratatui::style::{Modifier, Style};
@@ -29,6 +31,7 @@ use crate::message::{
     AgentMessage, AgentStatus, MessageAgent, MessageComment, find_transcript, format_prompt,
     parse_agent, pointer_path, read_message, write_pointer,
 };
+use crate::motion::{Pos, word_end, word_next, word_prev};
 use crate::store::{PaneId, TerminalId, Warning};
 use crate::syntax::{self, Span as Token};
 use crate::termination::Termination;
@@ -38,7 +41,7 @@ use crate::tui::{
     restore_terminal, restoring_panic_hook, sanitize_terminal_text, status_bar,
 };
 use crate::view::{DiffLayout, draw_help, editor_rect, highlight, key_style, note_box};
-use crate::width::truncate_to_width;
+use crate::width::{char_width, string_width, truncate_to_width};
 
 /// The actions the pane acts on, in the order of the help overlay. The other keys do nothing, and
 /// neither the footer nor the help overlay lists them.
@@ -66,6 +69,19 @@ const FOOTER: [(Action, &str); 5] = [
     (Action::Reload, "reload"),
     (Action::Help, "help"),
     (Action::Quit, "quit"),
+];
+
+/// The actions the pane still takes in visual mode. The other keys fall to the vim table, so `e`
+/// moves to the end of a word there instead of editing.
+const VISUAL_ACTIONS: [Action; 8] = [
+    Action::Up,
+    Action::Down,
+    Action::PageUp,
+    Action::PageDown,
+    Action::Comment,
+    Action::SelectRange,
+    Action::Help,
+    Action::Quit,
 ];
 
 /// Rows the wheel scrolls by.
@@ -167,7 +183,92 @@ impl Layout {
     fn line_at(&self, row: usize) -> Option<usize> {
         self.rows.get(row).map(|row| row.line)
     }
+
+    /// The row of line `line` that byte `col` is drawn on. A space the wrap dropped belongs to the
+    /// row before it.
+    fn row_at(&self, line: usize, col: usize) -> usize {
+        let rows = self.rows_of(line);
+        rows.clone()
+            .rev()
+            .find(|at| {
+                matches!(self.rows.get(*at), Some(Row { kind: Kind::Text(range), .. }) if range.start <= col)
+            })
+            .unwrap_or(rows.start)
+    }
+
+    fn is_text(&self, row: usize) -> bool {
+        matches!(
+            self.rows.get(row),
+            Some(Row {
+                kind: Kind::Text(_),
+                ..
+            })
+        )
+    }
+
+    /// A text row for `row`: itself, or for a box row the last row of the line it hangs under.
+    fn text_row(&self, row: usize) -> usize {
+        match self.rows.get(row) {
+            Some(Row {
+                line,
+                kind: Kind::Note { .. },
+            }) => self.rows_of(*line).end.saturating_sub(1),
+            _ => row,
+        }
+    }
 }
+
+/// Where a selection started, and whether it covers whole lines (`V`) or characters (`v`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Select {
+    pub at: Pos,
+    pub lines: bool,
+}
+
+/// A key of the fixed vim table, for a key the keymap gives no action this pane takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Motion {
+    Left,
+    Right,
+    Up,
+    Down,
+    Start,
+    End,
+    WordNext,
+    WordPrev,
+    WordEnd,
+    Lines,
+}
+
+impl Motion {
+    fn of(key: &KeyEvent) -> Option<Self> {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        Some(match key.code {
+            KeyCode::Char('h') | KeyCode::Left => Self::Left,
+            KeyCode::Char('l') | KeyCode::Right => Self::Right,
+            KeyCode::Char('k') | KeyCode::Up => Self::Up,
+            KeyCode::Char('j') | KeyCode::Down => Self::Down,
+            KeyCode::Char('0') | KeyCode::Home => Self::Start,
+            KeyCode::Char('$') | KeyCode::End => Self::End,
+            KeyCode::Char('w') => Self::WordNext,
+            KeyCode::Char('b') => Self::WordPrev,
+            KeyCode::Char('e') => Self::WordEnd,
+            KeyCode::Char('V') => Self::Lines,
+            _ => return None,
+        })
+    }
+}
+
+/// The help overlay's line for the vim table.
+const MOTIONS: [(&str, &str); 2] = [
+    ("h j k l w b e 0 $", "move by character, row and word"),
+    ("V", "select whole lines"),
+];
 
 /// The editor, and what its text becomes.
 #[derive(Debug)]
@@ -176,6 +277,8 @@ struct Compose {
     edit: Option<usize>,
     /// The lines it covers, from 0, the end not included.
     lines: Range<usize>,
+    /// The characters it covers, as in `MessageComment::chars`.
+    chars: Option<(usize, usize)>,
     editor: Editor,
     /// What the top border of the editor says first, then where the comment points.
     title: &'static str,
@@ -241,11 +344,15 @@ pub struct Pane {
     pending: bool,
     /// The line the cursor is on.
     pub cursor: usize,
+    /// The byte of the cursor's character in its line.
+    pub col: usize,
+    /// The cells from the start of its row that `j` and `k` keep the cursor at.
+    want: usize,
     /// The first row on screen.
     pub scroll: usize,
-    /// The line a range started on, while one is being selected. This is visual mode.
-    pub select: Option<usize>,
-    /// A left press is held, so a drag selects lines until the button comes up.
+    /// Where a selection started, while one is being made. This is visual mode.
+    pub select: Option<Select>,
+    /// A left press is held, so a drag selects characters until the button comes up.
     drag: bool,
     pub area: Rect,
     pub help: bool,
@@ -288,6 +395,8 @@ impl Pane {
             prompt: None,
             pending: false,
             cursor: 0,
+            col: 0,
+            want: 0,
             scroll: 0,
             select: None,
             drag: false,
@@ -378,7 +487,8 @@ impl Pane {
                 self.agent = Some(agent);
                 self.message = Some(message);
                 if !same {
-                    (self.cursor, self.scroll, self.select) = (0, 0, None);
+                    (self.cursor, self.col, self.want) = (0, 0, 0);
+                    (self.scroll, self.select) = (0, None);
                 }
                 self.relayout();
                 self.screen = Screen::Review;
@@ -463,13 +573,121 @@ impl Pane {
             self.scroll = self.layout.rows_of(top).start;
         }
         self.cursor = self.cursor.min(self.lines().len().saturating_sub(1));
+        self.clamp_col();
         self.ensure_visible();
     }
 
-    /// Scroll so the cursor's line, and the box of the comment on it, are on screen. Rows taller
-    /// than the pane show their start.
+    fn pos(&self) -> Pos {
+        (self.cursor, self.col)
+    }
+
+    /// Keep the cursor on a character of its line: the last one when it was past it.
+    fn clamp_col(&mut self) {
+        let text = self.lines().get(self.cursor).map_or("", String::as_str);
+        let mut col = self.col.min(last_char(text));
+        while !text.is_char_boundary(col) {
+            col -= 1;
+        }
+        self.col = col;
+    }
+
+    /// The cells from the start of its row to the character at `pos`.
+    fn cells_of(&self, (line, col): Pos) -> usize {
+        let start = match self.layout.rows.get(self.layout.row_at(line, col)) {
+            Some(Row {
+                kind: Kind::Text(range),
+                ..
+            }) => range.start,
+            _ => 0,
+        };
+        self.lines()
+            .get(line)
+            .and_then(|text| text.get(start..col.max(start)))
+            .map_or(0, string_width)
+    }
+
+    /// The character of text row `row` that covers cell `cells`, or its last when the row is
+    /// shorter.
+    fn byte_at(&self, row: usize, cells: usize) -> Option<Pos> {
+        let Some(Row {
+            line,
+            kind: Kind::Text(range),
+        }) = self.layout.rows.get(row)
+        else {
+            return None;
+        };
+        let text = self.lines().get(*line)?.get(range.clone())?;
+        let mut used = 0;
+        let mut at = 0;
+        for (byte, character) in text.char_indices() {
+            at = byte;
+            used += char_width(character);
+            if used > cells {
+                break;
+            }
+        }
+        Some((*line, range.start + at))
+    }
+
+    /// Put the cursor on `pos`, aim `j` and `k` at its column, and scroll to it.
+    fn set_pos(&mut self, (line, col): Pos) {
+        (self.cursor, self.col) = (line, col);
+        self.want = self.cells_of((line, col));
+        self.ensure_visible();
+    }
+
+    /// Put the cursor on row `row`, at the column `j` and `k` aim at.
+    fn put_row(&mut self, row: usize) {
+        if let Some(pos) = self.byte_at(self.layout.text_row(row), self.want) {
+            (self.cursor, self.col) = pos;
+        }
+    }
+
+    /// `j` and `k`: the next or previous row of text, the boxes skipped.
+    fn vertical(&mut self, down: bool) {
+        let here = self.layout.row_at(self.cursor, self.col);
+        let next = if down {
+            (here + 1..self.layout.rows.len()).find(|at| self.layout.is_text(*at))
+        } else {
+            (0..here).rev().find(|at| self.layout.is_text(*at))
+        };
+        if let Some(row) = next {
+            self.put_row(row);
+        }
+        self.ensure_visible();
+    }
+
+    /// A key of the vim table.
+    fn motion(&mut self, motion: Motion) {
+        let lines = self.lines();
+        let Some(text) = lines.get(self.cursor) else {
+            return;
+        };
+        let (line, col) = self.pos();
+        let pos = match motion {
+            Motion::Up | Motion::Down => return self.vertical(motion == Motion::Down),
+            Motion::Lines => return self.visual(true),
+            Motion::Left => (line, text.get(..col).map_or(0, last_char)),
+            Motion::Right => {
+                let next = text
+                    .get(col..)
+                    .and_then(|rest| rest.char_indices().nth(1))
+                    .map(|(at, _)| col + at);
+                (line, next.unwrap_or(col))
+            }
+            Motion::Start => (line, 0),
+            Motion::End => (line, last_char(text)),
+            Motion::WordNext => word_next(lines, (line, col)),
+            Motion::WordPrev => word_prev(lines, (line, col)),
+            Motion::WordEnd => word_end(lines, (line, col)),
+        };
+        self.set_pos(pos);
+    }
+
+    /// Scroll so the cursor's row, and the box of the comment on its line, are on screen.
     fn ensure_visible(&mut self) {
-        let mut rows = self.layout.rows_of(self.cursor);
+        let row = self.layout.row_at(self.cursor, self.col);
+        let mut rows = row..row + 1;
         if let Some(comment) = self.focused() {
             rows.end = rows.end.max(self.layout.box_of(comment).end);
         }
@@ -482,18 +700,13 @@ impl Pane {
         self.scroll = self.scroll.min(self.layout.rows.len().saturating_sub(1));
     }
 
-    fn move_to(&mut self, line: usize) {
-        self.cursor = line.min(self.lines().len().saturating_sub(1));
-        self.ensure_visible();
-    }
-
     /// Scroll a page of rows, and move the cursor a page with it, onto the line at that row. The
     /// cursor stays in the window.
     fn page(&mut self, down: bool) {
         let height = self.height();
         let rows = self.layout.rows.len();
         let last = rows.saturating_sub(1);
-        let was = self.layout.rows_of(self.cursor).start;
+        let was = self.layout.row_at(self.cursor, self.col);
         self.scroll = if down {
             (self.scroll + height).min(rows.saturating_sub(height))
         } else {
@@ -507,17 +720,24 @@ impl Pane {
         let target = moved
             .min(last)
             .clamp(self.scroll, (self.scroll + height - 1).min(last));
-        if let Some(line) = self.layout.line_at(target) {
-            self.cursor = line;
-        }
+        self.put_row(target);
     }
 
-    /// Keep the cursor on a line that has a row in the window, after the window moved.
+    /// Keep the cursor on a row of text in the window, after the window moved.
     fn scroll_cursor_into_window(&mut self) {
-        let last = (self.scroll + self.height()).min(self.layout.rows.len());
-        let first = self.layout.line_at(self.scroll).unwrap_or(0);
-        let end = self.layout.line_at(last.saturating_sub(1)).unwrap_or(first);
-        self.cursor = self.cursor.clamp(first, end);
+        let here = self.layout.row_at(self.cursor, self.col);
+        let end = (self.scroll + self.height()).min(self.layout.rows.len());
+        let mut window = (self.scroll..end).filter(|at| self.layout.is_text(*at));
+        let row = if here < self.scroll {
+            window.next()
+        } else if here >= end {
+            window.next_back()
+        } else {
+            None
+        };
+        if let Some(row) = row {
+            self.put_row(row);
+        }
     }
 
     /// The comment that `edit` and `delete` act on: the one `n` and `N` last landed on, when it
@@ -552,11 +772,7 @@ impl Pane {
             (None, false) => order.iter().rev().find(|at| line(**at) < self.cursor),
         };
         match target.copied() {
-            Some(at) => {
-                self.cursor = line(at);
-                self.focus = Some(at);
-                self.ensure_visible();
-            }
+            Some(at) => self.land_on(at),
             None if self.comments.is_empty() => self.notice("no comments yet"),
             None if forward => self.notice("no next comment"),
             None => self.notice("no previous comment"),
@@ -568,12 +784,13 @@ impl Pane {
         if self.lines().is_empty() {
             return;
         }
-        let lines = self.range();
+        let (lines, chars) = (self.range(), self.chars());
         self.select = None;
         self.compose = Some(Compose {
             edit: None,
             place: place(&lines),
             lines,
+            chars,
             editor: Editor::default(),
             title: "Draft note - ",
         });
@@ -593,6 +810,7 @@ impl Pane {
             edit: Some(at),
             place: place(&lines),
             lines,
+            chars: comment.chars,
             editor: Editor::with_text(&comment.body),
             title: "Edit note - ",
         });
@@ -624,13 +842,32 @@ impl Pane {
             self.comments.push(MessageComment {
                 start: u32::try_from(compose.lines.start + 1).unwrap_or(u32::MAX),
                 end: u32::try_from(compose.lines.end).unwrap_or(u32::MAX),
+                chars: compose.chars,
                 body,
             });
             self.comments.len() - 1
         };
-        self.cursor = compose.lines.end.saturating_sub(1);
-        self.focus = Some(at);
         self.relayout();
+        self.land_on(at);
+    }
+
+    /// Put the cursor on the last character comment `at` covers, or on its last line, and focus it.
+    fn land_on(&mut self, at: usize) {
+        let Some(comment) = self.comments.get(at) else {
+            return;
+        };
+        let line = end_line(comment);
+        let col = match comment.chars {
+            Some((_, to)) => self
+                .lines()
+                .get(line)
+                .and_then(|text| text.get(..to))
+                .map_or(0, last_char),
+            None if line == self.cursor => self.col,
+            None => 0,
+        };
+        self.focus = Some(at);
+        self.set_pos((line, col));
     }
 
     /// A key while the editor is open.
@@ -758,19 +995,44 @@ impl Pane {
         }
     }
 
-    /// Start a range at the cursor, or drop the one being selected.
-    fn toggle_select(&mut self) {
+    /// `v` (`lines` false) and `V`: start a selection at the cursor, switch the one being made to
+    /// this kind, or drop it when it is this kind already.
+    fn visual(&mut self, lines: bool) {
         self.select = match self.select {
-            Some(_) => None,
+            Some(select) if select.lines == lines => None,
+            Some(select) => Some(Select { lines, ..select }),
             None if self.lines().is_empty() => None,
-            None => Some(self.cursor),
+            None => Some(Select {
+                at: self.pos(),
+                lines,
+            }),
         };
     }
 
     /// The lines a comment written now would cover: the selected range, or the cursor's line.
     pub fn range(&self) -> Range<usize> {
-        let start = self.select.unwrap_or(self.cursor);
+        let start = self.select.map_or(self.cursor, |select| select.at.0);
         start.min(self.cursor)..start.max(self.cursor) + 1
+    }
+
+    /// The characters a comment written now would cover, as in `MessageComment::chars`: `None` with
+    /// no character selection, or one that covers its lines whole.
+    pub fn chars(&self) -> Option<(usize, usize)> {
+        let select = self.select.filter(|select| !select.lines)?;
+        let (from, to) = if select.at <= self.pos() {
+            (select.at, self.pos())
+        } else {
+            (self.pos(), select.at)
+        };
+        let last = self.lines().get(to.0)?;
+        let end = to.1 + last.get(to.1..)?.chars().next().map_or(0, char::len_utf8);
+        (from.1 > 0 || end < last.len()).then_some((from.1, end))
+    }
+
+    /// Whether a key bound to `action` acts here: one of the pane's, and in visual mode one of
+    /// those it keeps.
+    fn acts_on(&self, action: Action) -> bool {
+        ACTIONS.contains(&action) && (self.select.is_none() || VISUAL_ACTIONS.contains(&action))
     }
 
     /// Apply a key's action. Any action clears the warning line and the last error.
@@ -780,7 +1042,7 @@ impl Pane {
         match action {
             Action::Quit => self.quit_or_ask(),
             Action::Reload => self.reload(),
-            Action::SelectRange => self.toggle_select(),
+            Action::SelectRange => self.visual(false),
             Action::Send => self.request_send(),
             Action::Comment => self.start_comment(),
             Action::Edit => self.start_edit(),
@@ -788,8 +1050,8 @@ impl Pane {
             Action::NextThread => self.jump(true),
             Action::PrevThread => self.jump(false),
             Action::Help => self.help = !self.help,
-            Action::Up => self.move_to(self.cursor.saturating_sub(1)),
-            Action::Down => self.move_to(self.cursor + 1),
+            Action::Up => self.vertical(false),
+            Action::Down => self.vertical(true),
             Action::PageUp => self.page(false),
             Action::PageDown => self.page(true),
             _ => {}
@@ -797,7 +1059,7 @@ impl Pane {
     }
 
     /// Apply a key press: to the editor when one is open, then to a prompt, then to the help
-    /// overlay, else to the keymap.
+    /// overlay, then to the keymap, else to the vim table.
     pub fn key(&mut self, key: KeyEvent) {
         if self.compose.is_some() {
             self.compose_key(key);
@@ -809,43 +1071,55 @@ impl Pane {
             self.warnings.clear();
             self.status = None;
             self.select = None;
-        } else if let Some(action) = self.keymap.action(&key)
-            && ACTIONS.contains(&action)
+        } else if let Some(action) = self
+            .keymap
+            .action(&key)
+            .filter(|action| self.acts_on(*action))
         {
             self.handle(action);
+        } else if self.screen == Screen::Review
+            && let Some(motion) = Motion::of(&key)
+        {
+            self.warnings.clear();
+            self.status = None;
+            self.motion(motion);
         }
     }
 
-    /// The first drag of a gesture starts a selection at the press line. Each drag then moves the
-    /// cursor to the line it is on, or scrolls a row when it is above or below the text.
-    fn drag_to(&mut self, screen_row: u16) {
+    /// The first drag of a gesture starts a selection at the press. Each drag then moves the
+    /// cursor to the character it is on, or scrolls a row when it is above or below the text.
+    fn drag_to(&mut self, column: u16, screen_row: u16) {
         let body = self.body();
         if self.select.is_none() {
-            self.select = Some(self.cursor);
+            self.select = Some(Select {
+                at: self.pos(),
+                lines: false,
+            });
         }
         let height = self.height();
         let rows = self.layout.rows.len();
         if screen_row < body.y {
             self.scroll = self.scroll.saturating_sub(1);
-            self.cursor_to_row(self.scroll);
+            self.point_at(self.scroll, column);
         } else if screen_row >= body.y + body.height {
             self.scroll = (self.scroll + 1).min(rows.saturating_sub(height));
-            self.cursor_to_row(self.scroll + height - 1);
+            self.point_at(self.scroll + height - 1, column);
         } else {
-            self.cursor_to_row(self.scroll + usize::from(screen_row - body.y));
+            self.point_at(self.scroll + usize::from(screen_row - body.y), column);
         }
     }
 
-    fn cursor_to_row(&mut self, row: usize) {
+    /// The cursor to the character drawn at screen column `column` of row `row`.
+    fn point_at(&mut self, row: usize, column: u16) {
         let row = row.min(self.layout.rows.len().saturating_sub(1));
-        if let Some(line) = self.layout.line_at(row) {
-            self.cursor = line;
+        let cells = usize::from(column.saturating_sub(self.body().x)).saturating_sub(self.gutter());
+        if let Some(pos) = self.byte_at(self.layout.text_row(row), cells) {
+            self.set_pos(pos);
         }
-        self.ensure_visible();
     }
 
     /// The wheel scrolls and a click moves the cursor, as in the review pane. A drag from a press
-    /// selects a range.
+    /// selects characters.
     pub fn mouse(&mut self, event: MouseEvent) {
         if self.screen != Screen::Review
             || self.help
@@ -874,9 +1148,11 @@ impl Pane {
                 let row = self.scroll + usize::from(event.row - body.y);
                 self.select = None;
                 self.drag = row < self.layout.rows.len();
-                self.cursor_to_row(row);
+                self.point_at(row, event.column);
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.drag => self.drag_to(event.row),
+            MouseEventKind::Drag(MouseButton::Left) if self.drag => {
+                self.drag_to(event.column, event.row);
+            }
             MouseEventKind::Up(MouseButton::Left) => self.drag = false,
             _ => {}
         }
@@ -910,18 +1186,36 @@ impl Pane {
         spans
     }
 
-    /// The left of the status line in visual mode: the chip and the lines the range covers.
+    /// The left of the status line in visual mode: the chip, the lines the selection covers, and
+    /// how many lines or characters it holds.
     fn visual_state(&self) -> Vec<Span<'static>> {
         let theme = &self.theme;
         let range = self.range();
-        let count = range.len();
-        let text = match count {
-            1 => format!(" line {} (1 line)", range.start + 1),
-            n => format!(" lines {}-{} ({n} lines)", range.start + 1, range.end),
+        let chars = self.chars();
+        let place = place(&range);
+        let count = match chars {
+            Some(chars) => {
+                let comment = MessageComment {
+                    start: u32::try_from(range.start + 1).unwrap_or(u32::MAX),
+                    end: u32::try_from(range.end).unwrap_or(u32::MAX),
+                    chars: Some(chars),
+                    body: String::new(),
+                };
+                let count = comment
+                    .text(self.lines())
+                    .map_or(0, |text| text.chars().count());
+                format!("{count} char{}", plural(count))
+            }
+            None => format!("{} line{}", range.len(), plural(range.len())),
+        };
+        let chip = if self.select.is_some_and(|select| select.lines) {
+            " VISUAL LINE "
+        } else {
+            " VISUAL "
         };
         vec![
-            Span::styled(" VISUAL ", Style::new().fg(theme.base).bg(theme.visual)),
-            Span::styled(text, Style::new().fg(theme.text)),
+            Span::styled(chip, Style::new().fg(theme.base).bg(theme.visual)),
+            Span::styled(format!(" {place} ({count})"), Style::new().fg(theme.text)),
         ]
     }
 
@@ -995,7 +1289,10 @@ impl Pane {
         frame.render_widget(Clear, body);
         frame.render_widget(Paragraph::new(lines), body);
         let range = self.range();
+        let chars = self.chars();
         let focused = self.focused();
+        let selection = Style::new().bg(self.theme.selection);
+        let underline = Style::new().add_modifier(Modifier::UNDERLINED);
         for at in self.scroll..(self.scroll + height).min(self.layout.rows.len()) {
             let Some(row) = self.layout.rows.get(at) else {
                 continue;
@@ -1005,11 +1302,33 @@ impl Pane {
                 |color| highlight(frame.buffer_mut(), body, at - self.scroll, style(color));
             match row.kind {
                 Kind::Text(_) => {
-                    if self.select.is_some() && range.contains(&row.line) {
+                    let whole = self.select.is_some() && chars.is_none();
+                    if whole && range.contains(&row.line) {
                         tint(self.theme.selection);
                     }
                     if row.line == self.cursor {
                         tint(self.theme.cursor);
+                    }
+                    if self.select.is_some()
+                        && chars.is_some()
+                        && let Some(bytes) = self.covered(at, &range, chars)
+                    {
+                        self.paint(frame.buffer_mut(), body, at, bytes, selection);
+                    }
+                    for comment in self.comments.iter().filter(|c| c.chars.is_some()) {
+                        let lines =
+                            (comment.start as usize).saturating_sub(1)..comment.end as usize;
+                        if let Some(bytes) = self.covered(at, &lines, comment.chars) {
+                            self.paint(frame.buffer_mut(), body, at, bytes, underline);
+                        }
+                    }
+                    let (line, col) = self.pos();
+                    if self.compose.is_none() && self.layout.row_at(line, col) == at {
+                        let text = self.lines().get(line).map_or("", String::as_str);
+                        let next = text.get(col..).and_then(|rest| rest.chars().next());
+                        let end = col + next.map_or(0, char::len_utf8);
+                        let reversed = Style::new().add_modifier(Modifier::REVERSED);
+                        self.paint(frame.buffer_mut(), body, at, col..end, reversed);
                     }
                 }
                 Kind::Note { comment, .. } if focused == Some(comment) => tint(self.theme.cursor),
@@ -1021,8 +1340,61 @@ impl Pane {
         }
     }
 
+    /// The bytes of text row `at` that `lines` and `chars` cover, as in `MessageComment`. An empty
+    /// line in the range is covered, with no bytes.
+    fn covered(
+        &self,
+        at: usize,
+        lines: &Range<usize>,
+        chars: Option<(usize, usize)>,
+    ) -> Option<Range<usize>> {
+        let Some(Row {
+            line,
+            kind: Kind::Text(range),
+        }) = self.layout.rows.get(at)
+        else {
+            return None;
+        };
+        if !lines.contains(line) {
+            return None;
+        }
+        let len = self.lines().get(*line).map_or(0, String::len);
+        let (from, to) = chars.unwrap_or((0, len));
+        let start = if *line == lines.start { from } else { 0 };
+        let end = if *line + 1 == lines.end { to } else { len };
+        let (left, right) = (start.max(range.start), end.min(range.end));
+        let empty = range.is_empty() && start <= range.start && range.end <= end;
+        (left < right || empty).then_some(left..right.max(left))
+    }
+
+    /// Patch `style` onto the cells of the bytes `bytes` of text row `at`, at least one cell.
+    fn paint(&self, buffer: &mut Buffer, body: Rect, at: usize, bytes: Range<usize>, style: Style) {
+        let Some(Row {
+            line,
+            kind: Kind::Text(range),
+        }) = self.layout.rows.get(at)
+        else {
+            return;
+        };
+        let text = self.lines().get(*line).map_or("", String::as_str);
+        let width = |from: usize, to: usize| text.get(from..to).map_or(0, string_width);
+        let skip = self.gutter() + width(range.start, bytes.start);
+        let cells = width(bytes.start, bytes.end).max(1);
+        let x = body
+            .x
+            .saturating_add(u16::try_from(skip).unwrap_or(u16::MAX));
+        if x >= body.right() || at < self.scroll {
+            return;
+        }
+        let y = body.y + u16::try_from(at - self.scroll).unwrap_or(0);
+        let w = u16::try_from(cells)
+            .unwrap_or(u16::MAX)
+            .min(body.right() - x);
+        buffer.set_style(Rect::new(x, y, w, 1), style);
+    }
+
     /// The editor, under the last line the comment covers, where the box of the saved comment goes.
-    /// The lines it covers are marked while it is open.
+    /// The lines or characters it covers are marked while it is open.
     fn draw_compose(&self, frame: &mut Frame, body: Rect, compose: &Compose) {
         let gutter = u16::try_from(self.gutter()).unwrap_or(0);
         let text = Rect {
@@ -1030,25 +1402,18 @@ impl Pane {
             width: body.width.saturating_sub(gutter),
             ..body
         };
+        let selection = Style::new().bg(self.theme.selection);
         for at in self.scroll..(self.scroll + usize::from(body.height)).min(self.layout.rows.len())
         {
-            let Some(Row {
-                line,
-                kind: Kind::Text(_),
-            }) = self.layout.rows.get(at)
-            else {
+            let Some(bytes) = self.covered(at, &compose.lines, compose.chars) else {
                 continue;
             };
-            if !compose.lines.contains(line) {
-                continue;
-            }
             let row = at - self.scroll;
-            highlight(
-                frame.buffer_mut(),
-                body,
-                row,
-                Style::new().bg(self.theme.selection),
-            );
+            if compose.chars.is_some() {
+                self.paint(frame.buffer_mut(), body, at, bytes, selection);
+            } else {
+                highlight(frame.buffer_mut(), body, row, selection);
+            }
             let y = body.y + u16::try_from(row).unwrap_or(0);
             if let Some(cell) = frame.buffer_mut().cell_mut((body.x, y))
                 && cell.symbol() == " "
@@ -1118,6 +1483,11 @@ fn split(area: Rect) -> [Rect; 3] {
     .areas(area)
 }
 
+/// The byte of the last character of `text`, or 0 when it is empty.
+fn last_char(text: &str) -> usize {
+    text.char_indices().last().map_or(0, |(at, _)| at)
+}
+
 /// The tokens of each line as Markdown, or none when no grammar is built in.
 fn markdown_tokens(lines: &[String]) -> Vec<Vec<Token>> {
     let Some(language) = syntax::language("message.md") else {
@@ -1163,7 +1533,7 @@ pub fn render(frame: &mut Frame, pane: &Pane) {
         Screen::Review => pane.draw_text(frame, body),
     }
     if pane.help {
-        draw_help(frame, &pane.keymap, &pane.theme, &ACTIONS);
+        draw_help(frame, &pane.keymap, &pane.theme, &ACTIONS, &MOTIONS);
     }
     if let Some(prompt) = pane.prompt {
         pane.draw_prompt(frame, prompt);

@@ -2159,7 +2159,7 @@ pub fn draw(
         draw_sidebar(frame, sidebar, view, diff, theme, &hint);
     }
     if view.help {
-        draw_help(frame, keymap, theme, &Action::ALL);
+        draw_help(frame, keymap, theme, &Action::ALL, &[]);
     }
 }
 
@@ -2382,27 +2382,37 @@ pub fn key_style(theme: &Theme) -> Style {
 }
 
 /// `actions` with their current keys, drawn from the effective keymap.
-pub(crate) fn draw_help(frame: &mut Frame, keymap: &Keymap, theme: &Theme, actions: &[Action]) {
+/// `extra` is lines of keys the keymap does not hold, after the actions.
+pub(crate) fn draw_help(
+    frame: &mut Frame,
+    keymap: &Keymap,
+    theme: &Theme,
+    actions: &[Action],
+    extra: &[(&str, &str)],
+) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(64);
-    let height = (u16::try_from(actions.len()).unwrap_or(0) + 2).min(area.height.saturating_sub(2));
+    let count = actions.len() + extra.len();
+    let height = (u16::try_from(count).unwrap_or(0) + 2).min(area.height.saturating_sub(2));
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
         width,
         height,
     );
+    let line = |keys: &str, what: &str| {
+        Line::from(vec![
+            Span::styled(
+                format!("{:<16}", sanitize_terminal_text(keys)),
+                key_style(theme),
+            ),
+            Span::raw(format!(" {what}")),
+        ])
+    };
     let lines = actions
         .iter()
-        .map(|action| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{:<16}", sanitize_terminal_text(&keymap.label(*action))),
-                    key_style(theme),
-                ),
-                Span::raw(format!(" {}", action.describe())),
-            ])
-        })
+        .map(|action| line(&keymap.label(*action), action.describe()))
+        .chain(extra.iter().map(|(keys, what)| line(keys, what)))
         .collect::<Vec<_>>();
     frame.render_widget(Clear, popup);
     frame.render_widget(
