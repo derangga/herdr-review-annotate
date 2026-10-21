@@ -151,6 +151,39 @@ Stream::build                              R: View::collapsed
 
 Nothing here touches the disk. Every `E:` line is a state the user can reach.
 
+## Mark a file viewed
+
+```
+viewed action                              R: view, diff, dir
+-> a file under the cursor?                (pure)   E: the not-in-diff block, an empty diff, no diff -> notice
+-> path in View::viewed? remove it, open it   (pure)
+   else insert it, collapse it, cursor to the header   (pure)
+-> save meta.viewed: the fingerprint of each viewed file in the diff   R: dir   E: Io, Busy -> escape, warning, the mark holds
+-> rebuild the view                        (pure)
+
+after each load of the diff                R: view, meta
+-> viewed = the files whose fingerprint equals meta.viewed   (pure)
+-> first load of the pane? collapse every viewed file   (pure)
+-> a file viewed before this load and not now? open it   (pure)
+```
+
+## Show the whole file
+
+```
+whole_file action                          R: view, diff, git, repo dir
+-> a file under the cursor?                (pure)   E: the not-in-diff block, an empty diff, no diff -> notice
+-> modified or renamed, with hunks?        (pure)   E: any other file -> notice "no more lines to show in this file"
+-> path in View::whole? remove it          (pure)
+   else insert it and open the file        (pure)
+-> reload the diff                         R: git   E: as in Load the diff
+
+after each load of the diff                R: repo dir
+-> per file of the diff in View::whole
+  -> read it from the working tree         R: fs    E: missing, not a file, over 1 MiB, Io -> escape, hunks, path removed, warning
+  -> fill(file, text)                      (pure)   E: a row reads differently, text too short, a hunk with no new row -> same escape
+-> rebuild the view, the cursor on its line   (pure)
+```
+
 ## User comment, reply, edit, delete, resolve
 
 ```

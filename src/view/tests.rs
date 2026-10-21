@@ -733,8 +733,8 @@ fn an_empty_diff_says_so_for_each_spec() {
 fn the_help_overlay_lists_every_action_with_its_current_keys() {
     let (diff, mut view) = plain();
     view.help = true;
-    let mut terminal = Terminal::new(TestBackend::new(80, 34)).unwrap();
-    view.resize(Rect::new(0, 0, 80, 34));
+    let mut terminal = Terminal::new(TestBackend::new(80, 36)).unwrap();
+    view.resize(Rect::new(0, 0, 80, 36));
     let defaults = render(&mut terminal, &view, &diff, &Keymap::default());
     assert!(
         defaults.contains("R                reload the diff"),
@@ -1622,7 +1622,7 @@ fn the_status_letter_has_the_colour_of_its_change() {
     let diff = diff_of(PATCH);
     let theme = Theme::default();
     let letter_color = |file: usize, letter: &str| {
-        side_file_line(&diff.files[file], false, false, 24, &theme, false)
+        side_file_line(&diff.files[file], (false, false), false, 24, &theme, false)
             .spans
             .iter()
             .find(|span| span.content == letter)
@@ -1631,7 +1631,7 @@ fn the_status_letter_has_the_colour_of_its_change() {
     assert_eq!(letter_color(0, "M"), Some(theme.warning));
     assert_eq!(letter_color(1, "A"), Some(theme.added));
     assert_eq!(letter_color(2, "B"), Some(theme.subtle));
-    let header = file_header(&diff.files[0], 30, &theme, None);
+    let header = file_header(&diff.files[0], 30, &theme, (None, false));
     assert_eq!(header.spans[0].content, "▾ ");
     assert_eq!(header.spans[1].content, "M");
     assert_eq!(header.spans[1].style.fg, Some(theme.warning));
@@ -1640,7 +1640,7 @@ fn the_status_letter_has_the_colour_of_its_change() {
 fn side_row(file: usize, icons: bool, width: usize) -> Line<'static> {
     side_file_line(
         &diff_of(PATCH).files[file],
-        false,
+        (false, false),
         icons,
         width,
         &Theme::default(),
@@ -2061,7 +2061,7 @@ fn the_marks_move_with_the_code_when_it_is_scrolled_sideways() {
 #[test]
 fn a_collapsed_header_says_what_it_hides_and_an_open_one_does_not() {
     let (diff, theme) = (diff_of(PATCH), Theme::default());
-    let header = |fold| text_of(&file_header(&diff.files[0], 40, &theme, fold));
+    let header = |fold| text_of(&file_header(&diff.files[0], 40, &theme, (fold, false)));
     assert!(header(None).starts_with("▾ M a.rs  "));
     assert!(header(Some((7, 2))).starts_with("▸ M a.rs  7 lines, 2 threads "));
     assert!(header(Some((1, 1))).starts_with("▸ M a.rs  1 line, 1 thread "));

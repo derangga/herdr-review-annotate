@@ -184,6 +184,31 @@ impl DiffFile {
         })
     }
 
+    /// What `meta.json` saves for a viewed file: a 64-bit FNV-1a hash, in hex, of its change, its
+    /// old path, its mode flag and the kind and text of each added and removed row. Context rows and
+    /// line numbers are left out, so the whole-file view and lines that only moved keep the mark.
+    pub fn fingerprint(&self) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for &byte in bytes {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        let old = self.old_path.as_ref().map_or("", RelPath::as_str);
+        let mode = self.flags.mode_changed;
+        eat(format!("{:?}\0{old}\0{mode}\n", self.change).as_bytes());
+        for row in self.hunks.iter().flat_map(|hunk| &hunk.rows) {
+            let tag = match row.kind {
+                RowKind::Context => continue,
+                RowKind::Added => '+',
+                RowKind::Removed => '-',
+            };
+            eat(format!("{tag}{}\n", row.text).as_bytes());
+        }
+        format!("{hash:016x}")
+    }
+
     fn listed(path: RelPath, change: Change) -> Self {
         Self {
             path,
@@ -717,6 +742,99 @@ fn all_added(content: &[u8]) -> Vec<Hunk> {
     vec![Hunk { header, rows }]
 }
 
+/// A modified or renamed file read whole from the working tree and filled in (`fill`). `None` when
+/// it is not a plain file, is over 1 MiB, cannot be read, or no longer agrees with its hunks.
+pub fn read_whole(root: &Path, file: &DiffFile) -> Option<DiffFile> {
+    let full = root.join(file.path.as_str());
+    let meta = std::fs::symlink_metadata(&full).ok()?;
+    if !meta.is_file() || meta.len() > MAX_UNTRACKED {
+        return None;
+    }
+    fill(file, &String::from_utf8_lossy(&std::fs::read(&full).ok()?))
+}
+
+/// `file` with every unchanged line of `text`, the file in the working tree, between, above and
+/// below its hunks (design/diff.md). The lines join the hunk above them, those above the first hunk
+/// join it, and each header gets the new ranges. `None` when a hunk has no row on one side, or a row
+/// on the new side reads differently in `text`.
+pub fn fill(file: &DiffFile, text: &str) -> Option<DiffFile> {
+    let lines = text
+        .lines()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>();
+    let line_at = |new: u32| {
+        lines
+            .get(usize::try_from(new).ok()?.checked_sub(1)?)
+            .copied()
+    };
+    if !file
+        .rows(Side::New)
+        .all(|(new, row)| line_at(new) == Some(row.text.as_str()))
+    {
+        return None;
+    }
+    // New lines `from..to`, whose old number is the new one plus `shift`.
+    let unchanged = |from: u32, to: u32, shift: i64| {
+        (from..to)
+            .map(|new| {
+                Some(Row {
+                    kind: RowKind::Context,
+                    old: u32::try_from(i64::from(new) + shift).ok(),
+                    new: Some(new),
+                    text: line_at(new)?.to_owned(),
+                    no_newline: false,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let (mut next, mut shift) = (1, 0);
+    for hunk in &file.hunks {
+        let first = hunk.rows.iter().find_map(|row| row.new)?;
+        let mut gap = unchanged(next, first, shift)?;
+        let mut rows = match hunks.last_mut() {
+            Some(above) => {
+                above.rows.append(&mut gap);
+                Vec::new()
+            }
+            None => gap,
+        };
+        rows.extend(hunk.rows.iter().cloned());
+        let last_new = hunk.rows.iter().rev().find_map(|row| row.new)?;
+        let last_old = hunk.rows.iter().rev().find_map(|row| row.old)?;
+        next = last_new + 1;
+        shift = i64::from(last_old) - i64::from(last_new);
+        let section = hunk.header.split_once(" @@").map_or("", |(_, rest)| rest);
+        hunks.push(Hunk {
+            header: section.to_owned(),
+            rows,
+        });
+    }
+    let end = u32::try_from(lines.len()).ok()?;
+    let mut tail = unchanged(next, end + 1, shift)?;
+    if let Some(row) = tail.last_mut() {
+        row.no_newline = !text.ends_with('\n');
+    }
+    hunks.last_mut()?.rows.append(&mut tail);
+    for hunk in &mut hunks {
+        let range = |side| {
+            let lines = hunk.rows.iter().filter_map(|row| row.line(side));
+            let lines = lines.collect::<Vec<_>>();
+            format!("{},{}", lines.first().copied().unwrap_or(0), lines.len())
+        };
+        hunk.header = format!(
+            "@@ -{} +{} @@{}",
+            range(Side::Old),
+            range(Side::New),
+            hunk.header
+        );
+    }
+    Some(DiffFile {
+        hunks,
+        ..file.clone()
+    })
+}
+
 impl Diff {
     /// The file a comment on `path` belongs to: the one with that path, or the one renamed from it
     /// when an agent cited the old name.
@@ -1010,6 +1128,101 @@ mod tests {
             assert_eq!(files[0].path.as_str(), path);
         }
         assert!(parse(b"nothing here\n", MAX_PATCH).is_empty());
+    }
+
+    /// Two hunks of a 21-line file: line 5 rewritten with a line added after it, and line 16
+    /// rewritten. The new side is `TWO_HUNKS_NEW`.
+    const TWO_HUNKS: &str = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n\
+        @@ -2,7 +2,8 @@ sec\n l2\n l3\n l4\n-l5\n+L5\n+X\n l6\n l7\n l8\n\
+        @@ -13,7 +14,7 @@\n l13\n l14\n l15\n-l16\n+L16\n l17\n l18\n l19\n";
+
+    fn two_hunks_new() -> String {
+        let mut lines = vec!["l1", "l2", "l3", "l4", "L5", "X"];
+        let middle = (6..=15).map(|n| format!("l{n}")).collect::<Vec<_>>();
+        lines.extend(middle.iter().map(String::as_str));
+        lines.extend(["L16", "l17", "l18", "l19", "l20"]);
+        lines.join("\n") + "\n"
+    }
+
+    fn two_hunks() -> DiffFile {
+        parse(TWO_HUNKS.as_bytes(), MAX_PATCH).remove(0)
+    }
+
+    fn numbered(file: &DiffFile) -> Vec<(Option<u32>, Option<u32>, &str)> {
+        let rows = file.hunks.iter().flat_map(|hunk| &hunk.rows);
+        rows.map(|row| (row.old, row.new, row.text.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn fill_adds_the_lines_above_between_and_below_the_hunks() {
+        let file = fill(&two_hunks(), &two_hunks_new()).unwrap();
+        let rows = numbered(&file);
+        assert_eq!(rows.len(), 23);
+        assert_eq!(rows[0], (Some(1), Some(1), "l1"));
+        // The lines between the hunks join the first, shifted by the added line.
+        assert_eq!(file.hunks[0].rows.len(), 14);
+        assert_eq!(rows[10], (Some(9), Some(10), "l9"));
+        assert_eq!(rows[13], (Some(12), Some(13), "l12"));
+        assert_eq!(rows[14], (Some(13), Some(14), "l13"));
+        assert_eq!(rows[22], (Some(20), Some(21), "l20"));
+        let headers = file.hunks.iter().map(|hunk| hunk.header.as_str());
+        assert_eq!(
+            headers.collect::<Vec<_>>(),
+            ["@@ -1,12 +1,13 @@ sec", "@@ -13,8 +14,8 @@"]
+        );
+        assert!(!file.hunks[1].rows.last().unwrap().no_newline);
+    }
+
+    #[test]
+    fn fill_marks_a_last_line_with_no_newline() {
+        let text = two_hunks_new();
+        let file = fill(&two_hunks(), text.trim_end()).unwrap();
+        assert!(file.hunks[1].rows.last().unwrap().no_newline);
+    }
+
+    #[test]
+    fn fill_gives_nothing_when_the_file_changed_after_the_diff() {
+        let text = two_hunks_new().replace("l13\n", "l13 edited\n");
+        assert_eq!(fill(&two_hunks(), &text), None);
+        let short = two_hunks_new()
+            .lines()
+            .take(19)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(fill(&two_hunks(), &short), None);
+    }
+
+    #[test]
+    fn fill_gives_nothing_for_a_hunk_with_no_new_row() {
+        let patch = "diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1,2 +0,0 @@\n-a\n-b\n";
+        let file = parse(patch.as_bytes(), MAX_PATCH).remove(0);
+        assert_eq!(fill(&file, ""), None);
+    }
+
+    #[test]
+    fn the_fingerprint_counts_changed_rows_only() {
+        let file = two_hunks();
+        let whole = fill(&file, &two_hunks_new()).unwrap();
+        assert_eq!(file.fingerprint(), whole.fingerprint());
+        let moved = parse(
+            TWO_HUNKS
+                .replace("-13,7 +14,7", "-30,7 +31,7")
+                .replace(" l14\n", " moved\n")
+                .as_bytes(),
+            MAX_PATCH,
+        )
+        .remove(0);
+        assert_eq!(file.fingerprint(), moved.fingerprint());
+        let added = parse(
+            TWO_HUNKS
+                .replace("+14,7", "+14,8")
+                .replace("+L16\n", "+L16\n+Y\n")
+                .as_bytes(),
+            MAX_PATCH,
+        )
+        .remove(0);
+        assert_ne!(file.fingerprint(), added.fingerprint());
     }
 
     #[test]

@@ -1,8 +1,9 @@
-//! `meta.json`: the spec, base, target agent and review pane of one review.
+//! `meta.json`: the spec, base, target agent, review pane and viewed files of one review.
 //!
 //! It is rewritten on every save, by `open`, the TUI and the `send` action. A save takes the
 //! store lock, reads the current file, changes the caller's fields and renames a temp file over it.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -42,6 +43,9 @@ pub struct Meta {
         skip_serializing_if = "Option::is_none"
     )]
     pub review_pane: Option<PaneId>,
+    /// The fingerprint of each viewed file, by path (`DiffFile::fingerprint`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub viewed: BTreeMap<String, String>,
 }
 
 /// The directory of the review of `root` under `base`. When the hashed directory is missing, a

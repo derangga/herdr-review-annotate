@@ -28,6 +28,8 @@ in a unified or a side-by-side layout.
 | `switch_spec` | `b` | Switch diff spec |
 | `toggle_layout` | `t` | Side by side or unified |
 | `collapse` | `z` | Collapse the cursor's file to its header, or open it again |
+| `viewed` | `m` | Mark the cursor's file viewed and collapse it, or take the mark off and open it |
+| `whole_file` | `o` | Show every line of the cursor's file, or only its hunks again |
 | `help` | `?` | Show every action with its current keys |
 | `quit` | `q` | Quit. With unsent comments, ask send, keep, or stay |
 
@@ -110,6 +112,40 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
     block of comments not in the diff, or with no file in the diff, the status line says
     `no file here to collapse`.
   - A collapsed file is not read for syntax colours while it is collapsed.
+- `viewed` marks the file the cursor is in as viewed, on any of its rows and cards, or the file chosen in
+  the sidebar while the sidebar has the keys. It collapses the file and puts the cursor on its header, as
+  `collapse` does. On a viewed file the same key takes the mark off and opens the file.
+  - The mark is saved in `meta.json` with the file's fingerprint (`data.md`). A file is viewed while its
+    fingerprint equals the saved one. When a reload, a store change or a spec switch gives a viewed file
+    another fingerprint, the file loses its mark and opens, so the user sees what changed. A file viewed in an
+    earlier pane starts collapsed in a new one.
+  - The sidebar draws a `✓` in the added colour in the mark column of a viewed file. An unsent `•` takes its
+    place. A viewed file's header says `viewed` in the subtle colour after its name, before what a collapse
+    hides: `viewed, 120 lines, 2 threads`.
+  - While at least one file is viewed, the status line shows `3/12 viewed` in the subtle colour after the
+    agent and the unsent chip.
+  - `collapse` on a viewed file opens it and keeps the mark, so the user can look again.
+  - With the cursor on the block of comments not in the diff, or with no file in the diff, the status line
+    says `no file here to mark`. A save that fails is a warning, and the mark holds for this pane.
+- `whole_file` shows every line of the file the cursor is in, chosen as `viewed` chooses, with the unchanged
+  lines between, above and below its hunks. The same key shows the hunks alone again.
+  - Only a modified or a renamed file with hunks has lines to add. An added, untracked or deleted file shows
+    every line already, and a binary, too large or unparsed file has none, so on any of them the status line
+    says `no more lines to show in this file`.
+  - The lines come from the file in the working tree, which is the new side of both specs. A file over 1 MiB,
+    one that cannot be read, or one whose lines no longer agree with the rows of its hunks stays as hunks, and
+    the warning line says `cannot show the whole of <path>`. It is the warning line and not the status line
+    because a reload clears the status line. The key reloads the diff first, so the file and the diff agree
+    unless the agent writes in between. With the cursor on the block of comments not in the diff, or with no
+    file in the diff, the status line says `no file here to show whole`.
+  - The unchanged lines join the hunk above them, and the lines above the first hunk join the first, so each
+    hunk header stays right above its change and hunk jumps still land on each change. The headers get the
+    new counts.
+  - The files are kept by path in `View::whole` for the pane's session, and every reload shows them whole
+    again. Nothing is written to `meta.json`. On a collapsed file the key also opens it. The cursor stays on
+    its line.
+  - A comment written on a line that only the whole file shows is outdated in a pane that shows the hunks
+    alone, and is drawn near the closest hunk, since placement only reads the rows on screen (`diff.md`).
 - Next and previous hunk and thread move to the next row after, or the previous row before, the cursor. From
   inside a hunk, previous hunk goes to that hunk's own header. A thread is at the first row of its card. A thread jump to a card that is off screen puts the line the card hangs from on the top row, so the whole card shows. A card already on screen leaves the scroll alone.
 - A file with no hunks has one row that says why (binary, too large, unreadable, mode changed).

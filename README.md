@@ -166,6 +166,8 @@ effect.
 | `switch_spec` | `b` | switch diff spec |
 | `toggle_layout` | `t` | side by side or unified |
 | `collapse` | `z` | collapse or expand the file |
+| `viewed` | `m` | mark the file viewed and collapse it, or take the mark off |
+| `whole_file` | `o` | show every line of the file, or only its hunks |
 | `help` | `?` | show this help |
 | `quit` | `q` | quit |
 

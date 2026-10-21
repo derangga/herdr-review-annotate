@@ -3,7 +3,7 @@
 //! Everything below `run` takes its terminal, its input, its `git` and its clock as parameters, so
 //! tests drive it with a `TestBackend` and a list of events.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,7 +28,9 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use crate::actions;
 use crate::cards::{Look, place};
 use crate::comment::CommandError;
-use crate::diff::{Diff, GitError, RepoRoot, default_base, load, run_git_bytes};
+use crate::diff::{
+    Change, Diff, GitError, RepoRoot, default_base, load, read_whole, run_git_bytes,
+};
 use crate::editor::{Editor, Outcome};
 use crate::env::Env;
 use crate::herdr::run_herdr_output;
@@ -43,7 +45,7 @@ use crate::syntax::Cache;
 use crate::termination::Termination;
 use crate::theme::Theme;
 use crate::view::{
-    View, areas, draw, editor_rect, key_style, note_box, popup_block, sidebar_config,
+    Spot, View, areas, draw, editor_rect, key_style, note_box, popup_block, sidebar_config,
 };
 use crate::width::{string_width, truncate_to_width};
 
@@ -325,9 +327,21 @@ impl App {
     }
 
     fn read_diff(&mut self, root: &RepoRoot, git: &mut Git) -> Result<(), String> {
-        let spec = self.requested_spec();
-        let diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
         let spot = self.diff.as_ref().and_then(|old| self.view.spot(old));
+        self.read_diff_at(root, git, spot)
+    }
+
+    /// Load the diff, show the files asked for whole, and lay it out with the cursor at `spot`.
+    fn read_diff_at(
+        &mut self,
+        root: &RepoRoot,
+        git: &mut Git,
+        spot: Option<Spot>,
+    ) -> Result<(), String> {
+        let spec = self.requested_spec();
+        let mut diff = load(root.path(), &spec, git).map_err(|error| error.to_string())?;
+        self.show_whole(root, &mut diff);
+        self.find_viewed(&diff);
         let now = (self.now)();
         let look = Look {
             theme: &self.theme,
@@ -354,6 +368,72 @@ impl App {
         }
         self.diff = Some(diff);
         Ok(())
+    }
+
+    /// The files of `diff` whose fingerprint matches the one saved when they were marked viewed. On
+    /// the pane's first diff they start collapsed, and a file that loses its mark opens, so the user
+    /// sees what changed.
+    fn find_viewed(&mut self, diff: &Diff) {
+        let viewed = diff
+            .files
+            .iter()
+            .filter(|file| self.meta.viewed.get(file.path.as_str()) == Some(&file.fingerprint()))
+            .map(|file| file.path.clone())
+            .collect::<HashSet<_>>();
+        if self.diff.is_none() {
+            self.view.collapsed.extend(viewed.iter().cloned());
+        }
+        for lost in self.view.viewed.difference(&viewed) {
+            self.view.collapsed.remove(lost);
+        }
+        self.view.viewed = viewed;
+    }
+
+    /// `viewed`: mark the cursor's file viewed, or take the mark off, and save the marks of the
+    /// files in the diff. A save that fails is a warning and the mark holds for this pane.
+    fn toggle_viewed(&mut self) {
+        let changed = self
+            .diff
+            .as_ref()
+            .and_then(|diff| self.view.toggle_viewed(diff));
+        let (Some(_), Some(diff), Some(root), Some(dir)) =
+            (changed, &self.diff, &self.root, &self.dir)
+        else {
+            self.notice("no file here to mark");
+            return;
+        };
+        let viewed = diff
+            .files
+            .iter()
+            .filter(|file| self.view.viewed.contains(&file.path))
+            .map(|file| (file.path.as_str().to_owned(), file.fingerprint()))
+            .collect::<BTreeMap<_, _>>();
+        self.meta.viewed.clone_from(&viewed);
+        if let Err(error) = save(dir, root.path(), |meta| meta.viewed = viewed) {
+            self.warn(Warning::Config(format!(
+                "could not save meta.json: {error}"
+            )));
+        }
+        self.rebuild_view();
+    }
+
+    /// Fill in the files the user asked to see whole. One that cannot be read, or that no longer
+    /// agrees with its hunks, shows the hunks again and a warning names it.
+    fn show_whole(&mut self, root: &RepoRoot, diff: &mut Diff) {
+        for file in &mut diff.files {
+            if !self.view.whole.contains(&file.path) {
+                continue;
+            }
+            if let Some(whole) = read_whole(root.path(), file) {
+                *file = whole;
+            } else {
+                self.view.whole.remove(&file.path);
+                self.warn(Warning::Config(format!(
+                    "cannot show the whole of {}",
+                    file.path.as_str()
+                )));
+            }
+        }
     }
 
     /// Lay the diff on screen out again, for threads that changed while the diff could not be
@@ -525,6 +605,8 @@ impl App {
                 self.rebuild_view();
             }
             Action::Collapse => self.toggle_collapse(),
+            Action::WholeFile => self.toggle_whole(git),
+            Action::Viewed => self.toggle_viewed(),
             Action::NextThread | Action::PrevThread => {
                 self.jump_thread(action == Action::NextThread);
             }
@@ -550,6 +632,35 @@ impl App {
             self.rebuild_view();
         } else {
             self.notice("no file here to collapse");
+        }
+    }
+
+    /// `whole_file`: show every line of the cursor's file, or its hunks again. The diff is loaded
+    /// again, so the file and its hunks agree, and the cursor keeps its line.
+    fn toggle_whole(&mut self, git: &mut Git) {
+        let diff = self.diff.as_ref();
+        let here = diff.and_then(|diff| self.view.file_here(diff));
+        let Some((_, file)) = here else {
+            self.notice("no file here to show whole");
+            return;
+        };
+        if !matches!(file.change, Change::Modified | Change::Renamed) || file.hunks.is_empty() {
+            self.notice("no more lines to show in this file");
+            return;
+        }
+        let path = file.path.clone();
+        let spot = diff
+            .and_then(|diff| self.view.spot(diff))
+            .map(Spot::by_line);
+        if !self.view.whole.remove(&path) {
+            self.view.whole.insert(path.clone());
+            self.view.collapsed.remove(&path);
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if let Err(message) = self.read_diff_at(&root, git, spot) {
+            self.fail(message);
         }
     }
 
@@ -1064,8 +1175,8 @@ impl App {
         }
     }
 
-    /// The left of the status line: the diff on screen as a chip, the target agent, and a chip
-    /// with the number of unsent threads when there are any.
+    /// The left of the status line: the diff on screen as a chip, the target agent, a chip with the
+    /// number of unsent threads when there are any, and how many files are viewed when one is.
     fn state(&self) -> Vec<Span<'static>> {
         let theme = &self.theme;
         let chip = |text: String, bg| Span::styled(text, Style::new().fg(theme.base).bg(bg));
@@ -1090,6 +1201,11 @@ impl App {
         if unsent > 0 {
             spans.push("  ".into());
             spans.push(chip(format!(" {unsent} unsent "), theme.warning));
+        }
+        let viewed = self.view.viewed.len();
+        if let Some(diff) = self.diff.as_ref().filter(|_| viewed > 0) {
+            let text = format!("  {viewed}/{} viewed", diff.files.len());
+            spans.push(Span::styled(text, theme.dim()));
         }
         spans
     }

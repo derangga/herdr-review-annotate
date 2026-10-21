@@ -8,7 +8,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use crate::diff::Change;
+use crate::diff::{Change, Placement};
 use crate::store::{
     Add, AnchorTarget, Author, CommentId, Event as LogEvent, Kind, RelPath, Side, state_dir,
 };
@@ -3542,4 +3542,241 @@ fn the_collapse_key_with_no_file_under_the_cursor_says_so() {
     press(&fixture, &mut app, [key('z')]);
     assert_eq!(app.message(), Some("no file here to collapse"));
     assert!(app.view.collapsed.is_empty());
+}
+
+// Showing a file whole. `MIDDLE` changes line 6 of a 12-line a.rs, so its hunk shows lines 3 to 9.
+
+const MIDDLE: &str = "diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -3,7 +3,7 @@ fn main
+ a3
+ a4
+ a5
+-a6
++A6
+ a7
+ a8
+ a9
+";
+
+/// A pane on `MIDDLE` with a.rs in the working tree.
+fn middle_pane(fixture: &Fixture) -> App {
+    let lines = (1..=12).map(|n| {
+        if n == 6 {
+            "A6".to_owned()
+        } else {
+            format!("a{n}")
+        }
+    });
+    let text = lines.collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(fixture.root.join("a.rs"), text).unwrap();
+    opened(fixture, MIDDLE)
+}
+
+#[test]
+fn the_whole_file_key_shows_every_line_and_the_cursor_keeps_its_line() {
+    let fixture = Fixture::new("whole");
+    let mut app = middle_pane(&fixture);
+    assert_eq!(app.view.stream.len(), 10);
+    // The cursor on +A6, the seventh row.
+    press(
+        &fixture,
+        &mut app,
+        std::iter::repeat_with(|| key('j')).take(6),
+    );
+    press(&fixture, &mut app, [key('o')]);
+    assert_eq!(app.view.stream.len(), 15);
+    assert_eq!(app.view.cursor, 8);
+    let rows = stream_rows(&mut app);
+    assert!(rows[1].contains("@@ -1,12 +1,12 @@ fn main"), "{}", rows[1]);
+    assert!(rows[2].contains("a1"), "{}", rows[2]);
+    // The same key shows the hunk alone again, and the cursor stays on +A6.
+    press(&fixture, &mut app, [key('o')]);
+    assert_eq!((app.view.stream.len(), app.view.cursor), (10, 6));
+    assert!(app.view.whole.is_empty());
+}
+
+#[test]
+fn the_whole_file_opens_a_collapsed_file_and_a_reload_keeps_it_whole() {
+    let fixture = Fixture::new("whole-reload");
+    let mut app = middle_pane(&fixture);
+    press(&fixture, &mut app, [key('z'), key('o')]);
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.stream.len(), 15);
+    press(&fixture, &mut app, [key('R')]);
+    assert_eq!(app.view.stream.len(), 15);
+}
+
+#[test]
+fn a_comment_on_a_line_only_the_whole_file_shows_is_matched() {
+    let fixture = Fixture::new("whole-comment");
+    let mut app = middle_pane(&fixture);
+    press(&fixture, &mut app, [key('o'), key('j'), key('j'), key('c')]);
+    press(&fixture, &mut app, chars("why"));
+    press(&fixture, &mut app, [ctrl_s()]);
+    assert_eq!(
+        app.view.stream.placements,
+        [Placement::Matched { line: Some(1) }]
+    );
+}
+
+#[test]
+fn a_file_that_cannot_be_read_whole_keeps_its_hunks_and_a_warning_says_so() {
+    let fixture = Fixture::new("whole-unreadable");
+    let mut app = middle_pane(&fixture);
+    let warned = |app: &App| {
+        app.warnings
+            .contains(&Warning::Config("cannot show the whole of a.rs".into()))
+    };
+    // Over 1 MiB.
+    std::fs::write(fixture.root.join("a.rs"), "a\n".repeat(600 * 1024)).unwrap();
+    press(&fixture, &mut app, [key('o')]);
+    assert!(warned(&app));
+    assert_eq!(app.view.stream.len(), 10);
+    assert!(app.view.whole.is_empty());
+    // Gone from the working tree.
+    std::fs::remove_file(fixture.root.join("a.rs")).unwrap();
+    press(&fixture, &mut app, [key('o')]);
+    assert!(warned(&app));
+    // Lines that no longer agree with the hunk.
+    std::fs::write(fixture.root.join("a.rs"), "something else\n").unwrap();
+    press(&fixture, &mut app, [key('o')]);
+    assert!(warned(&app));
+    assert_eq!(app.view.stream.len(), 10);
+}
+
+#[test]
+fn the_whole_file_key_on_an_added_file_or_no_file_says_why() {
+    let fixture = Fixture::new("whole-added");
+    let added = "diff --git a/n.rs b/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/n.rs\n@@ -0,0 +1 @@\n+x\n";
+    let mut app = opened(&fixture, added);
+    assert_eq!(app.diff.as_ref().unwrap().files[0].change, Change::Added);
+    press(&fixture, &mut app, [key('o')]);
+    assert_eq!(app.message(), Some("no more lines to show in this file"));
+    let mut app = opened(&fixture, "");
+    press(&fixture, &mut app, [key('o')]);
+    assert_eq!(app.message(), Some("no file here to show whole"));
+}
+
+// Marking a file viewed. `TWO_FILES` has a.rs at rows 0 to 5 and b.rs at 6 to 9.
+
+fn saved_viewed(fixture: &Fixture) -> Vec<String> {
+    crate::meta::load(&fixture.dir())
+        .0
+        .viewed
+        .into_keys()
+        .collect()
+}
+
+#[test]
+fn the_viewed_key_marks_and_collapses_the_file_and_again_takes_the_mark_off() {
+    let fixture = Fixture::new("viewed");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('j'), key('j'), key('m')]);
+    assert_eq!((app.view.cursor, app.view.stream.len()), (0, 5));
+    let rows = drawn(&mut app, 80).0;
+    assert!(rows.join("\n").contains("✓M"), "{}", rows.join("\n"));
+    let header = &stream_columns(&rows)[0];
+    assert!(header.starts_with("▸ M a.rs  viewed, 4 lines"), "{header}");
+    assert!(screen_of(&app).contains("1/2 viewed"));
+    assert_eq!(saved_viewed(&fixture), ["a.rs"]);
+    // On the header, the key takes the mark off and opens the file.
+    press(&fixture, &mut app, [key('m')]);
+    assert_eq!(app.view.stream.len(), 10);
+    assert!(app.view.viewed.is_empty());
+    assert!(!screen_of(&app).contains("viewed"));
+    assert!(saved_viewed(&fixture).is_empty());
+}
+
+#[test]
+fn the_viewed_key_marks_the_file_chosen_in_the_sidebar() {
+    let fixture = Fixture::new("viewed-sidebar");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(
+        &fixture,
+        &mut app,
+        [Event::Key(KeyEvent::from(KeyCode::Tab)), key('j'), key('m')],
+    );
+    assert_eq!(saved_viewed(&fixture), ["b.rs"]);
+    assert!(stream_columns(&drawn(&mut app, 80).0)[6].starts_with("▸ M b.rs  viewed"));
+}
+
+#[test]
+fn an_unsent_mark_takes_the_place_of_the_viewed_one_in_the_sidebar() {
+    let fixture = Fixture::new("viewed-unsent");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('j'), key('j'), key('c')]);
+    press(&fixture, &mut app, chars("fix"));
+    press(&fixture, &mut app, [ctrl_s(), key('m')]);
+    let rows = drawn(&mut app, 80).0.join("\n");
+    assert!(rows.contains("•M") && !rows.contains("✓M"), "{rows}");
+}
+
+#[test]
+fn a_new_pane_starts_a_viewed_file_collapsed() {
+    let fixture = Fixture::new("viewed-restart");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('m')]);
+    let app = opened(&fixture, TWO_FILES);
+    assert_eq!(app.view.stream.len(), 5);
+    assert!(app.view.viewed.contains(&RelPath::parse("a.rs").unwrap()));
+}
+
+#[test]
+fn a_viewed_file_whose_diff_changes_loses_its_mark_and_opens() {
+    let fixture = Fixture::new("viewed-changed");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('m')]);
+    *fixture.patch.borrow_mut() = TWO_FILES.replace("+A2", "+A2 again").into_bytes();
+    press(&fixture, &mut app, [key('R')]);
+    assert!(app.view.viewed.is_empty());
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.stream.len(), 10);
+    // A reload of the same diff keeps the mark.
+    press(&fixture, &mut app, [key('m'), key('R')]);
+    assert_eq!(app.view.viewed.len(), 1);
+}
+
+#[test]
+fn a_file_that_left_the_diff_leaves_meta_json_on_the_next_mark() {
+    let fixture = Fixture::new("viewed-left");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('m'), key('j'), key('m')]);
+    assert_eq!(saved_viewed(&fixture), ["a.rs", "b.rs"]);
+    let only_b = TWO_FILES.split_once("diff --git a/b.rs").unwrap().1;
+    *fixture.patch.borrow_mut() = format!("diff --git a/b.rs{only_b}").into_bytes();
+    press(&fixture, &mut app, [key('R'), key('m'), key('m')]);
+    assert_eq!(saved_viewed(&fixture), ["b.rs"]);
+}
+
+#[test]
+fn collapse_on_a_viewed_file_opens_it_and_keeps_the_mark() {
+    let fixture = Fixture::new("viewed-collapse");
+    let mut app = opened(&fixture, TWO_FILES);
+    press(&fixture, &mut app, [key('m'), key('z')]);
+    assert!(app.view.collapsed.is_empty());
+    assert_eq!(app.view.viewed.len(), 1);
+    assert!(stream_rows(&mut app)[0].starts_with("▾ M a.rs  viewed"));
+}
+
+#[test]
+fn the_viewed_key_with_no_file_under_the_cursor_says_so() {
+    let fixture = Fixture::new("viewed-nothing");
+    let mut app = opened(&fixture, "");
+    press(&fixture, &mut app, [key('m')]);
+    assert_eq!(app.message(), Some("no file here to mark"));
+}
+
+#[test]
+fn a_viewed_mark_that_cannot_be_saved_warns_and_holds() {
+    let fixture = Fixture::new("viewed-unsaved");
+    let mut app = opened(&fixture, TWO_FILES);
+    std::fs::set_permissions(fixture.dir(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    press(&fixture, &mut app, [key('m')]);
+    let warned = app.warnings.iter().any(|warning| {
+        matches!(warning, Warning::Config(text) if text.starts_with("could not save meta.json"))
+    });
+    assert!(warned, "{:?}", app.warnings);
+    assert_eq!(app.view.viewed.len(), 1);
 }

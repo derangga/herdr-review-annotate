@@ -42,6 +42,16 @@ change alone) has no other source, so the parser reads its `diff --git a/P b/P` 
 both halves are the same path. A section it cannot read at all is `Unparsed`, listed under that path or
 under a placeholder name.
 
+## The whole file
+
+`fill(file, text)` adds the unchanged lines of a modified or renamed file to its hunks, from `text`, the file
+in the working tree with `\r` stripped. The working tree is the new side of both specs, and an unchanged line
+reads the same on both sides, so its old number is its new number plus the shift the hunk above it ends with.
+The lines above the first hunk join it, and every other line joins the hunk above it. Each header is written
+again with the new ranges and keeps its section text. `fill` gives nothing back when a hunk has no row on one side, which only happens when the file is empty on
+that side, when `text` is shorter than the last hunk, or when a row on the new side reads differently in
+`text`, since the file changed after `git` read it.
+
 ## Anchor matching (ADR 0008)
 
 For each root comment whose `spec` equals the current spec:

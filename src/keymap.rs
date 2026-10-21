@@ -39,13 +39,15 @@ pub enum Action {
     SwitchSpec,
     ToggleLayout,
     Collapse,
+    Viewed,
+    WholeFile,
     Help,
     Quit,
 }
 
 impl Action {
     /// In the order of the table in design/tui.md, which is the order of the help overlay.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::Up,
         Self::Down,
         Self::PageUp,
@@ -73,6 +75,8 @@ impl Action {
         Self::SwitchSpec,
         Self::ToggleLayout,
         Self::Collapse,
+        Self::Viewed,
+        Self::WholeFile,
         Self::Help,
         Self::Quit,
     ];
@@ -107,6 +111,8 @@ impl Action {
             Self::SwitchSpec => "switch_spec",
             Self::ToggleLayout => "toggle_layout",
             Self::Collapse => "collapse",
+            Self::Viewed => "viewed",
+            Self::WholeFile => "whole_file",
             Self::Help => "help",
             Self::Quit => "quit",
         }
@@ -142,6 +148,8 @@ impl Action {
             Self::SwitchSpec => "switch diff spec",
             Self::ToggleLayout => "side by side or unified",
             Self::Collapse => "collapse or expand the file",
+            Self::Viewed => "mark the file viewed, or not",
+            Self::WholeFile => "show the whole file, or its hunks",
             Self::Help => "show this help",
             Self::Quit => "quit",
         }
@@ -180,6 +188,8 @@ impl Action {
             Self::SwitchSpec => &["b"],
             Self::ToggleLayout => &["t"],
             Self::Collapse => &["z"],
+            Self::Viewed => &["m"],
+            Self::WholeFile => &["o"],
             Self::Help => &["?"],
             Self::Quit => &["q"],
         }

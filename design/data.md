@@ -12,7 +12,7 @@ avoids a SHA dependency. The directory is created with mode `0700` and files wit
 |---|---|
 | `review.jsonl` | Events, one JSON object per line |
 | `archive.jsonl` | The events of archived threads, in the same form. Only `archive` writes it, and nothing reads it |
-| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id` |
+| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id`, `viewed` |
 | `lock` | Empty. Target of the exclusive lock |
 
 `DefaultHasher` output is not guaranteed stable across Rust releases. `meta.json` stores `root`, so on
@@ -99,3 +99,10 @@ one thread's `add` and `resolve` lines and gains at most one `archived` line, wh
 `send` action). A save takes the same lock as the store, reads the current file, changes its own
 fields, writes a temp file and renames it. A save that fails is a warning and never blocks a review
 action.
+
+`viewed` maps the path of each viewed file to its fingerprint: a 64-bit FNV-1a hash, in hex, of the file's
+change, its old path, whether its mode changed, and the kind and text of each added and removed row. Context
+rows and line numbers are left out, so the whole-file view, and lines that only moved, keep the mark. FNV-1a
+is written out in `diff.rs` because `DefaultHasher` may change between Rust releases and would take every
+mark off. The pane writes the whole map on each `viewed`, for the files in the diff on screen, so a file that
+left the diff loses its mark.

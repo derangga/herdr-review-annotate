@@ -23,13 +23,15 @@ Records:
 | `Anchor` | `path`, `old_path`, `target: AnchorTarget`, `spec: Spec` |
 | `Review` | `threads` in file order, `skipped_lines`, `ids` (the counters the next id comes from). The result of the fold |
 | `Archived` | `threads`, `unsent`: how many threads one archive moved, and how many of them were never sent |
-| `Meta` | `root`, `spec`, `target: Option<Target>`, `review_pane: Option<PaneId>` |
+| `Meta` | `root`, `spec`, `target: Option<Target>`, `review_pane: Option<PaneId>`, `viewed`: path to fingerprint |
 | `Target` | `pane: PaneId`, `terminal: TerminalId`, `agent: String` |
 | `DiffFile` | `path`, `old_path`, `change`, `hunks`, `flags` |
 | `Diff` | `files`, `rev` (what the working tree was compared against), `spec`, `notices` (cap reached, base missing, and so on) |
 | `Select` | `row`, `half: Option<Side>`: where a range being selected started, and the half of a split row it started on. `View::select` holds one while visual mode is on, and `View::drag` is whether a left press in the stream is held. Neither is stored |
 | `Filter` | `query`, `typing`: the sidebar's file filter. `View::filter` holds one while a filter is on, and `None` is no filter. `typing` says whether keys go to the query. It is a struct and not a two-variant enum because both states carry the same query and only the key router reads which one it is. Not stored |
 | `View::collapsed` | A set of `RelPath`: the files folded to their header. `Stream::build` reads it into `folded` and `hidden`, one entry per file of the diff: whether the file is collapsed, and the threads it hides in the order of their lines. Not stored |
+| `View::viewed` | A set of `RelPath`: the files whose fingerprint equals the one `meta.viewed` saved. Worked out again on each load of the diff. `Stream::build` reads it into one flag per file for the sidebar and the header |
+| `View::whole` | A set of `RelPath`: the files shown whole. `App::read_diff` fills them after each load. Not stored |
 | `Keymap` | Key to `Action`, plus `warnings` |
 | `SidebarConfig` | `open` (default true) and `icons` (default false), read once from `[sidebar]` into `View::sidebar` and `View::icons` |
 | `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |

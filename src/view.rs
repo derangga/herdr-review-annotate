@@ -372,6 +372,8 @@ pub struct Stream {
     side: Vec<SideRow>,
     /// Per file, whether a thread hung in it has not been sent.
     unsent: Vec<bool>,
+    /// Per file, whether the user marked it viewed.
+    viewed: Vec<bool>,
     /// The rows of each file, for the layout the stream was built for. A collapsed file has its
     /// header only.
     files: Vec<Vec<FileRow>>,
@@ -459,14 +461,15 @@ fn sidebar_rows(diff: &Diff, query: Option<&str>) -> Vec<SideRow> {
 
 impl Stream {
     /// Lay out `diff` and the threads of `review` for a stream `width` cells wide. A file whose
-    /// path is in `collapsed` is its header alone, and the cards of its threads are left out.
+    /// path is in `collapsed` is its header alone, and the cards of its threads are left out. A
+    /// file whose path is in `viewed` is drawn as viewed.
     pub fn build(
         diff: &Diff,
         review: &Review,
         width: usize,
         layout: DiffLayout,
         look: &Look,
-        collapsed: &HashSet<RelPath>,
+        (collapsed, viewed): (&HashSet<RelPath>, &HashSet<RelPath>),
     ) -> Self {
         let folded = diff
             .files
@@ -506,6 +509,11 @@ impl Stream {
             width,
             side: sidebar_rows(diff, None),
             unsent: vec![false; diff.files.len()],
+            viewed: diff
+                .files
+                .iter()
+                .map(|file| viewed.contains(&file.path))
+                .collect(),
             layout,
             ..Self::default()
         };
@@ -626,6 +634,11 @@ impl Stream {
         stream.files = files;
         stream.folded = folded;
         stream
+    }
+
+    /// Whether file `file` is marked viewed.
+    pub fn viewed(&self, file: usize) -> bool {
+        self.viewed.get(file) == Some(&true)
     }
 
     /// Whether file `file` is collapsed to its header.
@@ -940,6 +953,17 @@ pub struct Spot {
     /// can put the cursor back on that line.
     layout: DiffLayout,
     line: Option<(Side, u32)>,
+    /// Put the cursor back on `line` even in the same layout, because the file's rows changed.
+    by_line: bool,
+}
+
+impl Spot {
+    /// The same spot, put back by its diff line, for a file that gains or loses rows.
+    #[must_use]
+    pub const fn by_line(mut self) -> Self {
+        self.by_line = true;
+        self
+    }
 }
 
 /// Where a range being selected started: the row, and the half of a split row it started on.
@@ -972,6 +996,10 @@ pub struct View {
     pub filter: Option<Filter>,
     /// The files collapsed to their header, by path, so they stay collapsed through a reload.
     pub collapsed: HashSet<RelPath>,
+    /// The files shown whole, by path, for the pane's session.
+    pub whole: HashSet<RelPath>,
+    /// The files marked viewed whose fingerprint still matches the saved one.
+    pub viewed: HashSet<RelPath>,
     /// The layout the user chose with the toggle key. `None` follows the pane's width.
     forced: Option<DiffLayout>,
     /// Cells of code hidden on the left of every row, and the file they were set for.
@@ -1011,6 +1039,8 @@ impl Default for View {
             select: None,
             filter: None,
             collapsed: HashSet::new(),
+            whole: HashSet::new(),
+            viewed: HashSet::new(),
             forced: None,
             hscroll: 0,
             hfile: 0,
@@ -1234,6 +1264,7 @@ impl View {
             card,
             layout: self.stream.layout,
             line,
+            by_line: false,
         })
     }
 
@@ -1258,11 +1289,7 @@ impl View {
     /// cursor goes to the header. False when the cursor is on no file. The caller lays the stream
     /// out again.
     pub fn toggle_collapse(&mut self, diff: &Diff) -> bool {
-        let file = self.stream.file_at(self.cursor);
-        let on_file = self.cursor >= self.stream.top || self.panel == Panel::Sidebar;
-        let (true, Some(start), Some(file)) =
-            (on_file, self.stream.file_start(file), diff.files.get(file))
-        else {
+        let Some((start, file)) = self.file_here(diff) else {
             return false;
         };
         if !self.collapsed.remove(&file.path) {
@@ -1270,6 +1297,32 @@ impl View {
             self.move_to(start);
         }
         true
+    }
+
+    /// Mark the cursor's file viewed and collapse it, the cursor on its header, or take the mark
+    /// off and open it. The path it changed, or `None` when the cursor is on no file. The caller
+    /// saves the marks and lays the stream out again.
+    pub fn toggle_viewed(&mut self, diff: &Diff) -> Option<RelPath> {
+        let (start, file) = self.file_here(diff)?;
+        let path = file.path.clone();
+        if self.viewed.remove(&path) {
+            self.collapsed.remove(&path);
+        } else {
+            self.viewed.insert(path.clone());
+            self.collapsed.insert(path.clone());
+            self.move_to(start);
+        }
+        Some(path)
+    }
+
+    /// The file the cursor is in, from any of its rows and cards, or the one the sidebar has chosen
+    /// while it has the keys, with the row of its header. `None` in the block of threads not in the
+    /// diff, or with no file.
+    pub fn file_here<'a>(&self, diff: &'a Diff) -> Option<(usize, &'a DiffFile)> {
+        let file = self.stream.file_at(self.cursor);
+        let on_file = self.cursor >= self.stream.top || self.panel == Panel::Sidebar;
+        on_file.then_some(())?;
+        Some((self.stream.file_start(file)?, diff.files.get(file)?))
     }
 
     /// Open file `file` again. The caller lays the stream out again.
@@ -1465,7 +1518,7 @@ impl View {
             self.stream_width(),
             self.layout(),
             look,
-            &self.collapsed,
+            (&self.collapsed, &self.viewed),
         );
         self.refilter(diff);
         self.select = None;
@@ -1485,7 +1538,7 @@ impl View {
             let rows = stream.files.get(index)?;
             let by_line = spot
                 .line
-                .filter(|_| spot.layout != stream.layout)
+                .filter(|_| spot.by_line || spot.layout != stream.layout)
                 .and_then(|(side, line)| offset_of(diff.files.get(index)?, rows, side, line));
             let last = rows.len().saturating_sub(1);
             stream.row_of(index, by_line.unwrap_or_else(|| spot.offset.min(last)))
@@ -1930,7 +1983,7 @@ fn file_header(
     file: &DiffFile,
     width: usize,
     theme: &Theme,
-    fold: Option<(usize, usize)>,
+    (fold, viewed): (Option<(usize, usize)>, bool),
 ) -> Line<'static> {
     let mut text = sanitize_terminal_text(file.path.as_str());
     if let Some(old) = &file.old_path {
@@ -1951,15 +2004,18 @@ fn file_header(
         let plural = if n == 1 { "" } else { "s" };
         (n > 0).then(|| format!("{n} {noun}{plural}"))
     };
-    let hidden = fold.map_or_else(String::new, |(lines, threads)| {
-        let parts = [count(lines, "line"), count(threads, "thread")];
-        let parts = parts.into_iter().flatten().collect::<Vec<_>>();
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", parts.join(", "))
-        }
-    });
+    let (lines, threads) = fold.unwrap_or((0, 0));
+    let parts = [
+        viewed.then(|| "viewed".to_owned()),
+        count(lines, "line"),
+        count(threads, "thread"),
+    ];
+    let parts = parts.into_iter().flatten().collect::<Vec<_>>();
+    let hidden = if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", parts.join(", "))
+    };
     // The marker, the letter and their two spaces come before the name.
     let name = truncate_to_width(&text, room.saturating_sub(4));
     let hidden = fitted(&hidden, room.saturating_sub(4 + string_width(&name)));
@@ -2017,7 +2073,12 @@ fn row_line(
             .cloned()
             .unwrap_or_default(),
         RowRef::Empty(spec) => Line::from(truncate_to_width(&empty_message(spec), width)),
-        RowRef::File(file) => file_header(file, width, theme, stream.fold_of(index, file)),
+        RowRef::File(file) => file_header(
+            file,
+            width,
+            theme,
+            (stream.fold_of(index, file), stream.viewed(index)),
+        ),
         RowRef::Note(file) => Line::styled(format!("  {}", note(file)), theme.dim()),
         RowRef::Hunk(hunk) => Line::styled(
             truncate_to_width(&sanitize_terminal_text(&hunk.header), width),
@@ -2204,12 +2265,12 @@ pub fn editor_rect(stream: Rect, at: usize, height: u16) -> Rect {
     Rect::new(stream.x, stream.y + y, stream.width, height)
 }
 
-/// One file of the sidebar: a mark for unsent comments, the letter, an icon when `icons` is on, the
-/// name, and the counts pushed to the right edge. The name gives way first. The name of a `folded`
-/// file, one collapsed in the stream, is in the subtle colour.
+/// One file of the sidebar: a mark for unsent comments, else for a `viewed` file, the letter, an icon
+/// when `icons` is on, the name, and the counts pushed to the right edge. The name gives way first.
+/// The name of a `folded` file, one collapsed in the stream, is in the subtle colour.
 fn side_file_line(
     file: &DiffFile,
-    unsent: bool,
+    (unsent, viewed): (bool, bool),
     icons: bool,
     width: usize,
     theme: &Theme,
@@ -2238,7 +2299,11 @@ fn side_file_line(
         .as_str()
         .rsplit_once('/')
         .map_or(file.path.as_str(), |(_, name)| name);
-    let mark = if unsent { '•' } else { ' ' };
+    let (mark, mark_style) = match (unsent, viewed) {
+        (true, _) => ('•', Style::new()),
+        (false, true) => ('✓', Style::new().fg(theme.added)),
+        (false, false) => (' ', Style::new()),
+    };
     let letter = glyph(file.change);
     let room = width.saturating_sub(counts_width + usize::from(counts_width > 0));
     // The mark, the letter and a space, then the icon and a space. All of them are one cell each.
@@ -2248,7 +2313,7 @@ fn side_file_line(
         vec![Span::raw(truncate_to_width(&plain, room))]
     } else {
         let mut spans = vec![
-            Span::raw(mark.to_string()),
+            Span::styled(mark.to_string(), mark_style),
             Span::styled(
                 letter.to_string(),
                 Style::new().fg(glyph_color(file.change, theme)),
@@ -2352,7 +2417,8 @@ fn draw_sidebar(
             SideRow::File(index) => diff.files.get(*index).map_or_else(Line::default, |file| {
                 let unsent = view.stream.unsent.get(*index).copied().unwrap_or(false);
                 let folded = view.stream.folded(*index);
-                side_file_line(file, unsent, view.icons, width, theme, folded)
+                let viewed = view.stream.viewed(*index);
+                side_file_line(file, (unsent, viewed), view.icons, width, theme, folded)
             }),
         })
         .collect::<Vec<_>>();
