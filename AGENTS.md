@@ -9,7 +9,9 @@ beads (`bd`).
 2. `bd show <id>`, then `bd update <id> --status in_progress`.
 3. Read every section the bead names before writing code.
 4. The bead is done when each line of its acceptance criteria is true and `cargo clippy` and
-   `cargo test` are clean. Then `bd close <id>`.
+   `cargo test` are clean. A bead that touches `herdr-app-mod/` also needs `npm test` and `npm run typecheck`
+   in that folder (the typecheck is local: run `npm run setup-types` once to copy the declarations) and
+   `herdr-app check` passing on the mod staged by `scripts/stage-app-mod.sh`. Then `bd close <id>`.
 5. Work found along the way that the bead does not cover becomes a new bead:
    `bd create "<title>" --deps discovered-from:<id>`.
 
@@ -22,6 +24,7 @@ Commit only when the user asks.
 | `DESIGN.md` | First. It is an index with a "when" for each file in `design/`. Load the two or three files the task needs, not the directory |
 | `design/shapes.md`, `design/graphs/`, `design/errors.md` | Before writing any function. They have the types, the call graph of each operation, how each step fails, and what each step receives as parameters |
 | The `design/` files a bead names | Before starting that bead. The design is the source of truth, the bead only points at it |
+| `design/gui.md`, `design/graphs/gui-*.md`, `design/herdr-app-facts.md` | Before touching `herdr-app-mod/`, the TypeScript mod. The facts file is what herdr-app was seen to do, and what is still unknown |
 | `docs/adr/` | When a bead cites an ADR, or when a design choice looks odd |
 | `CONTEXT.md` | For the meaning of thread, anchor, outdated, unsent, resend, target agent |
 

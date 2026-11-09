@@ -198,6 +198,76 @@ icons = false                 # hide the file-type glyph on each file row, which
   action's default, and the pane prints a warning naming each action left with no key.
 - A mistake in the file is a warning in the pane, never a crash. A file that is not valid TOML is ignored.
 
+## The herdr-app panel
+
+A second way to review, for [herdr-app](https://github.com/herdrdev/herdr) (the desktop app). It is a mod
+that draws a native panel beside the agent: the changed files, the unified diff of the selected file, and the
+comment threads under their lines. It holds no review logic. Every read and write runs the `herdr-review`
+binary, so the panel and the pane above show the same review, stored in the same place. The agent
+answers the same way, with `herdr-review comment ...` from its shell, and the panel updates by itself.
+
+### Install the panel
+
+From a checkout, with `cargo`, `node` and `npm` installed:
+
+```sh
+bash scripts/stage-app-mod.sh
+```
+
+The script builds the mod and the release binary, and copies them into
+`~/.config/herdr-app/mods/herdr-review` (or `$HERDR_APP_HOME/mods/herdr-review`): `mod.json`, `main.js`, and
+the binary at `bin/herdr-review`. Nothing else under the app folder is touched. It stages its own binary
+because the panel needs `herdr-review state`, which a copy on `PATH` may be too old to have. The panel runs
+the staged binary first and `herdr-review` on `PATH` second. The prompt it sends names the binary that sent it,
+so the agent replies with the same version.
+
+Run `herdr-app check ~/.config/herdr-app/mods/herdr-review`. Run the script again after an update. Saving
+the mod folder reloads a panel that is open.
+
+The script never edits `keys.json`. To open the panel, add this line under `"global"` in
+`~/.config/herdr-app/keys.json`:
+
+```json
+"cmd-shift-r": {"command": "pane.split", "args": {"direction": "right", "mod": "herdr-review"}}
+```
+
+Pick another key if you like. Without a key, run the same command from a shell:
+
+```sh
+herdr-app do pane.split '{"direction": "right", "mod": "herdr-review"}'
+```
+
+Focus the pane where your agent runs first. The panel opens to its right and reviews the folder that pane is in,
+and sends to the agent in it.
+
+### Use the panel
+
+1. Click a line of the diff to select it. Click a second line to select the range between the two. A bar under
+   the diff shows what is selected, with `Comment` and `Cancel`. `Comment on file` is there too, and it
+   comments on the whole file.
+2. Write the comment in the editor and save it. The comment shows as a card under its line, marked `unsent`.
+3. Click `Send`. It shows the number of unsent comments. Every unsent comment goes to the agent as one prompt.
+   If the folder has more than one agent, the bar lists them and you click one.
+4. Click a card to focus its thread. The bar then shows `Reply`, `Resolve` or `Reopen`, `Resend` (that thread
+   only), and for your own comments `Edit` and `Delete` (it asks for a second click). A thread the agent resolved
+   shows `new` until you look at it.
+5. `Archive` moves the resolved threads to `archive.jsonl` after a second click. `Mark viewed` marks the
+   selected file as read, and `Mark unviewed` takes the mark off.
+
+The header has `Working tree` and `Branch`, which are the two diff specs of the pane above (`b` there), and
+`Refresh`. The panel also reloads when the repository or the review state changes, and every 10 seconds. The
+choice of spec lasts as long as the panel is open.
+
+### Limits
+
+- A range is two clicks. herdr-app gives a list row no drag.
+- The thread buttons are in the bar under the diff, not on the card, for the same reason.
+- The diff is unified and has no syntax colours or marks on changed words. There are no vim keys, no filter
+  box, and no review of the agent's last message. Use the pane above for those.
+- A frame can lag a change by a moment. `Refresh` loads again at once.
+- With no staged binary and an old `herdr-review` on `PATH`, the panel shows a banner and does nothing else.
+  Run the stage script.
+
 ## Let the agent start a review
 
 Install the skill so Claude Code knows the commands:
@@ -210,6 +280,11 @@ cp -R "$(herdr plugin list --plugin review --json | jq -r '.result.plugins[0].pl
 Then ask: "review your changes with herdr-review". The agent posts its comments, opens the pane, and
 ends its turn. Your replies come back as its next message when you press `S`. The skill finds the
 binary through `herdr plugin list` on every run, so it survives plugin updates.
+
+Under herdr-app there is no plugin to list. The skill is the same file, copied from a checkout with
+`cp -R skills/herdr-review ~/.claude/skills/`. The agent takes the binary from the review prompt it was
+sent, and for comments of its own, from `herdr-review` on `PATH` or the staged copy. It posts its comments, and
+you read them in the panel.
 
 ## Develop
 

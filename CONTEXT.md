@@ -23,3 +23,7 @@ Glossary only. Decisions are in `docs/adr/`, the design is in `DESIGN.md`.
 | Agent message | The text of the newest assistant message in the agent's Claude Code transcript: the text blocks of one message id. Not to be confused with a reply. |
 | Message review | The pane that shows an agent message as Markdown lines for the user to comment on. It has no threads and writes nothing to the review. |
 | Message comment | A user comment on a line or range of an agent message. It lives only in the message pane until it is sent or the pane closes. |
+| Panel | The herdr-app mod that shows a review: the files, the diff and the threads. A second front end to the same review as the TUI, and it runs the binary for every read and write. |
+| Backend | The terminal CLI that `send` and target resolution talk to: `herdr` in plain Herdr, `hc` under herdr-app. |
+| Terminal address | hc's one name for a terminal (`t7`). The target agent under the hc backend is stored as an address, and it is assumed not to survive a restart of herdr-core. |
+

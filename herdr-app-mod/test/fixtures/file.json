@@ -1,0 +1,270 @@
+{
+  "schema": 1,
+  "path": "src/a.rs",
+  "old_path": null,
+  "change": "modified",
+  "add": 2,
+  "del": 1,
+  "viewed": false,
+  "note": null,
+  "rows": [
+    {
+      "kind": "hunk",
+      "old": null,
+      "new": null,
+      "text": "@@ -1,4 +1,5 @@"
+    },
+    {
+      "kind": "ctx",
+      "old": 1,
+      "new": 1,
+      "text": "fn main() {",
+      "tokens": [
+        [
+          0,
+          2,
+          "keyword"
+        ],
+        [
+          3,
+          7,
+          "function"
+        ]
+      ]
+    },
+    {
+      "kind": "del",
+      "old": 2,
+      "new": null,
+      "text": "    old();",
+      "tokens": [
+        [
+          4,
+          7,
+          "function"
+        ]
+      ]
+    },
+    {
+      "kind": "add",
+      "old": null,
+      "new": 2,
+      "text": "    new();",
+      "tokens": [
+        [
+          4,
+          7,
+          "function"
+        ]
+      ]
+    },
+    {
+      "kind": "add",
+      "old": null,
+      "new": 3,
+      "text": "    more();",
+      "tokens": [
+        [
+          4,
+          8,
+          "function"
+        ]
+      ]
+    },
+    {
+      "kind": "ctx",
+      "old": 3,
+      "new": 4,
+      "text": "    keep();",
+      "tokens": [
+        [
+          4,
+          8,
+          "function"
+        ]
+      ]
+    },
+    {
+      "kind": "ctx",
+      "old": 4,
+      "new": 5,
+      "text": "}"
+    }
+  ],
+  "threads": [
+    {
+      "id": "u1",
+      "status": "open",
+      "resolved_by": null,
+      "is_new": false,
+      "unsent": true,
+      "placement": {
+        "kind": "matched",
+        "row": 3,
+        "start_row": null
+      },
+      "anchor": {
+        "path": "src/a.rs",
+        "old_path": null,
+        "kind": "line",
+        "side": "new",
+        "line": 2,
+        "end_line": null,
+        "text": "    new();",
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u1",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "b",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    },
+    {
+      "id": "u2",
+      "status": "resolved",
+      "resolved_by": "agent:claude",
+      "is_new": true,
+      "unsent": false,
+      "placement": {
+        "kind": "matched",
+        "row": 4,
+        "start_row": 3
+      },
+      "anchor": {
+        "path": "src/a.rs",
+        "old_path": null,
+        "kind": "range",
+        "side": "new",
+        "line": 2,
+        "end_line": 3,
+        "text": "    new();",
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u2",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "Why two lines?",
+          "sent": true,
+          "edited_since_sent": false
+        },
+        {
+          "id": "a1",
+          "parent": "u2",
+          "author": "agent:claude",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "Fixed.",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    },
+    {
+      "id": "u3",
+      "status": "resolved",
+      "resolved_by": "user",
+      "is_new": false,
+      "unsent": true,
+      "placement": {
+        "kind": "matched",
+        "row": 2,
+        "start_row": null
+      },
+      "anchor": {
+        "path": "src/a.rs",
+        "old_path": null,
+        "kind": "line",
+        "side": "old",
+        "line": 2,
+        "end_line": null,
+        "text": "    old();",
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u3",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "b",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    },
+    {
+      "id": "u4",
+      "status": "open",
+      "resolved_by": null,
+      "is_new": false,
+      "unsent": true,
+      "placement": {
+        "kind": "outdated",
+        "row": 6,
+        "start_row": null
+      },
+      "anchor": {
+        "path": "src/a.rs",
+        "old_path": null,
+        "kind": "line",
+        "side": "new",
+        "line": 40,
+        "end_line": null,
+        "text": "text that is gone",
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u4",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "b",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    },
+    {
+      "id": "u5",
+      "status": "open",
+      "resolved_by": null,
+      "is_new": false,
+      "unsent": true,
+      "placement": {
+        "kind": "matched",
+        "row": null,
+        "start_row": null
+      },
+      "anchor": {
+        "path": "src/a.rs",
+        "old_path": null,
+        "kind": "file",
+        "side": null,
+        "line": null,
+        "end_line": null,
+        "text": null,
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u5",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "Add a doc comment.",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    }
+  ]
+}

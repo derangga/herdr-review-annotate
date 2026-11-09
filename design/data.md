@@ -12,7 +12,7 @@ avoids a SHA dependency. The directory is created with mode `0700` and files wit
 |---|---|
 | `review.jsonl` | Events, one JSON object per line |
 | `archive.jsonl` | The events of archived threads, in the same form. Only `archive` writes it, and nothing reads it |
-| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id`, `viewed` |
+| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id, agent }`, `hc_target { address, agent }`, `review_pane_id`, `viewed` |
 | `lock` | Empty. Target of the exclusive lock |
 
 `DefaultHasher` output is not guaranteed stable across Rust releases. `meta.json` stores `root`, so on
@@ -87,13 +87,20 @@ Every writer opens `review.jsonl` after it has the lock, so an append cannot lan
 ## Reading
 
 Read the whole file and fold. Ignore a final line with no newline. Skip a line that does not parse and
-count it, so the TUI can show "1 unreadable event". The TUI keeps the file length it last saw and
+count it, so the TUI can show "1 unreadable event". `state` reports the same count in `warnings`, and does not
+count a last line with no newline, since another process is writing it. The TUI
+keeps the file length it last saw and
 checks it every 250 ms on its input poll timeout. When the length differs, in either direction, it reads
 and folds the whole file again. A review log is small, and this keeps a rewrite and an append the same case.
 An archive by another pane is seen this way, because the rewritten log is always shorter: it loses at least
 one thread's `add` and `resolve` lines and gains at most one `archived` line, which is shorter than the two.
 
 ## Meta file
+
+`hc_target` is the target under the hc backend. `target` stays what it was, so a v0.5.0 binary reads and
+saves the file as before and ignores the new key ([shapes](shapes.md), Target). A v0.5.0 save drops
+`hc_target`, and the next hc send finds the agent by folder again. `state` and `file` only read `meta.json`.
+`view` and `send` save it, with the same locked rewrite.
 
 `meta.json` is rewritten on every save, and three processes write it (`open`, the TUI, the
 `send` action). A save takes the same lock as the store, reads the current file, changes its own

@@ -1,6 +1,9 @@
 //! The `comment` subcommands an agent runs: what each one reads from the review and prints.
 
 use std::fmt::{self, Write as _};
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +65,41 @@ pub fn check_body(text: &str) -> Result<(), CommandError> {
     }
 }
 
+/// The most a batch file (`comment apply --as user --file`) may hold. A body of `MAX_BODY` bytes
+/// fits in it with its anchor and the JSON escapes, so a body that is too long is refused by the
+/// batch check with its index, as it is on stdin.
+pub const MAX_BATCH_FILE: usize = 256 * 1024;
+
+/// The text of a file the panel wrote for one call (`--file`, `--body-file`). It must be a regular
+/// file and not a symlink. At most `limit` bytes are read, and the file is deleted as soon as it is
+/// open, so a body is on disk for the time of one call and a refusal after the open still removes
+/// it. A file that is refused before the open is left alone, since it is not the panel's.
+pub fn read_user_file(path: &Path, limit: usize) -> Result<String, CommandError> {
+    let bad = |why: String| CommandError::InvalidBody(format!("{}: {why}", path.display()));
+    let seen = fs::symlink_metadata(path).map_err(|error| bad(format!("cannot open: {error}")))?;
+    if !seen.is_file() {
+        return Err(bad("not a regular file, or a symlink".into()));
+    }
+    let mut file = File::open(path).map_err(|error| bad(format!("cannot open: {error}")))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| bad(format!("cannot open: {error}")))?;
+    if (opened.dev(), opened.ino()) != (seen.dev(), seen.ino()) {
+        return Err(bad("changed while it was opened".into()));
+    }
+    // The handle keeps the bytes. A delete that fails leaves the file and changes nothing else.
+    let _ = fs::remove_file(path);
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| bad(format!("cannot read: {error}")))?;
+    if bytes.len() > limit {
+        return Err(bad(format!("holds more than {limit} bytes")));
+    }
+    String::from_utf8(bytes).map_err(|_| bad("is not valid UTF-8".into()))
+}
+
 /// The root of the thread called `id`. A reply's id, or one nobody has used, is an unknown id.
 fn thread<'a>(review: &'a Review, id: &str) -> Result<&'a Thread, CommandError> {
     CommentId::parse(id)
@@ -120,21 +158,20 @@ pub fn reply(
 }
 
 /// `comment resolve <id> --reply -`: add the reply, then resolve. A thread that is already
-/// resolved is left as it is, and the reply is not written.
+/// resolved is left as it is, and the reply is not written. The user may resolve with no text.
 pub fn resolve(
     dir: &Path,
     now: &str,
     by: &Author,
     id: &str,
-    text: &str,
+    text: Option<&str>,
 ) -> Result<Option<CommentId>, WriteError<CommandError>> {
     write(dir, now, |review, now| {
         let root = thread(review, id)?;
-        check_body(text)?;
+        text.map(check_body).transpose()?;
         if !root.is_open() {
             return Ok((Vec::new(), None));
         }
-        let (added, reply_id) = reply_event(review, now, by, &root.root.id, text);
         let resolved = event(
             now,
             by,
@@ -142,6 +179,10 @@ pub fn resolve(
                 id: root.root.id.clone(),
             },
         );
+        let Some(text) = text else {
+            return Ok((vec![resolved], None));
+        };
+        let (added, reply_id) = reply_event(review, now, by, &root.root.id, text);
         Ok((vec![added, resolved], Some(reply_id)))
     })
 }
@@ -373,16 +414,16 @@ mod tests {
     #[test]
     fn list_reads_the_store_and_warns_about_bad_lines() {
         let dir = std::env::temp_dir().join(format!("herdr-review-list2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
         let (empty, warning) = list(&dir, Filter::default()).unwrap();
         assert!(empty.threads.is_empty() && warning.is_none());
         write(&dir, "t", |_, _| {
             Ok::<_, ()>((vec![add(&Author::User, "u1", None, "x")], ()))
         })
         .unwrap();
-        let mut log = std::fs::read_to_string(dir.join("review.jsonl")).unwrap();
+        let mut log = fs::read_to_string(dir.join("review.jsonl")).unwrap();
         log.push_str("garbage\n");
-        std::fs::write(dir.join("review.jsonl"), log).unwrap();
+        fs::write(dir.join("review.jsonl"), log).unwrap();
         let (listing, warning) = list(
             &dir,
             Filter {

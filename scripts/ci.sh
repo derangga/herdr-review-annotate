@@ -15,3 +15,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 cargo build --no-default-features
 bash scripts/test-fetch-herdr-review.sh
+
+# The herdr-app mod: tests and the bundle. The typecheck is local only, it needs gpui-kit.d.ts, which only
+# a machine where herdr-app has run has (design/gui.md).
+(
+  cd herdr-app-mod
+  node --version
+  npm ci
+  npm test
+  npm run build
+)

@@ -36,9 +36,16 @@ impl fmt::Display for GitError {
 impl std::error::Error for GitError {}
 
 /// Run `git` with `args` and return its stdout. It never takes `index.lock`, so the review cannot
-/// make the agent's own `git` commands fail.
+/// make the agent's own `git` commands fail, and it leaves `.git/index` as it was: the file system
+/// monitor is off and `git diff` does not refresh the index, so a read cannot wake a watcher.
 pub fn run_git_bytes(args: &[String]) -> Result<Vec<u8>, GitError> {
     let output = Command::new("git")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "diff.autoRefreshIndex=false",
+        ])
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())

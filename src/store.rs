@@ -165,6 +165,10 @@ text_id!(
     TerminalId
 );
 text_id!(
+    /// An hc terminal address such as `t7`.
+    TerminalAddress
+);
+text_id!(
     /// A repo-relative path with no `..` and no leading `/`.
     RelPath
 );
@@ -206,6 +210,15 @@ impl PaneId {
 impl TerminalId {
     pub fn parse(text: &str) -> Option<Self> {
         herdr_token(text).then(|| Self(text.to_owned()))
+    }
+}
+
+impl TerminalAddress {
+    /// `t` and then letters or digits, as in `t7` and `t1d`. A name or `machine/t7` is not one.
+    pub fn parse(text: &str) -> Option<Self> {
+        let digits = text.strip_prefix('t')?;
+        let valid = !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_alphanumeric());
+        valid.then(|| Self(text.to_owned()))
     }
 }
 

@@ -14,7 +14,7 @@ boundary never sees a raw string or `serde_json::Value`.
 | `herdr` stdout and stderr | `Target`, `AgentStatus`, `HerdrError` | `Refusal::AgentGone` or the raw message |
 | Environment | `Env` | A missing value is `None`. A pane id is trusted only after `agent get` confirms it |
 | CLI arguments | `Command` enum | Usage text, exit 2 |
-| Agent stdin (batch, reply text) | `Vec<NewComment>`, `String` | `CommandError::InvalidBatch`, nothing is written |
+| Agent stdin (batch, reply text), and the panel's `--file` and `--body-file` | `Vec<NewComment>`, `String` | `CommandError::InvalidBatch` or `InvalidBody`, nothing is written |
 
 Limits checked at the agent stdin boundary: a body is at most 16 KiB after trimming and must not be
 empty, a batch holds at most 200 comments, a path must parse as `RelPath`, a line must be 1 or more

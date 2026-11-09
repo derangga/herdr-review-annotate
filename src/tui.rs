@@ -36,7 +36,7 @@ use crate::env::Env;
 use crate::herdr::run_herdr_output;
 use crate::keymap::{Action, Keymap};
 use crate::meta::{Meta, Target, locate, save};
-use crate::send::{Scope, SendError, TargetError, resolve_target, save_target, send};
+use crate::send::{Reached, Scope, SendError, TargetError, resolve_target, save_target, send};
 use crate::store::{
     Anchor, AnchorTarget, Comment, CommentId, PaneId, Review, Spec, StoreError, Thread, Warning,
     WriteError, archive, log_len, read,
@@ -741,7 +741,7 @@ impl App {
                 self.notice("a resolved thread is not resent, reopen it first");
             }
             Some(thread) => {
-                let scope = Scope::Thread(thread.root.id.clone());
+                let scope = Scope::Threads(vec![thread.root.id.to_string()]);
                 self.request(scope, false);
             }
         }
@@ -770,7 +770,7 @@ impl App {
                 for warning in sent.warnings {
                     self.warn(warning);
                 }
-                if let Some(target) = sent.target {
+                if let Some(Reached::Herdr(target)) = sent.target {
                     self.meta.target = Some(target.clone());
                     self.target = Some(target);
                 }

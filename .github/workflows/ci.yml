@@ -27,4 +27,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: herdr-app-mod/package-lock.json
       - run: bash scripts/ci.sh
