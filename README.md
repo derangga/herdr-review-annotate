@@ -201,8 +201,8 @@ icons = false                 # hide the file-type glyph on each file row, which
 ## The herdr-app panel
 
 A second way to review, for [herdr-app](https://github.com/herdrdev/herdr) (the desktop app). It is a mod
-that draws a native panel beside the agent: the changed files, the unified diff of the selected file, and the
-comment threads under their lines. It holds no review logic. Every read and write runs the `herdr-review`
+that draws a native panel beside the agent: the changed files, every file's unified diff in one scrolling stream
+(the sidebar follows the file at the top, and a click on a file scrolls to it), and the comment threads under their lines. It holds no review logic. Every read and write runs the `herdr-review`
 binary, so the panel and the pane above show the same review, stored in the same place. The agent
 answers the same way, with `herdr-review comment ...` from its shell, and the panel updates by itself.
 
@@ -242,9 +242,10 @@ and sends to the agent in it.
 
 ### Use the panel
 
-1. Click a line of the diff to select it. Click a second line to select the range between the two. A bar under
-   the diff shows what is selected, with `Comment` and `Cancel`. `Comment on file` is there too, and it
-   comments on the whole file.
+1. Move the mouse over a line: a `[+]` shows at its left. Click the `[+]` to comment on that line. To comment on
+   several lines, hold the mouse down on one line and drag over the others, then click the `[+]` on any line in
+   the highlighted range. A plain click on a line highlights nothing and clears the range, and Esc clears it too. A bar
+   under the diff names what is selected. `Comment on file` is there too, and it comments on the whole file.
 2. Write the comment in the editor and save it. The comment shows as a card under its line, marked `unsent`.
 3. Click `Send`. It shows the number of unsent comments. Every unsent comment goes to the agent as one prompt.
    If the folder has more than one agent, the bar lists them and you click one.
@@ -252,7 +253,7 @@ and sends to the agent in it.
    only), and for your own comments `Edit` and `Delete` (it asks for a second click). A thread the agent resolved
    shows `new` until you look at it.
 5. `Archive` moves the resolved threads to `archive.jsonl` after a second click. `Mark viewed` marks the
-   selected file as read, and `Mark unviewed` takes the mark off.
+   selected file as read and folds it to its header (a click on the header opens it), and `Mark unviewed` takes the mark off.
 
 The header has `Working tree` and `Branch`, which are the two diff specs of the pane above (`b` there), and
 `Refresh`. The panel also reloads when the repository or the review state changes, and every 10 seconds. The

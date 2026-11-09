@@ -1,35 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeState } from "../src/decode.ts";
 import { initModel, update } from "../src/update.ts";
 import type { Cmd, Model, Msg, ReviewError } from "../src/types.ts";
-import { fixture } from "./fake-host.ts";
+import { answer, fixtureFile, fixtureState, loadedModel, reload, steps } from "./model.ts";
 
-const state = decodeState(JSON.parse(fixture("state")));
-const file = decodeFile(JSON.parse(fixture("file")));
+const state = fixtureState();
+const file = fixtureFile();
 
-// Feeds messages one after another and collects every Cmd.
-function steps(m: Model, ...msgs: Msg[]): { model: Model; cmds: Cmd[] } {
-  const cmds: Cmd[] = [];
-  for (const msg of msgs) {
-    const [next, out] = update(m, msg);
-    m = next;
-    cmds.push(...out);
-  }
-  return { model: m, cmds };
-}
 const loads = (cmds: Cmd[]) => cmds.filter((c) => c._tag === "Load");
 const opened: Msg = { _tag: "Opened", root: "/repo", target: "t7" };
 const trig = (source: "watch" | "timer" | "refresh" | "write" | "change" = "watch"): Msg => ({ _tag: "Triggered", source });
 const failedMsg = (error: ReviewError, op: "load" | "watch-store" | "watch-root" = "load"): Msg => ({ _tag: "Failed", op, error });
 
-// A model that has loaded src/a.rs under the working tree and waits.
-function loaded(): Model {
-  const { model, cmds } = steps(initModel(), opened);
-  const load = cmds[0];
-  assert.ok(load && load._tag === "Load");
-  return steps(model, { _tag: "Loaded", key: load.key, state, file }).model;
-}
+// A model that has loaded every file under the working tree, with src/a.rs on top, and waits.
+const loaded = (): Model => loadedModel(state, file);
 
 test("opening with no folder shows the banner and loads nothing", () => {
   const { model, cmds } = steps(initModel(), { _tag: "Opened", root: null, target: null });
@@ -42,13 +26,13 @@ test("opening starts one load with no spec, so the CLI reads meta.json", () => {
   const { model, cmds } = steps(initModel(), opened);
   assert.equal(model.inFlight, true);
   assert.equal(model.target, "t7");
-  assert.deepEqual(cmds, [{ _tag: "Load", key: model.key, root: "/repo", spec: null, selected: null }]);
+  assert.deepEqual(cmds, [{ _tag: "Load", key: model.key, root: "/repo", spec: null }]);
 });
 
 test("a reply replaces the state and the file, selects the file, takes the spec and clears the banner", () => {
   const m = loaded();
   assert.equal(m.state, state);
-  assert.equal(m.file, file);
+  assert.equal(m.files.get("src/a.rs"), file);
   assert.equal(m.selected, "src/a.rs");
   assert.deepEqual(m.spec, { kind: "worktree" });
   assert.equal(m.inFlight, false);
@@ -59,13 +43,13 @@ test("the store watch starts once, from the first reply", () => {
   const first = steps(initModel(), opened);
   const load = first.cmds[0];
   assert.ok(load && load._tag === "Load");
-  const reply: Msg = { _tag: "Loaded", key: load.key, state, file };
+  const reply: Msg = { _tag: "Loaded", key: load.key, state };
   const { model, cmds } = steps(first.model, reply);
-  assert.deepEqual(cmds, [{ _tag: "WatchStore", dir: "/state" }]);
-  const again = steps(model, trig("timer"));
+  assert.deepEqual(cmds.filter((c) => c._tag === "WatchStore"), [{ _tag: "WatchStore", dir: "/state" }]);
+  const again = steps(answer(model, cmds).model, trig("timer"));
   const second = again.cmds[0];
   assert.ok(second && second._tag === "Load");
-  assert.deepEqual(steps(again.model, { _tag: "Loaded", key: second.key, state, file }).cmds, []);
+  assert.deepEqual(reload(again.model, state).cmds.filter((c) => c._tag === "WatchStore"), []);
 });
 
 test("E: WatchUnavailable -> the timer only, and the watch is tried again after the next load", () => {
@@ -78,7 +62,7 @@ test("E: WatchUnavailable -> the timer only, and the watch is tried again after 
   const retry = steps(lost, trig("timer"));
   const load = retry.cmds[0];
   assert.ok(load && load._tag === "Load");
-  assert.deepEqual(steps(retry.model, { _tag: "Loaded", key: load.key, state, file }).cmds, [{ _tag: "WatchStore", dir: "/state" }]);
+  assert.deepEqual(steps(retry.model, { _tag: "Loaded", key: load.key, state }).cmds.filter((c) => c._tag === "WatchStore"), [{ _tag: "WatchStore", dir: "/state" }]);
 });
 
 test("a trigger during a load starts nothing, and the end of the load starts one more", () => {
@@ -87,7 +71,7 @@ test("a trigger during a load starts nothing, and the end of the load starts one
   assert.equal(model.pending, true);
   const load = cmds[0];
   assert.ok(load && load._tag === "Load");
-  const after = steps(model, { _tag: "Loaded", key: load.key, state, file });
+  const after = steps(model, { _tag: "Loaded", key: load.key, state });
   assert.equal(loads(after.cmds).length, 1);
   assert.equal(after.model.pending, false);
   assert.equal(after.model.inFlight, true);
@@ -98,10 +82,10 @@ test("a burst of fifty triggers runs two loads at most", () => {
   const first = steps(initModel(), opened, ...burst);
   const a = first.cmds[0];
   assert.ok(a && a._tag === "Load");
-  const second = steps(first.model, { _tag: "Loaded", key: a.key, state, file }, ...burst);
+  const second = steps(first.model, { _tag: "Loaded", key: a.key, state }, ...burst);
   const b = second.cmds.find((c) => c._tag === "Load");
   assert.ok(b && b._tag === "Load");
-  const third = steps(second.model, { _tag: "Loaded", key: b.key, state, file });
+  const third = steps(second.model, { _tag: "Loaded", key: b.key, state });
   assert.equal(loads(first.cmds).length + loads(second.cmds).length + loads(third.cmds).length, 3);
   // Each burst met exactly one load, so one more load per burst and not fifty.
   assert.equal(loads(first.cmds).length, 1);
@@ -127,16 +111,17 @@ test("a reply for the previous spec is dropped, and the load that was asked for 
   assert.ok(old && old._tag === "Load");
   const chosen = steps(busy, { _tag: "SpecChosen", spec: { kind: "branch", base: "main" } });
   assert.deepEqual(chosen.cmds, []);
-  const stale = steps(chosen.model, { _tag: "Loaded", key: old.key, state, file });
+  const stale = steps(chosen.model, { _tag: "Loaded", key: old.key, state });
   assert.equal(stale.model.state, m.state);
   assert.deepEqual(stale.model.spec, { kind: "branch", base: "main" });
-  assert.deepEqual(stale.cmds, [{ _tag: "Load", key: stale.model.key, root: "/repo", spec: { kind: "branch", base: "main" }, selected: "src/a.rs" }]);
+  assert.deepEqual(stale.cmds, [{ _tag: "Load", key: stale.model.key, root: "/repo", spec: { kind: "branch", base: "main" } }]);
 });
 
-test("switching the spec keeps the selected file and loads with the new spec", () => {
+test("switching the spec keeps the selected file, drops every diff fetched and loads with the new spec", () => {
   const { model, cmds } = steps(loaded(), { _tag: "SpecChosen", spec: { kind: "branch", base: "main" } });
   assert.equal(model.selected, "src/a.rs");
-  assert.deepEqual(cmds, [{ _tag: "Load", key: model.key, root: "/repo", spec: { kind: "branch", base: "main" }, selected: "src/a.rs" }]);
+  assert.equal(model.files.size, 0);
+  assert.deepEqual(cmds, [{ _tag: "Load", key: model.key, root: "/repo", spec: { kind: "branch", base: "main" } }]);
   assert.deepEqual(steps(loaded(), { _tag: "SpecChosen", spec: { kind: "worktree" } }).cmds, []);
 });
 
@@ -145,16 +130,27 @@ test("the spec a reply names replaces the one asked for", () => {
   const load = cmds[0];
   assert.ok(load && load._tag === "Load");
   const fallback = { ...state, spec: { kind: "worktree" as const }, base: null, notices: ["no base branch found"] };
-  const after = steps(model, { _tag: "Loaded", key: load.key, state: fallback, file }).model;
+  const after = steps(model, { _tag: "Loaded", key: load.key, state: fallback }).model;
   assert.deepEqual(after.spec, { kind: "worktree" });
   assert.deepEqual(after.state?.notices, ["no base branch found"]);
 });
 
-test("choosing a file selects it and loads", () => {
+test("choosing a file selects it and asks the stream to scroll to its header, with no fetch when it is there", () => {
   const { model, cmds } = steps(loaded(), { _tag: "FileChosen", path: "notes.txt" });
   assert.equal(model.selected, "notes.txt");
   assert.equal(model.selection, null);
-  assert.deepEqual(cmds, [{ _tag: "Load", key: model.key, root: "/repo", spec: { kind: "worktree" }, selected: "notes.txt" }]);
+  assert.deepEqual(model.reveal, { key: "notes.txt|file" });
+  assert.deepEqual(cmds, []);
+});
+
+test("choosing a file that has not arrived fetches it first, with the files after it", () => {
+  const { model } = steps(initModel(), opened);
+  const arrived = steps(model, { _tag: "Loaded", key: model.key, state });
+  const idle = { ...arrived.model, inFlight: false, batch: [] }; // the fetch that began with the state has not been answered yet
+  const { cmds } = steps(idle, { _tag: "FileChosen", path: "src/a.rs" });
+  const fetch = cmds[0];
+  assert.ok(fetch && fetch._tag === "LoadFiles");
+  assert.deepEqual(fetch.paths, ["src/a.rs", "src/b.rs", "mod"]); // the folded img.png is left out, and the files above come last
 });
 
 test("a file switch with the editor open is ignored with a status", () => {
@@ -169,7 +165,7 @@ test("a failed load keeps the screen", () => {
   const m = loaded();
   const { model } = steps(m, trig("timer"), failedMsg({ _tag: "BackendFailed", code: 1, stderr: "git failed" }));
   assert.equal(model.state, m.state);
-  assert.equal(model.file, m.file);
+  assert.equal(model.files, m.files);
   assert.equal(model.status, "git failed");
   assert.equal(model.banner, null);
   assert.equal(model.inFlight, false);
@@ -223,26 +219,33 @@ test("a good reply after a banner clears it", () => {
   const again = steps(stopped, trig("refresh"));
   const load = again.cmds[0];
   assert.ok(load && load._tag === "Load");
-  const { model } = steps(again.model, { _tag: "Loaded", key: load.key, state, file });
+  const { model } = steps(again.model, { _tag: "Loaded", key: load.key, state });
   assert.equal(model.banner, null);
   assert.equal(model.state, state);
 });
 
-test("a path that left the diff is replaced by the file the reply names", () => {
-  const { model, cmds } = steps(loaded(), { _tag: "FileChosen", path: "gone.rs" });
+test("a path that is not in the diff is not chosen", () => {
+  const m = loaded();
+  assert.deepEqual(steps(m, { _tag: "FileChosen", path: "gone.rs" }), { model: m, cmds: [] });
+});
+
+test("a reply that leaves the sidebar's file out of the diff selects the first file, and drops its diff", () => {
+  const { model, cmds } = steps(loaded(), trig("timer"));
   const load = cmds[0];
   assert.ok(load && load._tag === "Load");
-  const after = steps(model, { _tag: "Loaded", key: load.key, state, file }).model;
-  assert.equal(after.selected, "src/a.rs");
+  const left = { ...state, files: state.files.filter((f) => f.path !== "src/a.rs") };
+  const after = steps(model, { _tag: "Loaded", key: load.key, state: left }).model;
+  assert.equal(after.selected, "img.png");
+  assert.equal(after.files.has("src/a.rs"), false);
 });
 
 test("a reply with no files clears the selection", () => {
   const { model, cmds } = steps(loaded(), trig("timer"));
   const load = cmds[0];
   assert.ok(load && load._tag === "Load");
-  const after = steps(model, { _tag: "Loaded", key: load.key, state: { ...state, files: [] }, file: null }).model;
+  const after = steps(model, { _tag: "Loaded", key: load.key, state: { ...state, files: [] } }).model;
   assert.equal(after.selected, null);
-  assert.equal(after.file, null);
+  assert.equal(after.files.size, 0);
 });
 
 test("the error rows of the later work are in the table", () => {

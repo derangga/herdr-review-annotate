@@ -60,22 +60,20 @@ written below.
        picker up                                       nothing
        rows.jumpStop(model, forward) is null           status "no comments in this review"
          the order: threads not in the diff, then the files in the sidebar's order, in a file the cards as
-         drawn (no row first, then by row). A file other than the shown one with FileSummary.threads > 0 is
-         one stop, its threads not being loaded
+         drawn (no row first, then by row). A file whose threads are not drawn (not fetched yet, or folded) with
+         FileSummary.threads > 0 is one stop
          from the focused thread: the next or previous stop, wrapping at the ends. Nothing focused: next is
-         the shown file's first stop, previous the last stop before it
-       a thread                                         focus = id, window = start above it, confirm null, no Cmd
-       a file                                           selected = path, jump = { path, first | last }, Cmd.Load
-                                                        (as FileChosen); focus stays until the file is there
-  -> Loaded with the key of that load                   (pure)
-       jump set                                         focus and window = the file's first (or last) card, jump
-                                                        null. No card -> status "no comments in <path>"
-       the file shown changed                           window = the whole file, with a new list id
-  -> FileChosen, SpecChosen, Failed { load }            jump null
-  -> the window: the diff list is a `list`, which a script cannot scroll, so layout starts it at
-     windowStart (two lines above the line the card hangs from, or the card) under a new list id, which starts
-     at the top, with a first item "Show the start of the file"
--> EarlierClicked                                       the first item of a window: window = the whole file, new list id
+         the selected file's first stop, previous the last stop before it
+       a thread                                         focus = id, reveal = that card's key (gui-stream.md),
+                                                        confirm null, no Cmd
+       a file, fetched but folded                       the file is opened (folds[path] = false) and the jump lands at
+                                                        once, as on a thread
+       a file, not fetched                              opened, jump = { path, first | last }, reveal = its header,
+                                                        and the fetch starts with it; focus stays until it is there
+  -> FilesLoaded with the key of that fetch             (pure)
+       jump set and its file is in the reply            focus = the file's first (or last) card, reveal = that card,
+                                                        jump null. No card -> status "no comments in <path>"
+  -> FileChosen, SpecChosen, Failed { load | files }    jump null
 -> a key n or shift+n on the panel                     only while no editor, question or picker is up
   -> rows.panelKey -> ThreadJumped                     the root element tracks the nav focus handle
 -> the "focus" command from herdr-app                  runner.listen -> main.ts gives nav the keyboard
@@ -93,11 +91,13 @@ Cardinality: once per user action.
 
 ## Tests
 
-Each `E:` line is one test. The jumps are tested in `test/jump.test.ts`: the order across files and the cards on
-screen, wrap-around both ways, nothing focused, no thread, a thread already loaded, a jump into another file that
-waits for the load (forward lands on the first card, back on the last), a stale reply leaving the jump waiting,
-a failed load, a file choice or a spec choice dropping it, a file that arrives empty, the editor open, the keys
-(`n`, `shift-n`, `N`, other chords, nothing while the editor, a question or the picker is up), the window (where the list starts, the first item, a click on it, a file change dropping it), and the commands. Also: the argv of each of the six calls, `--as user` on reply, resolve and
+Each `E:` line is one test. The jumps are tested in `test/jump.test.ts`: the order across files and the cards
+drawn, wrap-around both ways, nothing focused, no thread, a thread already drawn, a folded file (landed on at once,
+or opened and waited for), a jump into a file not fetched yet that waits for the fetch (forward lands on the first
+card, back on the last), a stale reply leaving the jump waiting, a failed fetch, a file choice or a spec choice dropping it,
+a file that arrives empty, the editor open, the keys (`n`, `shift-n`, `N`, other chords, nothing while the editor, a
+question or the picker is up), and the commands. `test/stream.test.ts` checks that the card index a jump scrolls to
+is the card's item. Also: the argv of each of the six calls, `--as user` on reply, resolve and
 reopen and on nothing else, the edit and delete buttons absent on an agent's comment, a click on Delete only
 asks and the row has the right sentence and buttons, only DeleteConfirmed writes, Cancel and Esc leave the
 model as it was, focusing another comment drops the question and a reload keeps it while the comment is there, a `seen` for a thread that is not new is never sent, and the editor text survives a failed reply.

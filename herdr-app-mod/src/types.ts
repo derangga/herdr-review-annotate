@@ -123,8 +123,9 @@ export type ReviewError =
   | { _tag: "AmbiguousTarget"; candidates: Candidate[] }
   | { _tag: "WatchUnavailable" };
 
-// from and to are row indexes, the first and last row that has a line on `side`. One row is a click.
-export type Selection = { path: string; side: "old" | "new"; from: number; to: number };
+// from and to are row indexes, the first and last row that has a line on `side`. `anchor` is the row a drag began on, which
+// is from or to.
+export type Selection = { path: string; side: "old" | "new"; from: number; to: number; anchor: number };
 
 // Where a new comment points, as the batch the CLI reads names it. A file comment has only the path.
 export type NewAnchor = { path: string; old_path: string | null; side: "old" | "new" | null; line: number | null; end_line: number | null };
@@ -136,28 +137,50 @@ export type Editor = { kind: "comment" | "reply" | "edit"; anchor: NewAnchor | n
 // The panel's own settings, kept in a file under appHome(): which side the sidebar is on, and whether it shows.
 export type Panel = { side: "left" | "right"; open: boolean };
 
-// A jump into a file that is not loaded yet: the file to wait for, and which of its threads to land on.
+// A next or previous comment into a file whose threads are not loaded yet: the file to wait for, and which of its
+// threads to land on.
 export type Jump = { path: string; edge: "first" | "last" };
 
-// The diff list cannot be scrolled from code, so a jump shows its target by starting the list a few lines above
-// it. `from` is the key of the first item (null for the whole file) and `id` names the list: a new id is a new
-// list, which starts at the top, so every jump and every return to the whole file gets one.
-export type DiffWindow = { from: string | null; id: number };
+// A request to scroll the stream so the item with this key is at the top. A new object is a new request.
+export type Reveal = { key: string };
+
+// The row the pointer is over, if it is a row of a file's diff.
+export type Hover = { path: string; row: number };
+
+// A left press on a row, until the button is released. `row` is where it began, `head` the row the pointer is on now, and
+// `moved` says the pointer left the first row, so the press is a drag and not a click.
+export type Drag = { path: string; row: number; head: number; moved: boolean };
+
+// A grip on the scrollbar's thumb: where the pointer was and where the stream was.
+export type Grip = { y: number; offset: number };
 
 export type Model = {
   root: string | null;
   target: string | null;
   spec: Spec | null; // null until the first reply names the spec meta.json holds
-  key: string; // root, spec and selected path as one value, to drop a stale reply
+  key: string; // root and spec as one value, to drop a stale reply
   state: State | null;
-  file: FileView | null;
-  selected: string | null;
+  files: ReadonlyMap<string, FileView>; // the diffs loaded so far, by path
+  selected: string | null; // the sidebar's file: the topmost one in the stream, or the one a click chose
+  top: string | null; // the key of the first item on screen
+  visible: string[]; // the paths of the files on screen, topmost first
+  reveal: Reveal | null; // a scroll the view has not made yet
+  width: number; // the stream's width, for the height a card takes
+  height: number; // the stream's height, the part of it on screen
+  offset: number; // how far the stream is scrolled, in pixels from its top; the mod scrolls it itself
+  total: number; // the stream's height in pixels as the last Scrolled saw it, to clamp the offset and size the thumb
+  hover: Hover | null; // the code row under the pointer: the one that draws a [+]
+  drag: Drag | null; // a press on a row that has not been released
+  grip: Grip | null; // a press on the scrollbar's thumb that has not been released
+  folds: ReadonlyMap<string, boolean>; // files the user folded (true) or opened (false); the rest follow `viewed`
+  dirty: ReadonlySet<string>; // loaded files to fetch again
+  skipped: ReadonlySet<string>; // files whose last fetch failed, not tried again until the next load
+  batch: readonly string[]; // the files the running fetch is for
   expanded: ReadonlySet<string>;
   selection: Selection | null;
   focus: string | null; // the comment the thread buttons act on
   confirm: string | null; // the comment a click on delete asked about, until Delete or Cancel answers
   jump: Jump | null; // a next or previous comment that waits for its file to load
-  window: DiffWindow; // where the diff list starts, so a jump can show a thread without a scroll position
   editor: Editor | null;
   saving: boolean; // a draft is being written, so a second save does nothing
   picker: Candidate[] | null;
@@ -183,18 +206,28 @@ export type Trigger = "watch" | "timer" | "refresh" | "write" | "change" | "edit
 export type Msg =
   | { _tag: "Opened"; root: string | null; target: string | null }
   | { _tag: "Triggered"; source: Trigger }
-  | { _tag: "Loaded"; key: string; state: State; file: FileView | null }
+  | { _tag: "Loaded"; key: string; state: State }
+  | { _tag: "FilesLoaded"; key: string; files: FileView[] }
+  | { _tag: "Scrolled"; offset: number; total: number; top: string | null; visible: string[]; revealed: boolean }
+  | { _tag: "Wheeled"; dy: number }
+  | { _tag: "ThumbGrabbed"; y: number }
+  | { _tag: "ThumbMoved"; y: number }
+  | { _tag: "TrackClicked"; y: number }
+  | { _tag: "Resized"; width: number; height: number }
+  | { _tag: "Hovered"; path: string; row: number; on: boolean }
+  | { _tag: "RowPressed"; path: string; row: number }
+  | { _tag: "Released" }
+  | { _tag: "FoldToggled"; path: string }
   | { _tag: "Failed"; op: Op; error: ReviewError }
   | { _tag: "SpecChosen"; spec: Spec }
   | { _tag: "FileChosen"; path: string }
   | { _tag: "EditorCancelled" }
-  | { _tag: "RowClicked"; row: number }
+  | { _tag: "PlusClicked"; path: string; row: number }
+  | { _tag: "SelectionCleared" }
   | { _tag: "FileCommentClicked" }
-  | { _tag: "CommentClicked" }
   | { _tag: "EditorSaved"; text: string }
   | { _tag: "ThreadAction"; id: string; action: ThreadActionKind }
   | { _tag: "ThreadJumped"; forward: boolean }
-  | { _tag: "EarlierClicked" }
   | { _tag: "SendClicked"; threads?: string[] }
   | { _tag: "PickerChosen"; target: string }
   | { _tag: "PickerCancelled" }
@@ -229,11 +262,12 @@ export type WriteOp =
   | { kind: "seen"; id: string };
 export type WriteKind = WriteOp["kind"] | "viewed";
 
-export type Op = "load" | "watch-root" | "watch-store" | "write" | "seen" | "send" | "archive" | "viewed" | "panel";
+export type Op = "load" | "files" | "watch-root" | "watch-store" | "write" | "seen" | "send" | "archive" | "viewed" | "panel";
 
 // What to do next.
 export type Cmd =
-  | { _tag: "Load"; key: string; root: string; spec: Spec | null; selected: string | null }
+  | { _tag: "Load"; key: string; root: string; spec: Spec | null }
+  | { _tag: "LoadFiles"; key: string; root: string; spec: Spec | null; paths: string[] }
   | { _tag: "WatchStore"; dir: string }
   | { _tag: "Notify"; title: string; body: string }
   | { _tag: "Write"; root: string; spec: Spec | null; op: WriteOp }

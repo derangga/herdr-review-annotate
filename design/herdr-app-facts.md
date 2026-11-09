@@ -308,15 +308,10 @@ handle, that sees `escape` while the input has the keyboard, so a key typed in a
 handler. The filter box copies it. That Esc and Enter behave so in this mod, and that `/` arrives as `"/"`, are
 **not verified**: typing needs a person (no synthetic input is allowed).
 
-**Scrolling a list.** `gpui-kit.d.ts` has `VirtualListScrollHandle` with `scroll_to_item(index, "top" | "center")`,
-and `track_scroll(handle)` is documented for a virtual list. The diff is a `list`. `herdr-app check` on a build
-that called `track_scroll` on the `list` printed `WARN gpui_shell::materialize::components::list: track_scroll is
-ignored on a list: its scroll position is GPUI's own, filed under the id it was built with, which is where a
-Scrollbar of that name finds it`. No other call in the declarations scrolls a list or a scroll area from code
-(searched `scroll_to`, `scroll_by`, `ScrollHandle`, `reveal`). `v_virtual_list` and `uniform_list` do take the
-handle but need each item's height, which a card of wrapped text does not have. So the panel starts the list a
-few lines above the target instead, as a new list (new id), which begins at the top (gui.md). That a list built
-under a new id begins at its top is what the warning's text says, and is not verified in the window.
+**Scrolling a list.** A `list` cannot be scrolled from code: `herdr-app check` on a build that called `track_scroll` on the
+`list` printed `WARN ... track_scroll is ignored on a list: its scroll position is GPUI's own`. `v_virtual_list` takes the
+handle, so the diff became one (section 10), and later the mod scrolled it itself (section 12). The workaround this paragraph used to describe (a new list id that starts at
+the top, and a first row that shows the rest of the file) is gone.
 
 **Window.** The window did not redraw: with the panel open in a throwaway tab, a shot after 25 s, one after
 55 s, one after another 30 s and 20 s were all byte-identical (md5 `f077046c...`), and a `tab.rename` of that tab
@@ -350,6 +345,136 @@ byte-identical to it (md5 `f2258ab1...`), still showing the earlier tab after 8 
 stopped redrawing. The rust, toml, lock, ts, js, shell, docker, make and license drawings were therefore not seen
 in the window; they are plain strokes in the same style and the stage check loaded them.
 
+## 10. A virtual list for the stream of every file (2026-11-09)
+
+**No longer used.** The stream left `v_virtual_list` for a stream the mod scrolls itself (section 12), because a list row can report only a
+click. This section is what the list spike found, kept for why it was left and for the findings that still hold (the import, what throws
+inside a renderer).
+
+Spike: a throwaway mod (`spike-vlist`, deleted) drew `v_virtual_list("spike-list", 200, sizes, key, render)` with one height per
+item (20, 32, 44, 56, 68 in turn), inside the same `div().w_full().min_w(900).h_full()` in an `overflow_x_scrollbar()` box that the
+panel uses, a `VirtualListScrollHandle` given by `track_scroll`, a `Scrollbar.vertical("spike-list").viewport_from_layout()` beside
+it, and an `on_scroll_wheel` on the box. Its timer wrote what it saw to a file under `data/`. The window drew only now and then
+(a frame after about three minutes, as in section 7), so only the first frames were seen. **Seen** means it ran in the window,
+**not yet seen in the window** means it is read from `gpui-kit.d.ts` or only `herdr-app check` ran it, and the user is to confirm it in
+their own panel.
+
+- **The import.** Seen: `v_virtual_list` and `VirtualListScrollHandle` come from `gpui-base`, not `gpui-kit` (`list` and
+  `uniform_list` are in `gpui-kit`). `check` fails on the wrong module with `Could not find export`.
+- **One height per item.** The signature is `v_virtual_list(id, count, item_sizes, get_key, render(range))`, `item_sizes` a number
+  or an array exactly `count` long. Seen: a list of 200 items with 200 sizes, then a list of 202 items with 202 sizes, drew.
+  **Not yet seen in the window:** that each item takes exactly its stated height, and what a 100,000 number array costs on every
+  render (the declarations warn that it crosses the language boundary each time). `check` does not run the renderer, so it shows
+  neither.
+- **The visible range.** Seen: `render(range)` is called twice for a frame. The first call is `{start: 0, end: 1}` (the one item it
+  measures, the first by default, or the one `with_item_to_measure_index` names), the second is the items on screen, for example
+  `[183, 202)`. Four calls in two frames were `[0,1] [183,202] [0,1] [183,202]`. The mod keeps the last two ranges and takes the
+  wider. The range is the items the list builds, which may include a few outside the viewport.
+- **Getting the range out.** Seen: the renderer may store the range in a plain field of the view (a field assignment throws
+  nothing) and a `cx.timer.every(150, ...)` callback read it back, one tick after the frame. A timer callback may dispatch and call
+  `cx.notify()` as any event handler. So the visible range reaches the model as a message sent from a timer, and the model
+  does not notify for a scroll that changed nothing it draws.
+- **What throws inside the renderer.** Seen, with these messages:
+  - `cx.notify()`: ``TypeError: cx.notify() is not allowed during the `layout` phase; request a re-render from an event handler instead``.
+  - `on_click` on an element built in it: ``TypeError: `on_click` cannot be registered from a virtual list's item renderer: the rows are rebuilt every frame ... Use `on_item_click((key, cx) => ...)` or `on_item_secondary_click(...)` ``. Other handlers, new state and
+    `focus_handle()` are refused the same way, as the declarations say.
+  - Not an error, seen: `handle.scroll_to_item(...)` called inside the renderer, and inside `render()`.
+- **`scroll_to_item(index, "top" | "center")`.** Seen: it does not throw, from `render()`, from the renderer and from a timer. The
+  one frame that followed a scroll to the last item (index 201 of 202) had the range `[183, 202)`: the end of the list stops the
+  scroll short, as the TUI's stream does. **Not yet seen in the window:** that `scroll_to_item(i, "top")` puts item `i` first in the range
+  (a frame after `scroll_to_item(60, "top")` in `render()` and `scroll_to_item(50, "top")` in the renderer showed `[33, 53)`,
+  which neither explains, so the mod calls it once, from a handler or the timer, after the model changes, and never from
+  the renderer); and where the scroll lands when the heights above the target changed in the same update (the
+  declarations say the scroll is resolved before the next frame, so it should use the new heights).
+- **The scroll position survives a changed size array.** Not yet seen. The mod depends on it when a file's placeholder is replaced by its
+  diff: it asks for the item at the top of the screen again (`reveal`) whenever a file above the screen arrives.
+- **The scrollbar and the horizontal scroll box.** `Scrollbar.vertical("<list id>").viewport_from_layout()` beside the list and the
+  `overflow_x_scrollbar` box with `min_w(width)` around it are the shapes the old `list` had. `check` passes with them and prints no
+  WARN (the `track_scroll is ignored on a list` line is gone). Not yet seen in the window: that the bar drives the list and that the
+  box scrolls sideways with it.
+- **A click.** `on_item_click(key)` reports the key `get_key(index)` gave, as for a `list`. Not yet seen on the stream.
+
+## 11. Clicks, hover and drag on the stream's rows (2026-11-09)
+
+**Superseded by section 12.** This is what a row of a virtual list could and could not do. The user's tests showed that the `[+]` coloured by
+the row's hover and the gutter test on a press did not do what the TUI does, and section 12 replaced the list. Nothing below is built
+any more.
+
+Read from `gpui-kit.d.ts` and `AGENTS.md`; `herdr-app check` ran the staged mod. No window was driven (no synthetic input is
+allowed), so everything marked **not yet seen in the window** is for the user to confirm in their own panel.
+
+- **What a row can report.** `on_item_click(key)` is the key and nothing else. `on_item_secondary_click(key, event)` gives the
+  right-button press with `position`, and `local_position` and `bounds` against the row's own box, but it is the right button, and the
+  mod has no use for a context menu. `on_click` and every other handler throw inside the item renderer (seen, section 10).
+- **A press on a box around the list.** `on_mouse_down(button, handler)` is allowed on an element outside the renderer. Its event
+  has `position` (window), `local_position` and `bounds` (against that element, absent before the first paint), `click_count` and
+  `modifiers` (`shift`, `control`, `alt`, `platform`). It fires on the press, before the click, and the declarations say the row's own
+  handler and an outer one for the same button both run in bubble order. So the mod keeps the press's x and shift in a plain field and
+  reads them in `on_item_click`. **Not yet seen in the window:** that a press on a list row reaches an outer `on_mouse_down` at all
+  (a list row could stop it), that `local_position` is filled in, and that its x is against the box's moved position.
+- **Which box.** The stream sits in `review-stream-x` (`overflow_x_scrollbar`, fixed in the pane) and inside it a `w_full().min_w(width)`
+  content box that moves left as the code scrolls sideways. A local x against `review-stream-x` would be the pointer's place in the
+  pane, so the gutter would slide away from x 0 on a sideways scroll. The mod puts the handler on the content box
+  (`review-stream-content`), whose bounds move with the scroll, so the gutter stays at x 0. **Not yet seen in the window:** that
+  GPUI gives the content box's moved bounds to the local position. Test: scroll sideways and click a `+`.
+- **Hover.** `.hover(declare)` takes a callback that fills a detached element with styles ("Styles applied while the pointer is over the
+  element"), so it is a style and not a handler, and the declarations list handlers, new state and focus handles as what a list
+  renderer refuses. No `group_hover` exists, so a child cannot show when its parent is hovered. The mod uses what is there: the row has a
+  hover style that changes the row's text colour, and the `+` is an `svg`, which is tinted with the text colour it inherits, so it is a
+  filled button that follows the row (the rest of the row names its colours). **Seen in the window:** a `hover` inside the renderer does
+  not throw and applies to the element under the pointer (the `+` filled when the pointer was on it). **Not yet seen:** that an `svg`
+  inherits the text colour of a hovered parent. If it does not, the `+` shows only on the cursor's row.
+- **Drag: not built.** A drag needs to know which row the pointer is over at each move. `on_mouse_down`, `on_mouse_move` ("delivered
+  while this element is hovered") and `on_mouse_up` give y against the box, and `on_mouse_move` carries no button state, but nothing
+  gives the list's scroll offset in pixels: `VirtualListScrollHandle` has `scroll_to_item`, `scroll_to_bottom` and `release`, and the
+  renderer's range names items, not how far the first one is scrolled. Without the offset a y cannot be turned into a row, and the
+  error is up to one row (20 px for code), which makes a range off by one at both ends. `on_item_click` cannot fill the gap: a drag
+  across rows ends in no click, and a click names only the row it finished on. Wheel events (`on_scroll_wheel`) could be summed, but the
+  scrollbar, `scroll_to_item` and a keyboard scroll move the list without one, so the sum would drift. There is also no auto-scroll
+  while the pointer is outside, which the TUI has. So a range is a shift-click, which needs only the key and the modifiers.
+- **Esc.** The keys reach the mod only along the focus path (section 8), so a click on a row asks `main.ts` to give the keyboard back to
+  the panel's handle (`focusNav`), after which Esc is `rows.panelKey`'s `SelectionCleared`. **Not yet seen in the window:** that Esc arrives
+  as `"escape"` on that handle after a click on a row.
+
+## 12. A stream the mod scrolls itself (2026-11-09)
+
+Spike: a throwaway mod (`zz-scroll-spike`, deleted) showed about 6,000 fake code rows of 20 px, with a fake card of 2 to 6 wrapped lines every
+40 rows, in the shape the panel uses now: a pixel `offset` in the view's state changed by `on_scroll_wheel` on a box inside the
+`overflow_x_scrollbar` box, a prefix sum of the heights, and only the items that overlap the screen built each render as plain children of an
+`overflow_hidden` box, the first one at `top(-shift)` in an absolutely placed column. It had its own track and thumb on the right, a `[+]`
+(`icons/plus.svg` tinted by `theme().accent`) on the row that `on_hover` and `on_mouse_move` named, a drag that `on_mouse_down` began and
+`on_hover` extended with `on_mouse_up` on the box ending it, a status line with counters for the events, and a chip that drew the cards at a
+fixed or at their natural height. Its source was in the session's scratch folder, not in the repo. `herdr-app check` passed with no WARN.
+The user tried it in their own window and reported that it behaves as they expected: the scrolling, the `[+]` following the mouse and the
+drag selection. They gave no numbers (no render times, no event counts), so those are not recorded here. **Seen** below means that report;
+**not yet seen** means read from `gpui-kit.d.ts` or only `herdr-app check` ran it.
+
+- **Handlers on ordinary elements work.** Seen: `on_hover`, `on_mouse_move`, `on_mouse_down`, `on_mouse_up` and `on_click` on elements built in
+  `render()` each frame, with ids derived from the row, did what they should. Only a list item's renderer forbids them (section 10).
+  The `[+]` is `icons/plus.svg` drawn by `svg(...)` with `text_color(theme().accent)`, shown only for the hovered row.
+- **The mod's own offset scrolls smoothly enough.** Seen (reported as expected, with no numbers): wheel and trackpad scrolling moved the
+  stream, with the offset from `ScrollWheelEvent.delta` (pixels; `delta_lines` times 20 px when the device reports lines), flipped in sign
+  (content up is offset down), clamped to the content. The panel keeps that sign.
+- **Hover and drag.** Seen: the `[+]` follows the mouse, a drag selects rows between the press and the pointer, the selected rows are tinted.
+  The panel's row sends both `on_hover` and `on_mouse_move` and both are idempotent.
+- **A vertical wheel over the sideways box.** Read from GPUI's behaviour and the declarations, **not separately seen**: an
+  `overflow_x_scrollbar` box that has no vertical overflow takes a vertical wheel as a sideways scroll, and stops the event. So the wheel
+  handler sits on the inner content (which gets the event first) and stops it unless the gesture is mostly sideways (`|dx| > |dy|`), which
+  is left to the box. The spike worked with it; the panel does the same (`rows.wheelDelta`).
+- **No button state in a move.** `MouseMoveEvent` carries `position`, `local_position`, `bounds` and `modifiers`, and no button, so a drag
+  cannot be told to have ended from a move. The panel ends it on `on_mouse_up` on its root element (anywhere in the panel), and a press
+  starts over. A release outside the window is **not seen** and is not handled beyond that.
+- **The scrollbar.** The thumb drag (`on_mouse_move` on the stream box while a grip is set, from the press's window `position.y`) and the click
+  on the track (`local_position.y`) were in the spike; the user's report does not single them out. **Not yet seen separately.**
+- **Hover after a wheel tick with a still pointer.** The row under the pointer changes without a move. Whether GPUI fires `on_hover` then is
+  **not seen**; the `[+]` is allowed to wait for the next move.
+- **Cards.** The spike's chip drew cards at a fixed estimated height or a natural one; the user gave no preference. The panel draws every
+  item at its counted height (a card's box is its estimate, overflow hidden), because the prefix sums, the scrollbar, a scroll to an item and
+  the offset all use those numbers, and a natural height that differs from the estimate moves everything under it away from where the offset says it is.
+- **Render time.** Not measured by the user. The panel renders only the items on screen (a few dozen elements) and keeps the stream's layout
+  while nothing it is built from changes, so a wheel tick or a hover does not rebuild it. The time of a render in the real panel, and whether
+  the 'interrupted' banner can still appear, are **not yet seen**.
+
 ## Still unknown
 
 1. That the staged binary survives an app restart (documented, not run).
@@ -359,4 +484,11 @@ in the window; they are plain strokes in the same style and the stage check load
    `N`, that a `herdr-review.next-comment` command reaches the copy, and that a list built under a new id starts
    at the top (section 8).
 
-The user starts herdr-app for these checks (decided 2026-11-09). No scratch instance.
+4. The stream (section 12): that the sidebar's file changes as the offset changes, that a click in the sidebar and a jump put the item at the
+   top, that the heights the mod gives (a card's is an estimate) leave no gap or overlap, that the offset holds when a file's diff replaces its
+   placeholder (the item at the top is scrolled to again), that the thumb drags and the track click jumps, and that no 'could not be
+   re-rendered' banner shows on a 30-file review.
+
+5. The rows (section 12): that `on_hover` and `on_mouse_move` keep working in the real panel's rows, that the `[+]` on the hovered line opens the
+   editor on the line or the range, that a plain click highlights nothing and clears a range, that a drag released outside the stream but inside the
+   panel ends, and that Esc arrives after a press on a row (the panel gives the keyboard to its handle on a press).

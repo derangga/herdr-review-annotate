@@ -55,8 +55,9 @@ One file per group of operations. An `E:` line in a graph is one test.
 | [send](design/graphs/send.md) | Send, under the herdr backend and under hc |
 | [json](design/graphs/json.md) | `state` and `file`, the read-only JSON the panel reads |
 | [gui-open](design/graphs/gui-open.md) | The panel opens: root, target, binary, close |
-| [gui-load](design/graphs/gui-load.md) | The panel loads: triggers, single flight, spec switch, file switch |
-| [gui-comment](design/graphs/gui-comment.md) | The panel selects lines and writes a comment |
+| [gui-load](design/graphs/gui-load.md) | The panel loads the state: triggers, single flight, spec switch, file switch |
+| [gui-stream](design/graphs/gui-stream.md) | The panel's stream of every file: items and heights, fetching the files as they show, the selected file, scrolling, folding |
+| [gui-comment](design/graphs/gui-comment.md) | The panel hovers a line for its [+], drags a range, comments from a [+], and writes the comment |
 | [gui-thread](design/graphs/gui-thread.md) | The panel replies, resolves, reopens, edits, deletes, marks seen |
 | [gui-send](design/graphs/gui-send.md) | The panel sends, resends one thread, and picks among agents |
 | [gui-archive](design/graphs/gui-archive.md) | The panel archives resolved threads and marks a file viewed |

@@ -1,27 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeState } from "../src/decode.ts";
-import { cleanText, diffWidth, layout, paneOrder, runs, sidebarButtons, sidebarRows, tokenColor, totals } from "../src/rows.ts";
-import { initModel } from "../src/update.ts";
+import { badgeColor, cleanText, diffWidth, letterColor, paneOrder, PLUS, runs, sidebarButtons, sidebarRows, streamLayout, tagColor, tokenColor, toneColor, totals, WARN } from "../src/rows.ts";
 import type { RowItem } from "../src/rows.ts";
 import type { FileSummary } from "../src/types.ts";
-import { fixture } from "./fake-host.ts";
+import { fixtureFile, fixtureState, loadedModel } from "./model.ts";
 
-const file = decodeFile(JSON.parse(fixture("file")));
-const state = decodeState(JSON.parse(fixture("state")));
+const file = fixtureFile();
+const state = fixtureState();
 
-const model = { ...initModel(), root: "/repo", state, file };
+const model = loadedModel(state, file);
+const rowItems = (items: ReturnType<typeof streamLayout>["items"]): RowItem[] => items.filter((i): i is RowItem => i.key.startsWith("src/a.rs|") && (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del"));
 const NOW = Date.parse("2026-11-09T10:00:30Z");
 
 test("layout keeps the rows in order with their line numbers and the index into the file", () => {
-  const items = layout(model, NOW).filter((i): i is RowItem => i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del");
+  const items = rowItems(streamLayout(model, NOW).items);
   assert.equal(items.length, 7);
   assert.deepEqual(items.map((i) => i.kind), ["hunk", "ctx", "del", "add", "add", "ctx", "ctx"]);
   assert.deepEqual(items.map((i) => i.index), [0, 1, 2, 3, 4, 5, 6]);
   assert.deepEqual([items[2]?.old, items[2]?.new], ["2", ""]);
   assert.deepEqual([items[3]?.old, items[3]?.new], ["", "2"]);
   assert.equal(items[0]?.text, "@@ -1,4 +1,5 @@");
-  assert.deepEqual(layout({ ...model, state: null, file: null }, NOW), []);
+  assert.deepEqual(streamLayout({ ...model, state: null, files: new Map() }, NOW), { items: [], sizes: [], starts: [0], total: 0, wide: 300 });
 });
 
 test("text is drawn without control characters and a tab is spaces", () => {
@@ -69,10 +68,11 @@ test("every token kind has a colour from the theme, and no two of the TUI's kind
   const colors = kinds.map(tokenColor);
   for (const c of colors) assert.ok(names.has(c), c);
   assert.equal(new Set(colors).size, kinds.length);
+  assert.ok(names.has(PLUS), PLUS);
 });
 
 test("layout gives each code row its runs from the file's tokens", () => {
-  const items = layout(model, NOW).filter((i): i is RowItem => i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del");
+  const items = rowItems(streamLayout(model, NOW).items);
   assert.deepEqual(items[1]?.runs, [
     { text: "fn", color: tokenColor("keyword") },
     { text: " ", color: "foreground" },
@@ -84,7 +84,7 @@ test("layout gives each code row its runs from the file's tokens", () => {
 
 test("the diff is as wide as its longest line, and at least 300", () => {
   assert.equal(diffWidth([]), 300);
-  assert.equal(diffWidth([{ kind: "ctx", key: "r0", index: 0, old: "1", new: "1", text: "x".repeat(100), runs: [], selected: false }]), 820);
+  assert.equal(diffWidth([{ kind: "ctx", key: "r0", index: 0, old: "1", new: "1", text: "x".repeat(100), runs: [] }]), 850);
 });
 
 test("the sidebar has a heading where the folder changes, and the files under it", () => {
@@ -150,4 +150,22 @@ test("the panes go left to right with the sidebar on its side, and without it wh
   assert.deepEqual(at("right", true), ["diff", "sidebar"]);
   assert.deepEqual(at("left", false), ["diff"]);
   assert.deepEqual(at("right", false), ["diff"]);
+});
+
+test("the user's cards are the accent, the agent's ansi5, a warning ansi3, and no choice is blocked or the red of a removed line", () => {
+  assert.equal(toneColor("user"), "accent");
+  assert.equal(toneColor("agent"), "ansi5");
+  assert.equal(toneColor("resolved"), "ansi2");
+  assert.equal(WARN, "ansi3");
+  assert.deepEqual([tagColor("unsent"), tagColor("new"), tagColor("outdated")], ["ansi3", "ansi3", "dim"]);
+  assert.deepEqual((["unsent", "open", "new", "viewed"] as const).map((tone) => badgeColor({ text: "", tone })), ["ansi3", "accent", "done", "dim"]);
+  assert.deepEqual(["M", "A", "?", "D", "R", "B"].map(letterColor), ["ansi3", "ansi2", "ansi2", "ansi1", "ansi3", "ansi3"]);
+  const all = [...(["user", "agent", "resolved"] as const).map(toneColor), WARN, ...["unsent", "new", "x"].map(tagColor), ...["M", "A", "?", "D", "R"].map(letterColor)];
+  assert.ok(!all.includes("blocked"));
+  // ansi1 is for the Delete letter of a deleted file and nothing a card or a warning uses.
+  assert.ok(![...(["user", "agent", "resolved"] as const).map(toneColor), WARN, ...["unsent", "new", "x"].map(tagColor)].includes("ansi1"));
+});
+
+test("the [+] is drawn in the accent colour", () => {
+  assert.equal(PLUS, "accent");
 });

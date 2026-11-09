@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeState } from "../src/decode.ts";
-import { fileMatches, filterCount, filterInfo, filterPick, layout, panelKey, sidebarRows } from "../src/rows.ts";
-import { initModel, update } from "../src/update.ts";
+import { fileMatches, filterCount, filterInfo, filterPick, panelKey, sidebarRows, streamLayout } from "../src/rows.ts";
+import { update } from "../src/update.ts";
 import type { FileSummary, Model, Msg } from "../src/types.ts";
-import { fixture } from "./fake-host.ts";
+import { fixtureFile, fixtureState, loadedModel } from "./model.ts";
 
-const state = decodeState(JSON.parse(fixture("state")));
-const file = decodeFile(JSON.parse(fixture("file")));
-const base: Model = { ...initModel(), root: "/repo", state, file, selected: file.path };
+const state = fixtureState();
+const file = fixtureFile();
+const base: Model = loadedModel(state, file);
 
 const f = (path: string): FileSummary => ({ path, old_path: null, change: "modified", add: 1, del: 0, viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
 const paths = (q: string, files: FileSummary[]) => sidebarRows(files, q).flatMap((r) => (r.kind === "file" ? [r.path] : []));
@@ -61,7 +60,7 @@ test("the count is the files that match over all of them", () => {
 
 test("only the sidebar is filtered: the diff, the jumps and send see every file", () => {
   const m = { ...base, filter: "zzz" };
-  assert.deepEqual(layout(m, 0), layout(base, 0));
+  assert.deepEqual(streamLayout(m, 0), streamLayout(base, 0));
   assert.deepEqual(update(m, { _tag: "ThreadJumped", forward: true })[0].jump, update(base, { _tag: "ThreadJumped", forward: true })[0].jump);
 });
 
@@ -117,7 +116,8 @@ test("Enter keeps the filter and shows the first match when the file shown does 
   assert.equal(m.filter, "notes");
   assert.equal(m.filtering, false);
   assert.equal(m.selected, "notes.txt");
-  assert.equal(cmds.filter((c) => (c as { _tag: string })._tag === "Load").length, 1);
+  assert.deepEqual(m.reveal, { key: "notes.txt|file" });
+  assert.deepEqual(cmds, []);
 });
 
 test("Enter leaves the file shown alone when it matches", () => {
@@ -138,6 +138,6 @@ test("Enter with no match does nothing, and on an empty query it only gives the 
 
 test("the query survives a reload", () => {
   const m = { ...base, filter: "src" };
-  const [next] = update({ ...m, inFlight: true }, { _tag: "Loaded", key: m.key, state, file });
+  const [next] = update({ ...m, inFlight: true }, { _tag: "Loaded", key: m.key, state });
   assert.equal(next.filter, "src");
 });

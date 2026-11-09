@@ -24,12 +24,14 @@ export async function withRecovery(op: Op, handler: () => Promise<Msg | null>): 
 export function run(env: Env, cmd: Cmd): Promise<Msg | null> {
   switch (cmd._tag) {
     case "Load":
-      return withRecovery("load", async () => {
-        const state = await env.cli.state(cmd.root, cmd.spec);
-        // The selected file if the state lists it, else the first, else none.
-        const path = state.files.some((f) => f.path === cmd.selected) ? cmd.selected : (state.files[0]?.path ?? null);
-        const file = path === null ? null : await env.cli.file(cmd.root, cmd.spec, path);
-        return { _tag: "Loaded", key: cmd.key, state, file };
+      return withRecovery("load", async () => ({ _tag: "Loaded", key: cmd.key, state: await env.cli.state(cmd.root, cmd.spec) }));
+    case "LoadFiles":
+      // One file after the other: a file is a process, and a fetch that holds many would keep one that scrolled into
+      // view waiting. A file that fails fails the fetch, and the reducer does not ask for those files again.
+      return withRecovery("files", async () => {
+        const files = [];
+        for (const path of cmd.paths) files.push(await env.cli.file(cmd.root, cmd.spec, path));
+        return { _tag: "FilesLoaded", key: cmd.key, files };
       });
     case "WatchStore":
       return watch(env, cmd.dir, "watch-store");

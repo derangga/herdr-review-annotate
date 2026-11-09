@@ -1,25 +1,23 @@
 // GPUI drawing. It holds no logic and calls no Host method: everything it shows is in the model, the
 // theme and the layout, and every click is a Msg handed to dispatch.
-import { div, list, svg } from "gpui-kit";
-import type { Element, FocusHandle } from "gpui-kit";
+import { div, svg } from "gpui-kit";
+import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { confirmKey, confirmRow, diffWidth, dock, editorKey, editorTitle, filterInfo, itemClick, listId, paneOrder, panelKey, pickerOptions, sidebarButtons, sidebarRows, totals } from "./rows.ts";
-import type { Badge, BodyItem, DockButton, HeadItem, LayoutItem, RowItem, SideRow, Tone } from "./rows.ts";
+import { badgeColor, CARD_W, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, itemClick, keyPath, letterColor, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, WARN } from "./rows.ts";
+import type { BodyItem, DockButton, FileItem, HeadItem, RowItem, SideRow, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
 
 export type Theme = Record<string, `#${string}`>;
 type Dispatch = (msg: Msg) => void;
 // What the view owns and the model must not hold: the editor's text state, the focus handles that keys reach
-// (`handle` for the question bar, `nav` for the whole panel), and the filter box's text state.
+// (`handle` for the question bar, `nav` for the whole panel) and the filter box's text state.
 export type Ui = { handle: FocusHandle; nav: FocusHandle; textarea: TextareaState | null; filter: InputState };
 
-const ROW = 20;
 // The sidebar keeps this width and the diff takes the rest.
 const SIDEBAR_W = 280;
-// The diff scrolls sideways and is as wide as its longest line, so a card keeps to a width that reads.
-const CARD_W = 560;
 const tint = (color: `#${string}`, alpha: string): `#${string}` => `${color}${alpha}`;
+const CLEAR = "#00000000";
 
 // danger is a button that destroys something: the red of a removed line.
 function button(id: string, label: string, on: boolean, t: Theme, click: (() => void) | null, danger = false): Element {
@@ -41,18 +39,21 @@ function button(id: string, label: string, on: boolean, t: Theme, click: (() => 
     .child(label);
 }
 
-const toneColor = (tone: Tone, t: Theme): `#${string}` => (tone === "user" ? t.blocked : tone === "agent" ? t.accent : t.ansi2);
+// A theme colour by the name rows.ts chose; a name the theme lacks is the plain foreground.
+const pick = (name: string, t: Theme): `#${string}` => t[name] ?? t.foreground;
 
 function head(item: HeadItem, t: Theme): Element {
-  const color = toneColor(item.tone, t);
-  return div()
+  const color = pick(toneColor(item.tone), t);
+  return v_flex()
     .w_full()
+    .h_full()
     .flex_none()
     .pl(48)
     .pr(12)
     .pt(6)
     .child(
       v_flex()
+        .flex_1()
         .max_w(CARD_W)
         .px(10)
         .py(4)
@@ -66,22 +67,24 @@ function head(item: HeadItem, t: Theme): Element {
             .items_center()
             .when(item.collapsible, (e) => e.child(div().w(10).text_color(t.dim).child(item.open ? "\u25be" : "\u25b8")))
             .child(div().min_w(0).truncate().font_semibold().text_size(11).text_color(color).child(item.title))
-            .children(item.badges.map((b) => div().flex_none().text_size(10).text_color(b === "unsent" || b === "new" ? t.blocked : t.dim).child(`[${b}]`))),
+            .children(item.badges.map((b) => div().flex_none().text_size(10).text_color(pick(tagColor(b), t)).child(`[${b}]`))),
         )
         .when(item.quote !== null, (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(item.quote ?? ""))),
     );
 }
 
 function body(item: BodyItem, t: Theme): Element {
-  const color = toneColor(item.tone, t);
-  return div()
+  const color = pick(toneColor(item.tone), t);
+  return v_flex()
     .w_full()
+    .h_full()
     .flex_none()
     .pl(48)
     .pr(12)
     .when(item.last, (e) => e.pb(6))
     .child(
       v_flex()
+        .flex_1()
         .max_w(CARD_W)
         .px(10)
         .py(2)
@@ -94,25 +97,91 @@ function body(item: BodyItem, t: Theme): Element {
     );
 }
 
-function item(i: LayoutItem, t: Theme): Element {
-  if (i.kind === "head") return head(i, t);
-  if (i.kind === "body") return body(i, t);
-  if (i.kind === "more") return div().w_full().h(ROW).flex_none().px(12).flex().items_center().cursor_pointer().text_size(11).text_color(t.accent).child("\u2191 Show the start of the file");
-  if (i.kind === "label") return div().w_full().flex_none().px(12).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(i.text);
-  return diffRow(i, t);
+function fileHead(item: FileItem, t: Theme): Element {
+  return h_flex()
+    .w_full()
+    .h_full()
+    .px(12)
+    .gap(8)
+    .items_center()
+    .bg(t.raised)
+    .border_t(1)
+    .border_color(t.border)
+    .child(div().w(10).flex_none().text_color(t.dim).child(item.folded ? "\u25b8" : "\u25be"))
+    .child(div().w(12).flex_none().text_size(11).text_color(pick(letterColor(item.letter), t)).child(item.letter))
+    .child(div().min_w(0).truncate().font_semibold().text_size(12).text_color(item.viewed ? t.dim : t.foreground).child(item.title))
+    .when(item.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${item.add}`)))
+    .when(item.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`-${item.del}`)))
+    .when(item.hides !== "", (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(item.hides)));
 }
 
-function diffRow(item: RowItem, t: Theme): Element {
-  if (item.kind === "hunk") return div().w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).child(item.text);
+// One item of the stream, in a box of the height the stream counted for it. A header, a card and a thread take a click of
+// their own; a code row takes the hover, the press and the [+], on the row itself.
+function item(i: StreamItem, size: number, m: Model, t: Theme, dispatch: Dispatch): Element {
+  const click = itemClick(i.key);
+  return div()
+    .id(`s-${i.key}`)
+    .w_full()
+    .h(size)
+    .flex_none()
+    .overflow_hidden()
+    .when(click !== null, (e) => e.cursor_pointer().on_click(() => {
+      if (click !== null) dispatch(click);
+    }))
+    .child(inner(i, m, t, dispatch));
+}
+
+function inner(i: StreamItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+  if (i.kind === "head") return head(i, t);
+  if (i.kind === "body") return body(i, t);
+  if (i.kind === "file") return fileHead(i, t);
+  if (i.kind === "wait") return div().w_full().pl(48).pt(8).text_size(11).text_color(t.dim).child(i.text);
+  if (i.kind === "note") return div().w_full().pl(48).pt(4).text_size(11).text_color(t.dim).child(i.text);
+  if (i.kind === "label") return div().w_full().px(12).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(i.text);
+  return diffRow(i, m, t, dispatch);
+}
+
+// A code row is an ordinary element, so it can carry the pointer's events: the hover (and the move, which also reports the
+// row when the stream scrolled under a pointer that did not move), the press that starts a drag, and in the gutter the [+],
+// drawn only on the hovered line, with a click of its own that does not start a drag.
+function diffRow(item: RowItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+  const path = keyPath(item.key);
+  const over = (on: boolean): void => dispatch({ _tag: "Hovered", path, row: item.index, on });
+  if (item.kind === "hunk") {
+    return div().id(`row-${item.key}`).w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).on_hover((on) => over(on)).on_mouse_move(() => over(true)).child(item.text);
+  }
+  const { selected, hovered } = rowState(m, item);
   const sign = item.kind === "add" ? "+" : item.kind === "del" ? "-" : " ";
   return h_flex()
+    .id(`row-${item.key}`)
     .w_full()
     .h(ROW)
     .flex_none()
     .gap(6)
     .when(item.kind === "add", (e) => e.bg(tint(t.ansi2, "18")))
     .when(item.kind === "del", (e) => e.bg(tint(t.ansi1, "18")))
-    .when(item.selected, (e) => e.bg(tint(t.accent, "40")))
+    .when(selected, (e) => e.bg(tint(t.accent, "30")))
+    .on_hover((on) => over(on))
+    .on_mouse_move(() => over(true))
+    .on_mouse_down("left", () => dispatch({ _tag: "RowPressed", path, row: item.index }))
+    .child(
+      div()
+        .id(`plus-${item.key}`)
+        .w(GUTTER_W)
+        .h_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(hovered, (e) =>
+          e
+            .cursor_pointer()
+            // The press on the [+] is its own: it must not start a drag on the row behind it.
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click(() => dispatch({ _tag: "PlusClicked", path, row: item.index }))
+            .child(svg("mods/herdr-review/icons/plus.svg").size(16).flex_none().text_color(pick(PLUS, t))),
+        ),
+    )
     .child(div().w(36).flex_none().text_right().text_color(t.dim).child(item.old))
     .child(div().w(36).flex_none().text_right().text_color(t.dim).child(item.new))
     .child(div().w(10).flex_none().text_color(item.kind === "add" ? t.ansi2 : item.kind === "del" ? t.ansi1 : t.dim).child(sign))
@@ -138,7 +207,7 @@ function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
           cx.stop_propagation();
         }
       })
-      .child(div().font_semibold().text_color(t.blocked).child(editorTitle(e)))
+      .child(div().font_semibold().text_color(pick(toneColor("user"), t)).child(editorTitle(e)))
       .child(Textarea.new(ta).w_full().px(8).py(6).rounded(6).border_1().border_color(t.accent).bg(t.background).text_size(12).text_color(t.foreground))
       .when(m.status !== null, (x) => x.child(div().text_color(t.ansi1).child(m.status ?? "")))
       .child(
@@ -152,10 +221,10 @@ function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   }
   if (m.picker !== null) {
     return wrap
-      .child(div().font_semibold().text_color(t.blocked).child("Several agents match this folder. Send to which?"))
+      .child(div().font_semibold().text_color(pick(WARN, t)).child("Several agents match this folder. Send to which?"))
       .children(pickerOptions(m.picker).map((b) => h_flex().child(button(`dock-${b.id}`, b.label, false, t, () => dispatch(b.msg)))));
   }
-  const btn = (b: DockButton): Element => button(`dock-${b.id}`, b.label, false, t, b.off ? null : () => dispatch(b.msg), b.danger);
+  const btn = (b: DockButton): Element => button(`dock-${b.id}`, b.label, b.accent === true, t, b.off ? null : () => dispatch(b.msg), b.danger);
   const ask = confirmRow(m);
   if (ask !== null) {
     return wrap
@@ -167,7 +236,7 @@ function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
           cx.stop_propagation();
         }
       })
-      .child(div().font_semibold().text_color(t.blocked).child(ask.sentence))
+      .child(div().font_semibold().text_color(pick(ask.color, t)).child(ask.sentence))
       .child(h_flex().gap(8).items_center().children(ask.buttons.map(btn)));
   }
   const bar = dock(m);
@@ -182,11 +251,9 @@ function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
     .child(h_flex().gap(8).items_center().flex_wrap().children(bar.actions.map(btn)));
 }
 
-const badgeColor = (b: Badge, t: Theme): `#${string}` => (b.tone === "unsent" ? t.blocked : b.tone === "open" ? t.accent : b.tone === "new" ? t.done : t.dim);
-
 function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
   if (r.kind === "dir") return div().w_full().flex_none().px(8).pt(8).pb(2).truncate().text_ellipsis_start().text_size(11).text_color(t.dim).child(r.text);
-  const letter = r.letter === "A" || r.letter === "?" ? t.ansi2 : r.letter === "D" ? t.ansi1 : t.blocked;
+  const letter = pick(letterColor(r.letter), t);
   return v_flex()
     .id(r.key)
     .w_full()
@@ -209,7 +276,7 @@ function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
         .when(r.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${r.add}`)))
         .when(r.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`-${r.del}`))),
     )
-    .when(r.badges.length > 0, (e) => e.child(h_flex().w_full().pl(38).gap(8).children(r.badges.map((b) => div().flex_none().text_size(10).text_color(badgeColor(b, t)).child(b.text)))));
+    .when(r.badges.length > 0, (e) => e.child(h_flex().w_full().pl(38).gap(8).children(r.badges.map((b) => div().flex_none().text_size(10).text_color(pick(badgeColor(b), t)).child(b.text)))));
 }
 
 // The files by folder in a column of their own, under the filter box. A folder heading is a plain div with no
@@ -268,10 +335,25 @@ function sidebar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui, empty: string):
     );
 }
 
-// The diff of the selected file, and under it the bar that holds the selection, the thread buttons or the editor.
-function diffPane(m: Model, items: LayoutItem[], t: Theme, dispatch: Dispatch, ui: Ui): Element {
-  const width = diffWidth(items);
-  const note = m.file !== null && m.file.note !== null ? m.file.note : null;
+// The stream of every file's diff, and under it the bar that holds the selection, the thread buttons or the editor.
+// The mod scrolls the stream itself: it draws only the items that overlap the screen, as plain children of a clipped box, the
+// first one shifted up by the part of it above the top, and its own scrollbar beside them.
+function diffPane(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui): Element {
+  const { first, end, shift } = visibleRange(stream, m.offset, m.height);
+  const kids: Element[] = [];
+  for (let i = first; i < end; i++) {
+    const it = stream.items[i];
+    if (it !== undefined) kids.push(item(it, stream.sizes[i] ?? ROW, m, t, dispatch));
+  }
+  // A mostly sideways event is left to the box's own sideways scroll. Any other is the stream's, and must not also move
+  // that box sideways, which a vertical wheel over it would.
+  const wheel = (e: ScrollWheelEvent, cx: Context): void => {
+    const dy = wheelDelta(e);
+    if (dy === null) return;
+    cx.stop_propagation();
+    dispatch({ _tag: "Wheeled", dy });
+  };
+  const thumb = thumbOf(stream.total, m.height, m.offset);
   return v_flex()
     .flex_1()
     .min_w(0)
@@ -279,42 +361,69 @@ function diffPane(m: Model, items: LayoutItem[], t: Theme, dispatch: Dispatch, u
     .min_h(0)
     .child(
       div()
+        .id("review-stream-box")
         .flex_1()
         .min_h(0)
         .relative()
+        .overflow_hidden()
         .text_size(11)
+        .on_size_change((size) => dispatch({ _tag: "Resized", width: Math.round(size.width), height: Math.round(size.height) }))
+        .on_mouse_move((e) => {
+          if (m.grip !== null) dispatch({ _tag: "ThumbMoved", y: e.position.y });
+        })
         .child(
           div()
-            .id("review-diff-x")
+            .id("review-stream-x")
             .size_full()
             .overflow_x_scrollbar()
             .child(
               div()
+                .id("review-stream-content")
                 .w_full()
-                .min_w(width)
+                .min_w(stream.wide)
                 .h_full()
-                .child(
-                  list(
-                    listId(m.window),
-                    items.length,
-                    (i) => items[i]?.key ?? String(i),
-                    (i) => item(items[i] ?? { kind: "label", key: "none", text: "" }, t),
-                  )
-                    .size_full()
-                    .on_item_click((key) => {
-                      const msg = itemClick(key);
-                      if (msg !== null) dispatch(msg);
-                    }),
-                ),
+                .relative()
+                .overflow_hidden()
+                .on_scroll_wheel(wheel)
+                .child(v_flex().id("review-stream-items").absolute().top(-shift).left(0).w_full().children(kids)),
             ),
         )
-        .child(Scrollbar.vertical(listId(m.window)).viewport_from_layout().absolute().inset_0())
-        .when(note !== null, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child(note ?? ""))),
+        .when(thumb !== null, (e) =>
+          e.child(
+            div()
+              .id("review-stream-track")
+              .absolute()
+              .top(0)
+              .right(0)
+              .w(12)
+              .h(m.height)
+              .bg(t.chrome)
+              .on_scroll_wheel(wheel)
+              .on_mouse_down("left", (ev) => {
+                if (ev.local_position !== undefined) dispatch({ _tag: "TrackClicked", y: ev.local_position.y });
+              })
+              .child(
+                div()
+                  .id("review-stream-thumb")
+                  .absolute()
+                  .top(thumb?.top ?? 0)
+                  .left(2)
+                  .w(8)
+                  .h(thumb?.size ?? 0)
+                  .rounded(4)
+                  .bg(m.grip !== null ? t.accent : t.dim)
+                  .on_mouse_down("left", (ev, cx) => {
+                    cx.stop_propagation();
+                    dispatch({ _tag: "ThumbGrabbed", y: ev.position.y });
+                  }),
+              ),
+          ),
+        ),
     )
     .child(dockBar(m, t, dispatch, ui));
 }
 
-export function draw(m: Model, items: LayoutItem[], t: Theme, dispatch: Dispatch, ui: Ui): Element {
+export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   const sum = totals(m.state);
   const base = m.state === null ? null : m.state.base;
   const notices = m.state === null ? [] : [...m.state.notices, ...m.state.warnings];
@@ -328,6 +437,8 @@ export function draw(m: Model, items: LayoutItem[], t: Theme, dispatch: Dispatch
     .bg(t.background)
     .text_color(t.foreground)
     .text_size(13)
+    // The button can go up anywhere in the panel, outside the stream too, and that ends a drag and a grip on the thumb.
+    .on_mouse_up("left", () => dispatch({ _tag: "Released" }))
     // Not while the editor is open: a click in its textarea must not give the keyboard to the panel.
     .when(m.editor === null, (e) =>
       e.track_focus(ui.nav).on_key_down((ev, cx) => {
@@ -362,13 +473,13 @@ export function draw(m: Model, items: LayoutItem[], t: Theme, dispatch: Dispatch
         .child(button("refresh", "Refresh", false, t, () => dispatch({ _tag: "Triggered", source: "refresh" }))),
     )
     .when(m.banner !== null, (e) => e.child(div().px(12).py(6).text_size(12).text_color(t.ansi1).child(m.banner ?? "")))
-    .when(m.status !== null, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.blocked).child(m.status ?? "")))
+    .when(m.status !== null, (e) => e.child(div().px(12).py(4).text_size(11).text_color(pick(WARN, t)).child(m.status ?? "")))
     .when(notices.length > 0, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(notices.join(" | "))))
     .child(
       h_flex()
         .flex_1()
         .min_h(0)
         .items_start()
-        .children(paneOrder(m).map((p) => (p === "sidebar" ? sidebar(m, t, dispatch, ui, empty) : diffPane(m, items, t, dispatch, ui)))),
+        .children(paneOrder(m).map((p) => (p === "sidebar" ? sidebar(m, t, dispatch, ui, empty) : diffPane(m, stream, t, dispatch, ui)))),
     );
 }

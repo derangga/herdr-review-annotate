@@ -49,7 +49,10 @@ Cardinality: once per user action.
 ## Mark a file viewed
 
 ```
--> ViewedClicked { path, viewed }                      user action, on a file header or row
+-> ViewedClicked { path, viewed }                      user action, the button in the bar under the stream: it acts on
+                                                       the sidebar's selected file
+  -> folds[path] = viewed, so the file folds at once to its header (or opens, when the mark is taken off); marking
+     it also sets reveal to its header, as the TUI puts the cursor there
   -> Cmd.SetViewed { path, set }
 -> run Cmd.SetViewed
   -> ReviewCli.view(root, spec, path, set)             R: Host.exec, 30 s
@@ -59,12 +62,14 @@ Cardinality: once per user action.
                                                        E: Busy, BackendFailed -> Msg.Failed, the mark is as it was
   -> Msg.Wrote
 -> update(model, Wrote)
-  -> Triggered                                         the reload carries the new `viewed` flag
+  -> Triggered                                         the reload carries the new `viewed` flag, and a fold that
+                                                       agrees with it is dropped, so the file follows the mark again
 ```
 
 A viewed file is the one whose fingerprint equals the saved one, so the mark goes by itself when the file
-changes ([data](../data.md), meta file). The panel does not collapse a viewed file in v1. It shows the mark
-and draws the row dimmed.
+changes ([data](../data.md), meta file). A viewed file is folded to its header in the stream, as in the TUI, and a
+click on the header opens it. The fold is the panel's own and is not saved: a new panel folds every file that is
+viewed, and an open one stays open until the mark goes. A file that changed, and so lost its mark, is open.
 
 Cardinality: once per user action.
 

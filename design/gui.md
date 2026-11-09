@@ -7,8 +7,8 @@ herdr-app does, as found by running it, is in [herdr-app-facts](herdr-app-facts.
 ## What it is
 
 A TypeScript mod for herdr-app. It draws a panel beside the agent: the changed files, the unified diff of
-the selected file, and the comment threads under their lines. The user clicks a line, then another line for a range,
-writes a comment, and sends the unsent comments to the agent. The agent replies and resolves from its own
+every changed file in one scrolling stream, and the comment threads under their lines. The user points at a line to get its `[+]`,
+drags over lines to select a range, clicks the `[+]` to write a comment, and sends the unsent comments to the agent. The agent replies and resolves from its own
 shell, and the panel updates by itself.
 
 The mod holds no review logic. It runs the `herdr-review` binary for every read and every write and draws
@@ -18,22 +18,27 @@ same code.
 
 In v1:
 
-- A sidebar of the changed files grouped by folder, with an icon for each file type and change counts, beside the unified diff of the selected file.
+- A sidebar of the changed files grouped by folder, with an icon for each file type and change counts, beside one scrolling stream of every file's unified diff. The selected file in the sidebar is the topmost file on
+  screen, and a click on a file scrolls the stream to it.
   A header button hides and shows it and another moves it to the other side. The panel remembers both.
 - A filter box at the top of the sidebar, as the TUI's `filter`: typing narrows the file list to the paths that
   match, and `/` goes to the box.
-- Comments on a line, a range or a whole file. Threads with reply, resolve, reopen, edit and delete.
-- Next and previous comment, by two buttons in the bar under the diff and by the keys `n` and `shift+n`, across
+- Comments on a line, a range or a whole file, as in the TUI. The `[+]` shows only on the code line under the mouse; a plain click on a
+  line highlights nothing and clears a range; holding the mouse on a line and dragging over others selects the lines between, tinted;
+  the `[+]` opens the editor on the line, or on the whole range when the line is inside it; Esc clears the selection. There is no
+  cursor and no shift-click. Threads with reply, resolve, reopen, edit and delete.
+- Next and previous comment, by two buttons in the bar under the stream and by the keys `n` and `shift+n`, across
   files, as the TUI's `next_thread` and `prev_thread`.
-- Unsent and new markers, send, resend of one thread, archive of resolved threads, a file marked viewed.
+- Unsent and new markers, send, resend of one thread, archive of resolved threads, a file marked viewed (which folds it
+  to its header, as in the TUI; a click on the header opens it).
 - The working tree or the merge base, and a live refresh.
 
 - Syntax colours in the code rows, from the same highlighter as the TUI: Rust sends token kinds in `file --json`
-  and the mod colours them from `theme()`. No highlighter runs in the mod. A comment card is not coloured. A build
+  and the mod colours them from `theme()`. No highlighter runs in the mod. A build
   of the binary without the `syntax` feature, or one older than the mod, sends none and the rows draw plain.
 
 Left out on purpose, each a follow-up: side-by-side layout, changed words inside a line, the
-agent-message review, vim motions, the whole-file view, collapsing a file, a key for the sidebar.
+agent-message review, vim motions, the whole-file view, a key for the sidebar and a key to fold.
 
 ## Method: how Effect maps onto plain TypeScript
 
@@ -58,15 +63,15 @@ objects are `type` unions, and `import type` is used for types.
 ```
 ids        CommentId ("u7", "a2")   TerminalAddress ("t7")   RepoRoot (absolute)   RelPath
 records    State, FileSummary, FileView, Row, Thread, Comment, Anchor, Placement, Candidate
-           Model, Editor, Selection, Panel
+           Model, Editor, Selection, Hover, Drag, Grip, Panel
 variants   Spec          WorkTree | Branch { base }
            Change        modified | added | deleted | renamed | untracked | binary | submodule
                          | too_large | unparsed
            Placement     matched | outdated | not_in_diff, with a row index or null
-           Msg           what happened: Opened, Triggered, Loaded, RowClicked, CommentClicked,
+           Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked, SelectionCleared,
                          FileCommentClicked, EditorSaved, EditorCancelled, ThreadAction, SendClicked, PickerChosen, PickerCancelled, ArchiveClicked, ArchiveConfirmed, DeleteConfirmed, ConfirmCancelled, Archived, ViewedClicked,
-                         SpecChosen, FileChosen, ThreadJumped, EarlierClicked, SidebarToggled, SidebarFlipped, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
-           Cmd           what to do next: Load, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel
+                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
+           Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel
 errors     BinaryMissing | TooOld | ContractMismatch { path } | Busy | BackendFailed { code, stderr }
            BadRequest { stderr } | Refused { Blocked | NotReady | AgentGone }
            NoTarget | AmbiguousTarget { candidates } | WatchUnavailable
@@ -77,18 +82,26 @@ JSON that [shapes](shapes.md) defines, decoded once. `Placement` is computed by 
 index in it counts into the `rows` of the same `file` reply.
 
 - `Model`: `root`, `target` (a terminal address or null), `spec` (null until the first reply names the spec
-  `meta.json` holds, so the first load passes no flag), `key` (root, spec and selected path as one value,
-  used to drop a stale reply), `state` (the last good one, or null), `file` (the same), `selected`
-  (a path or null), `expanded` (a set of root ids: the resolved threads the user opened), `selection`,
-  `focus` (the comment the thread buttons act on), `confirm` (the comment a click on delete asked about, until Delete or Cancel answers), `jump` (a next or previous comment that waits for its file to load: the path and `first` or `last`), `window` (where the diff list starts: a first item key or null, and the list's id),
+  `meta.json` holds, so the first load passes no flag), `key` (root and spec as one value, used to drop a stale
+  reply), `state` (the last good one, or null), `files` (the diffs fetched so far, by path), `selected` (the sidebar's
+  file, a path or null: the topmost file on screen, or the one a click chose), `top` (the key of the first item on
+  screen) and `visible` (the paths of the files on screen, topmost first), `reveal` (a scroll not made yet:
+  the key of an item to put at the top), `width` and `height` (the stream's box, for the height of a card and the part of the stream
+  on screen), `offset` (how far the mod has scrolled the stream, in pixels from its top) and `total` (the stream's height as the last
+  `Scrolled` saw it), `hover` (the code row under the pointer), `drag` (a press on a row that has not been released) and `grip` (a press
+  on the scrollbar's thumb that has not been released), `folds` (the files the
+  user folded or opened, by path; a file not in it is folded when it is viewed), `dirty` (fetched files to fetch again),
+  `skipped` (files whose last fetch failed) and `batch` (the files the running fetch is for), `expanded` (a set of root ids: the
+  resolved threads the user opened), `selection`,
+  `focus` (the comment the thread buttons act on), `confirm` (the comment a click on delete asked about, until Delete or Cancel answers), `jump` (a next or previous comment that waits for its file to be fetched: the path and `first` or `last`),
   `editor`, `saving` (a draft is being written, so a second save does nothing), `picker` (candidates or null), `sending` (a send runs, so a second click does nothing), `sendThreads` (the threads of the send the picker interrupted), `confirmArchive` (a click on archive asked, until Archive or Cancel answers), `sticky` (the status is a result a reload must not clear), `banner`, `status`, `inFlight`, `pending`, `stopped` (after
   `BinaryMissing`, `TooOld` or `ContractMismatch`: only Refresh loads again), `storeWatch` (the store
   directory the watch loop runs on, or null), `retried` (a `BadRequest` already led to a reload that has
   not succeeded yet), and `panel` (`side`, `left` or `right`, and `open`, whether the sidebar shows; the defaults are
   left and shown, and "The panel's own settings" below says where they are kept), `filter` (the sidebar's query,
   empty for no filter; it is not saved) and `filtering` (the query box holds the keyboard).
-- A question is a bar, not a second click. While `confirm` or `confirmArchive` is set, the bar under the diff shows
-  a sentence, a red button named for the action (`Delete`, `Archive`) and `Cancel` in place of the other buttons,
+- A question is a bar, not a second click. While `confirm` or `confirmArchive` is set, the bar under the stream shows
+  a sentence, a button named for the action (`Delete`, red; `Archive`, the accent) and `Cancel` in place of the other buttons,
   and only that button writes. `rows.ts` builds it (`confirmRow`) and `view.ts` draws it. Esc is a key down on that
   bar, whose focus handle is given the keyboard when the question opens, and it is the same message as `Cancel`
   (`ConfirmCancelled`). The first click sets one field and nothing else, so `Cancel` puts the model back exactly.
@@ -98,42 +111,32 @@ index in it counts into the `rows` of the same `file` reply.
   names the number, `Archive 3 resolved threads?` and `Archive 1 resolved thread?`. A reload that brings the count
   to 0 drops the question, and one that changes it to another number keeps it with the new number.
 - Next and previous comment. `ThreadJumped { forward }` comes from two buttons, `Previous comment` and `Next
-  comment`, and from the keys. The buttons are the first two of the second row of the bar under the diff, with
+  comment`, and from the keys. The buttons are the first two of the second row of the bar under the stream, with
   Send, Archive and Mark viewed: the header already wraps on a narrow panel, and the bar is where the other
   thread buttons are. They are off when the review has no thread, and the bar is replaced by the editor or
   the question while those are up, so they are not there then. The row wraps when it is narrow.
   - The order is the TUI's. The threads not in the diff come first (they are drawn above every file), then
     the files in the sidebar's order, and in a file the cards as they are drawn: the ones with no row, then
     by row (`cardOrder`; the reply lists threads in the order the review wrote them, which is not that). A
-    resolved thread is a stop too, and it stays folded. Only the shown file has its threads loaded, so any other
-    file whose `FileSummary.threads` is above zero is one stop, `{ path }`, and the jump lands on its first
-    card going forward and its last going back. `rows.stops` builds the list and `rows.jumpStop` picks.
+    resolved thread is a stop too, and it stays folded. A file whose threads are not drawn, because its diff has
+    not been fetched yet or because it is folded, and whose `FileSummary.threads` is above zero, is one stop,
+    `{ path }`, and the jump lands on its first card going forward and its last going back. `rows.stops`
+    builds the list and `rows.jumpStop` picks.
   - From the focused thread, next is the stop after it and previous the one before, and the ends wrap round:
     next from the last thread goes to the first, previous from the first to the last. A focus on a reply counts
-    as a focus on its thread. With nothing focused, next is the first thread of the shown file, and previous
+    as a focus on its thread. With nothing focused, next is the first thread of the selected file, and previous
     the last stop before that file (the threads not in the diff, or the file above). The row selection is
-    not used, because the panel has no cursor, and the top of the shown file is what is on screen when
+    not used, because the panel has no cursor, and the top of the stream is what is on screen when
     nothing is chosen. With no thread in the review the buttons are off and a key sets the status
     `no comments in this review`.
-  - A stop that is a thread already loaded (the shown file, or not in the diff) sets `focus` and `window` at
-    once and starts no load. A stop that is a file does what `FileChosen` does (selects the file, one load)
-    and sets `jump`; the `Loaded` that comes with the right key finishes it: it sets `focus` and `window` to
-    the first or last card, and clears `jump`. `focus` stays where it was until then, so a failed or slow load
-    leaves the screen as it was. A `FileChosen`, a `SpecChosen` or a failed load drops `jump`. A file that
-    arrives with no thread says `no comments in <path>`.
-  - Showing the thread. The diff is a `list`, and a `list` cannot be scrolled from code: `track_scroll` and
-    `scroll_to_item` belong to `v_virtual_list` and `uniform_list`, which need every item's height, and a card's
-    height is not known (herdr-app logs `track_scroll is ignored on a list`, herdr-app-facts section 8). So a
-    jump does not scroll: it starts the list a few lines above the target. `Model.window` is `{ from, id }`:
-    `from` is the key of the first item (`rows.windowStart`: `r<row - 2>`, two lines above the line the
-    card hangs from as the TUI shows it with its context, or `h:<id>` for a card that hangs from no line), and
-    `id` names the list (`review-diff-<id>`, also the scrollbar's name). A new id is a new list, which starts at
-    the top, so every jump, and every return to the whole file, bumps it. `rows.layout` drops the items above
-    `from` and puts one item first, `Show the start of the file`; a click on it (`EarlierClicked`) puts
-    `from` back to null. A start that is no longer there after a reload shows the whole file. A file choice
-    or a reply for another file drops the window; a reload of the same file keeps it. The price is that the
-    lines above the window are one click away, not one wheel turn. A scroll handle on a list from
-    herdr-app would replace this.
+  - A stop that is a thread already drawn sets `focus` and `reveal` (the key of its card) at once and starts no
+    load. A stop that is a file opens it (a folded file is unfolded, as the TUI opens a collapsed file on a jump). When its
+    diff is fetched the jump lands at once. When it is not, the stream scrolls to its header, `jump` holds the
+    target, and the `FilesLoaded` that brings the file finishes it: it sets `focus` and `reveal` to the first or last card,
+    and clears `jump`. `focus` stays where it was until then, so a failed or slow fetch leaves the screen as it was. A
+    `FileChosen`, a `SpecChosen` or a failed fetch drops `jump`. A file that arrives with no thread says `no comments in <path>`.
+  - Showing the thread. The mod scrolls the stream itself. `reveal` is the card's key, and `rows.scrolled` turns it into the item's
+    start in pixels, the new `offset`; "The stream" below says how.
   - Keys. A key reaches `on_key_down` only along the focus path, so the root element tracks a focus handle
     of its own (`nav`) and `rows.panelKey` says what a key means: `n` is next, `shift-n` or `N` previous, and
     nothing else, and nothing at all while the editor, the question bar or the picker is up, so typing `n`
@@ -145,8 +148,54 @@ index in it counts into the `rows` of the same `file` reply.
     `herdr-app do herdr-review.next-comment` and a `keys.json` binding to that name deliver to every shown
     copy, whatever has the keyboard. A user who wants a key that needs no click binds it there, for example
     `"mod:herdr-review": { "alt-n": "herdr-review.next-comment" }`; the mod never edits `keys.json`.
-- `Selection`: `path`, `side` (`old` or `new`), `from` and `to` as row indexes. One row is a click, two are a
-  range (two clicks). It is in memory only.
+- The stream. The graph is [gui-stream](graphs/gui-stream.md). One stream holds every file: the threads not in the diff, then for each
+  file a header row, and under it the rows and cards of its diff. The mod scrolls it itself and draws only the items on screen.
+  - `rows.streamLayout(model, now)` returns `{ items, sizes, starts, total, wide }`: a height for each item, the prefix sum of them
+    (where each item begins), the stream's height and the width its longest line needs. Nothing is measured. Code rows and the header are exact.
+    A card is estimated from its text and the stream's width (`rows.heightOf`), a little tall so that text never clips. An item is drawn in a
+    box of its counted height, overflow hidden, and a card's background fills its box, so the extra height is padding inside the card and not
+    a gap between its parts. A card is drawn at that fixed height and not at its natural one, because the prefix sums, the scrollbar, the
+    hit test and a scroll to an item all use the same numbers. `rows.layoutCache` keeps the stream while nothing it is built from changes (the
+    state, the files, the folds, the open threads, the focus, the width, the failed files and the minute), so a wheel tick, a hover and a drag
+    do not rebuild it. A fetched file's items are kept per reply (`rows.fileStream`), and the code rows' runs per reply (`rowsOf`).
+  - A key is the file's path, `|`, and the item: `src/a.rs|r12`, `src/a.rs|h:u3`, `src/a.rs|file`. Each drawn item is an element with
+    an id made from its key. A header, a card head and a card body take a click, which `rows.itemClick` turns into a message that names
+    the file or the thread; a code row has its own handlers (below).
+  - The scroll position is `offset` in the model, in pixels. `on_scroll_wheel` becomes `Wheeled { dy }` (`rows.wheelDelta`), clamped to
+    `0 .. total - height`. The scrollbar is the mod's own, a track and a thumb on the right of the stream (`rows.thumbOf`), dragged by a
+    grip (`ThumbGrabbed`, `ThumbMoved`, `Released`) or jumped by a click on the track (`TrackClicked`). Sideways scroll is the
+    `overflow_x_scrollbar` box around the code, as before.
+  - Files load as the user scrolls. The state loads alone (`Cmd.Load`, `Msg.Loaded`). The diffs come after it in
+    `Cmd.LoadFiles`, three files at a time and one command at a time, shared with the state's load by `inFlight` and
+    `pending`: a state load goes before more files. `rows.wanted` orders them: the files on screen and the three after
+    them, then every file below, then the files above. A file not yet fetched is its header and a placeholder as tall
+    as its diff is guessed to be (`rows.estimateRows`: the changed lines and a hunk's header and context). Each fetch runs
+    its files one after the other, so a file that scrolls into view waits for the rest of three at most. A reload fetches
+    again the files whose summary changed and the files on screen. A fetch that fails puts its files in `skipped`, so the stream
+    does not ask again and again, and the next load of the state clears it.
+  - The sidebar follows the stream. After every update that changed the model, `main.dispatch` asks `rows.scrolled(model, stream)`
+    what the model has yet to learn (the offset clamped, the stream's height, the key of the first item on screen, the files on screen)
+    and, if anything, feeds the answer back as `Scrolled`, in the same step. There is no timer. `selected` is the topmost file on
+    screen. A scroll the panel asked for (a click in the sidebar, a jump) keeps its file selected while it is on
+    screen, because the end of the stream can stop a scroll short of putting a header at the top.
+  - A click on a file in the sidebar is `FileChosen`: `selected` is the path, `reveal` is its header, and the files around it are
+    fetched. `rows.scrolled` moves the offset to the header's start. The same goes for a card (a jump)
+    and for a file marked viewed. A target that is not in the stream yet is kept until it is.
+  - A file above the top of the screen that arrives is another height than its placeholder and would move everything
+    under it, so the item that was at the top is scrolled to again (`reveal`), to within that item.
+  - What is seen and what is not: [herdr-app-facts](herdr-app-facts.md) sections 10 to 12 list each finding, with
+    "not yet seen in the window" where it is read from the declarations only. Those are what the user confirms in their own panel.
+  - A fold. A header is a click (`FoldToggled`). A file marked viewed is folded and a click opens it, as the TUI's `z`
+    and `m`: `rows.isFolded` is `folds[path]`, else the file's `viewed`. A folded file is its header, which says `viewed`
+    and how many threads it hides, and is not fetched. Marking a file viewed folds it and scrolls to its header. The fold
+    is the panel's and is not saved; a reload drops a fold that agrees with the file's mark.
+- `Selection`: `path`, `side` (`old` or `new`), `from` and `to` as row indexes, and `anchor`, the row a drag began on (`from` or
+  `to`). A drag makes it (`rows.span`), and `rows.pick` makes the one-row selection a `[+]` comments on when its row is outside any
+  range. It is in memory only. `rows.plusTarget` says what a `[+]` comments on.
+- `Hover`, `Drag`, `Grip`: where the pointer is (`path` and row), a press on a row (the row it began on, `head` the row the pointer is
+  on now, `moved` whether it ever left the first row, so a release without a move is a click), and a press on the thumb (the pointer's
+  height and the stream's offset when it began). They are in the model, so the update that handles them is a pure function with tests;
+  none of them is something the stream is built from.
 - `Editor`: `kind` (`comment`, `reply`, `edit`), the anchor, the thread id (reply) or comment id (edit) it belongs
   to, and `initial`, the text its textarea starts with (the comment's own for an edit). The text lives in
   the textarea state, which the view owns, so the model never holds a draft that could differ from the screen.
@@ -160,14 +209,17 @@ index in it counts into the `rows` of the same `file` reply.
 -> load                                              many: one in flight
   -> ReviewCli.state(root, spec)                     R: Host.exec
     -> decodeState(stdout)                           boundary
-  -> ReviewCli.file(root, spec, selected)            R: Host.exec
-    -> decodeFile(stdout)                            boundary
   -> update(model, Loaded)                           pure
+-> load files                                        many: one in flight, three files at a time
+  -> ReviewCli.file(root, spec, path)                R: Host.exec, one per file
+    -> decodeFile(stdout)                            boundary
+  -> update(model, FilesLoaded)                      pure
 -> render                                            pure, thin
-  -> rows.layout(file, expanded)                     pure: rows and thread cards in order
-  -> view.draw(model)                                GPUI elements only
+  -> rows.layoutCache(model, now)                    pure: every file's header, rows and thread cards in order, their heights and prefix sums
+  -> view.draw(model)                                GPUI elements only: the items that overlap the screen
 -> comment                                           once per user action
-  -> update(model, RowClicked)                       selection only, no Cmd (a range is two clicks)
+  -> update(model, Hovered, RowPressed, Released)    a drag selects a range, a click clears it, no Cmd
+  -> update(model, PlusClicked)                      the editor opens on the line or the range, no Cmd
   -> update(model, EditorSaved)  => Cmd.Write
     -> body written to a file under appHome()/data/herdr-review   R: Host.writeTextFile
     -> ReviewCli.apply(root, file, spec)             R: Host.exec, the CLI deletes the file
@@ -181,13 +233,17 @@ The call graph of each operation is in `graphs/gui-*.md`.
 
 ### Triggers for `load`
 
-Six things ask for a load: a change under the repo root, a change in the store directory, a 10 s timer, the
-Refresh button, the end of any write, and a change of root, spec or file. They form a stream, and the
+Five things ask for a load of the state: a change under the repo root, a change in the store directory, a 10 s
+timer, the Refresh button, the end of any write, and a change of root or spec. They form a stream, and the
 reducer coalesces it with two flags. At most one load runs (`inFlight`). A trigger that comes while one
 runs, or while the editor is open, sets `pending`. When the load ends, or the editor closes, `pending` starts
 exactly one more load and clears. A burst of 50 file events is two loads at most.
 
-The editor defers a reload so the lines do not move under the text being typed.
+A load is the state alone. The diffs of the files are fetched after it, three at a time, as the stream wants them
+([gui-stream](graphs/gui-stream.md)), by a command that shares `inFlight` and `pending` with the load: at most one
+command of either kind runs, and a state load goes first when `pending` is set. A choice of file is not a load.
+
+The editor defers a reload, and a fetch, so the lines do not move under the text being typed.
 
 `state` and `file` write nothing: no `seen` event, no `meta.json`, nothing in the work tree, and they leave
 `.git/index` as it was ([json](graphs/json.md)). If they wrote, the store watch and the root watch would
@@ -230,6 +286,11 @@ one test.
                                                          stale, and the reload fixes it. A second BadRequest
                                                          in a row only sets the status, so a request that is
                                                          always wrong cannot loop
+-> ReviewCli.file (a fetch of files, Cmd.LoadFiles)
+  E: every error above                                -> the same escape, as op `files`, and the files of the fetch go into
+                                                        `skipped` so the stream does not ask for them again until the next
+                                                        load of the state. The fetch of a file that is gone (BadRequest) also
+                                                        reloads the state once, which drops the file
 -> ReviewCli.send
   E: Refused Blocked    json error "blocked"           -> escape: status line and notify. Nothing is sent
   E: Refused NotReady   json error "not_ready"            or marked sent
@@ -322,6 +383,21 @@ The theme has no peach, mauve or sky, so each takes the nearest of the terminal 
 removed lines, so no kind uses a red. `rows.test.ts` checks that every kind names a colour `theme()` has and that
 no two kinds share one.
 
+Card and warning colours. They are named in `rows.ts` the way the syntax colours are, and `view.ts` looks the name up
+in `theme()`. Nothing uses `blocked`: it is the agent-status colour and is red in some themes, so a user's own card
+drawn in it read as an error. Red (`ansi1`) is left to removed lines and to Delete. `rows.test.ts` checks the choices.
+
+| Thing | Theme colour |
+|---|---|
+| The user's card (head, left bar, tint), and the title of the editor where the user writes | `accent` |
+| The agent's card | `ansi5` |
+| A resolved card | `ansi2` |
+| A warning: the `unsent` and `new` tags, the picker sentence, the status line, the `M`, `R` and other letters of a changed file in the sidebar, an unsent count | `ansi3` |
+| Other tags (`outdated`, `edited since sent`, `resolved by`) | `dim` |
+| The Delete question's sentence, and every Delete button | `ansi1` |
+| The Archive question's sentence | `foreground`, plain |
+| The Archive button in the question | `accent` (border and fill), not red: archive moves threads to `archive.jsonl` and deletes none |
+
 ## Behavior wrappers
 
 - `withRecovery(handler)`: the E table above. Every handler in `runner` goes through it.
@@ -345,7 +421,9 @@ Per copy of the mod, released in `close(cx)`, which is bounded: start the cleanu
   text, since a mod cannot delete.
 - Nothing for the picker: it is drawn in the bar under the diff, and holds no overlay.
 
-State kept in module scope would be shared by every copy, so nothing is. It lives on the instance.
+State kept in module scope would be shared by every copy, so nothing is. It lives on the instance. The one cache is
+`rows.ts`'s memo of a fetched file's stream items, a `WeakMap` keyed by the reply's own object: it is pure (the same reply and
+the same inputs give the same items), no copy can reach another's reply, and an entry goes with its reply.
 
 ## Swap R
 
@@ -376,15 +454,15 @@ scripts/stage-app-mod.sh     build, then copy (the bundle, mod.json, icons/) to 
 | `decode.ts` | The boundary checks, for the replies, for `props()`, `focused()` and `panes()`, and for `panel.json` | `types.ts` |
 | `host.ts` | The `Host` interface and the real one | `herdr` |
 | `cli.ts` | `ReviewCli`: argv, exit code and JSON error mapping | `types.ts`, `decode.ts` |
-| `update.ts` | `update`, `failed`, single flight | `types.ts`, `rows.ts` |
+| `update.ts` | `update`, `failed`, single flight for the state and the files, the fetch order, the wheel, the thumb, the hover and the drag | `types.ts`, `rows.ts` |
 | `icons.ts` | `fileIcon(name)`: the drawing for a file name, whole names then lower-cased extensions then `file` | nothing |
-| `rows.ts` | Layout with the thread cards, the sidebar's folder and file rows (with `icons.fileIcon`) and the filter's matcher, count and Enter pick, its header buttons and pane order, selection math, anchor and batch from a selection, the bar under the diff, what a click or a key means | `types.ts`, `icons.ts` |
+| `rows.ts` | The stream (every file's items, heights and prefix sums, the layout cache, the scroll math, the thumb, the card height estimate, the fetch order, the keys), the thread cards, the sidebar's folder and file rows (with `icons.fileIcon`) and the filter's matcher, count and Enter pick, its header buttons and pane order, selection math, anchor and batch from a selection, which rows are tinted or hovered, the bar under the diff, what a click or a key means | `types.ts`, `icons.ts` |
 | `runner.ts` | `run(env, cmd)`, `withRecovery`, `watch` (one watch loop), `open(host)` (root and target at `init`), the read and write of `panel.json` | `cli.ts`, `decode.ts`, `types.ts` |
-| `view.ts` | GPUI drawing | `gpui-kit`, `gpui-base`, `rows.ts` |
-| `main.ts` | The exported `View` class: `init`, `render`, `close`, the loops | `host.ts`, `view.ts`, the rest |
+| `view.ts` | GPUI drawing, the stream's visible items, its scrollbar and the rows' events | `gpui-kit`, `gpui-base`, `rows.ts` |
+| `main.ts` | The exported `View` class: `init`, `render`, `close`, the loops, the layout cache, and the step after each update that feeds `Scrolled` back | `host.ts`, `view.ts`, the rest |
 
 Layout of the panel: a header (and the banner, status and notices when there are any) across the top, then one row
-under it with two children, the sidebar and the diff pane, so a later change can swap them. The sidebar is
+under it with two children, the sidebar and the stream pane, so a later change can swap them. The sidebar is
 `SIDEBAR_W` (280 px) wide and `flex_none`; the diff pane is `flex_1` with `min_w(0)` and takes the rest of the width and the full height
 under the header. Which of the two come, and in which order, is `rows.paneOrder`: the sidebar then the diff, the diff
 then the sidebar, or the diff alone when the sidebar is hidden, from `model.panel`. The sidebar's border is on the side
@@ -397,6 +475,20 @@ The header holds two buttons for the sidebar, from `rows.sidebarButtons`, left o
 sidebar shows, since moving a hidden column changes nothing on screen. Both change `panel` at once and send `Cmd.SavePanel`.
 The header wraps its buttons onto a second line when the panel is too narrow for them.
 A button that is off has no click handler and draws at 40% opacity, so it reads as off at a glance.
+
+### The gutter and the [+]
+
+The graph is [gui-comment](graphs/gui-comment.md). A code row is, left to right: a gutter `GUTTER_W` (24) px wide, the old line number,
+the new one, the sign, and the code. The gutter holds `icons/plus.svg`, a 16 px filled rounded square with the `+` cut out of it, an
+`svg` tinted `theme().accent`, and only on the hovered line (`rows.rowState`). `diffWidth` counts the gutter and its gap.
+
+- A row is an ordinary element, so it carries `on_hover` and `on_mouse_move` (the row the pointer is on), `on_mouse_down("left")` (the
+  press that starts a drag) and the `[+]`, which has an `on_mouse_down` that stops the press (so it starts no drag) and an `on_click`
+  of its own (`PlusClicked`). A hunk header takes the hover only, so a drag passes over it, and has no `[+]`. The selected rows are tinted.
+- The release is `on_mouse_up("left")` on the panel's root, so it is read wherever the button goes up in the panel. A release outside the
+  window never arrives and a move carries no button state; the next press replaces a drag that was never released.
+- `hover` is in the model and a row is redrawn when it changes. After a wheel tick with a still pointer the line under it changes
+  without a move; the `[+]` follows at the next move.
 
 ### The filter box
 
@@ -480,9 +572,10 @@ The column is a plain `v_flex` and not a `list`, so a row may carry its own `on_
 The column is a `v_flex` with `overflow_y_scroll` laid over a relative box with `absolute().inset_0()`, which
 gives it a scroll handle of its own, and `Scrollbar.vertical("review-files")` draws its bar. Wrapping it in
 `overflow_y_scrollbar()` instead loses the flex sizing, which is why the shipped Changes panel does the same.
-The diff is a `list` (rows of unequal height: a card has the height of its text) with its own scrollbar. A list
-item takes no handler, so a click on it is `on_item_click` with the item's key, and `rows.itemClick` turns the
-key into a Msg. No scroll state is kept in the model or on the View.
+The stream is a clipped box (`overflow_hidden`) holding an absolutely placed column of the items that overlap the screen, shifted up by
+the part of the first one above the top, inside a box with `overflow_x_scrollbar` as wide as the longest line. The scrollbar is
+a track and a thumb of the mod's own on the right, outside the sideways box so it does not move with it. The model holds the scroll
+position (`offset`, `total`, `height`) and `top` and `visible`; the View keeps nothing for the stream.
 
 Only `host.ts`, `view.ts` and `main.ts` import `herdr`, `gpui-kit` or `gpui-base`. Node cannot resolve those
 modules, so a test that imports one of the three fails to load. Tests import the `.ts` files directly with

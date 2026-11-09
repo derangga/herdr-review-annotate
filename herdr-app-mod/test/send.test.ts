@@ -2,35 +2,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeCli } from "../src/cli.ts";
-import { decodeFile, decodeState } from "../src/decode.ts";
 import { confirmKey, confirmRow, dock, pickerOptions } from "../src/rows.ts";
 import { run } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
-import { initModel, update } from "../src/update.ts";
+import { initModel } from "../src/update.ts";
 import type { Cmd, Model, Msg, ReviewError } from "../src/types.ts";
-import { exit, fakeHost, fixture, ok } from "./fake-host.ts";
+import { exit, fakeHost, ok } from "./fake-host.ts";
 import type { Call, Reply } from "./fake-host.ts";
+import { fixtureFile, fixtureState, loadedModel, reload, steps } from "./model.ts";
 
-const state = decodeState(JSON.parse(fixture("state")));
-const file = decodeFile(JSON.parse(fixture("file")));
-
-function steps(m: Model, ...msgs: Msg[]): { model: Model; cmds: Cmd[] } {
-  const cmds: Cmd[] = [];
-  for (const msg of msgs) {
-    const [next, out] = update(m, msg);
-    m = next;
-    cmds.push(...out);
-  }
-  return { model: m, cmds };
-}
+const state = fixtureState();
+const file = fixtureFile();
 
 // A model that has loaded src/a.rs and waits, with a target as the panel has when it opened beside an agent.
-function loaded(target: string | null = "t7"): Model {
-  const { model, cmds } = steps(initModel(), { _tag: "Opened", root: "/repo", target });
-  const load = cmds[0];
-  assert.ok(load && load._tag === "Load");
-  return steps(model, { _tag: "Loaded", key: load.key, state, file }).model;
-}
+const loaded = (target: string | null = "t7"): Model => loadedModel(state, file, target);
 
 function env(exec: (command: string, args: string[]) => Reply): { env: Env; calls: Call[] } {
   const fake = fakeHost({ exec });
@@ -55,7 +40,7 @@ const failure = (msg: Msg | null): ReviewError => {
 
 test("E: no thread given and no unsent thread in the state -> status, no call", () => {
   const none = { ...state, files: state.files.map((f) => ({ ...f, unsent: 0 })), orphans: [] };
-  const m = steps(loaded(), { _tag: "Loaded", key: loaded().key, state: none, file: null }).model;
+  const m = reload(loaded(), none).model;
   const out = steps(m, { _tag: "SendClicked" });
   assert.equal(out.model.status, "nothing to send");
   assert.deepEqual(out.cmds, []);
@@ -85,7 +70,7 @@ test("a resend is offered on an open thread whose comments are all sent, not on 
   assert.equal(resend("u1"), undefined); // unsent
   assert.equal(resend("u2"), undefined); // resolved
   const sentThread = { ...file, threads: file.threads.map((t) => (t.id === "u1" ? { ...t, unsent: false } : t)) };
-  const m = steps(loaded(), { _tag: "Loaded", key: loaded().key, state, file: sentThread }, { _tag: "ThreadAction", id: "u1", action: "focus" }).model;
+  const m = steps(reload(loaded(), state, sentThread).model, { _tag: "ThreadAction", id: "u1", action: "focus" }).model;
   assert.deepEqual(dock(m).buttons.find((b) => b.id === "resend")?.msg, { _tag: "SendClicked", threads: ["u1"] });
 });
 
@@ -152,7 +137,7 @@ test("Sent shows sent N to the agent and reloads, and the line survives that rel
   assert.equal(out.model.sending, false);
   const load = out.cmds.find((c) => c._tag === "Load");
   assert.ok(load && load._tag === "Load");
-  assert.equal(steps(out.model, { _tag: "Loaded", key: load.key, state, file }).model.status, "sent 3 to claude-code");
+  assert.equal(reload(out.model, state).model.status, "sent 3 to claude-code");
 });
 
 test("Sent with queued shows the queued line, with warnings adds them", () => {
@@ -227,7 +212,7 @@ test("a click on Archive only asks, with a sentence, an Archive button and Cance
   assert.equal(first.model.confirmArchive, true);
   const row = confirmRow(first.model);
   assert.equal(row?.sentence, "Archive 1 resolved thread?");
-  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]), [["Archive", true, "ArchiveConfirmed"], ["Cancel", false, "ConfirmCancelled"]]);
+  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]), [["Archive", false, "ArchiveConfirmed"], ["Cancel", false, "ConfirmCancelled"]]);
   assert.equal(dock(first.model).actions.find((b) => b.id === "archive")?.label, "Archive 1");
 });
 
@@ -273,6 +258,14 @@ test("the archive button and the question name the number, singular for one", ()
   }
 });
 
+test("the archive question is plain text with an accent button and no red, the delete question stays red", () => {
+  const row = confirmRow(steps(counting(2), { _tag: "ArchiveClicked" }).model);
+  assert.equal(row?.color, "foreground");
+  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.accent === true]), [["Archive", false, true], ["Cancel", false, false]]);
+  const del = confirmRow(steps(loaded(), { _tag: "ThreadAction", id: "u1", action: "delete" }).model);
+  assert.deepEqual([del?.color, del?.buttons[0]?.danger], ["ansi1", true]);
+});
+
 test("with nothing to archive the button is off, says only Archive, and a click asks nothing", () => {
   const m = counting(0);
   assert.deepEqual([archiveButton(m)?.label, archiveButton(m)?.off], ["Archive", true]);
@@ -284,15 +277,15 @@ test("with nothing to archive the button is off, says only Archive, and a click 
 
 test("a reload that leaves nothing to archive drops the question, and one that leaves some keeps it with the new number", () => {
   const asked = steps(counting(3), { _tag: "ArchiveClicked" }).model;
-  const reload = (n: number) => steps(asked, { _tag: "Loaded", key: asked.key, state: { ...state, archivable: n }, file }).model;
-  assert.equal(reload(0).confirmArchive, false);
-  assert.equal(confirmRow(reload(0)), null);
-  assert.equal(confirmRow(reload(2))?.sentence, "Archive 2 resolved threads?");
+  const after = (n: number) => reload(asked, { ...state, archivable: n }).model;
+  assert.equal(after(0).confirmArchive, false);
+  assert.equal(confirmRow(after(0)), null);
+  assert.equal(confirmRow(after(2))?.sentence, "Archive 2 resolved threads?");
 });
 
 test("a reload keeps the question, and a send drops it", () => {
   const asked = steps(loaded(), { _tag: "ArchiveClicked" }).model;
-  assert.equal(steps(asked, { _tag: "Loaded", key: asked.key, state, file }).model.confirmArchive, true);
+  assert.equal(reload(asked, state).model.confirmArchive, true);
   assert.equal(steps(asked, { _tag: "SendClicked" }).model.confirmArchive, false);
 });
 
@@ -333,7 +326,7 @@ test("a viewed click asks for SetViewed with the model's spec, and the dock offe
   assert.deepEqual(steps(m, { _tag: "ViewedClicked", path: "src/a.rs", viewed: true }).cmds, [{ _tag: "SetViewed", root: "/repo", spec: { kind: "worktree" }, path: "src/a.rs", viewed: true }]);
   const branch = steps(m, { _tag: "SpecChosen", spec: { kind: "branch", base: "origin/main" } }).model;
   assert.deepEqual(steps(branch, { _tag: "ViewedClicked", path: "src/a.rs", viewed: false }).cmds, [{ _tag: "SetViewed", root: "/repo", spec: { kind: "branch", base: "origin/main" }, path: "src/a.rs", viewed: false }]);
-  const done = { ...m, file: { ...file, viewed: true } };
+  const done = loadedModel({ ...state, files: state.files.map((f) => (f.path === "src/a.rs" ? { ...f, viewed: true } : f)) }, { ...file, viewed: true });
   assert.equal(dock(done).actions.find((b) => b.id === "viewed")?.label, "Mark unviewed");
 });
 

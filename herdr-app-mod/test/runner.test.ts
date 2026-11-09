@@ -17,42 +17,43 @@ function env(setup: Setup = {}, bin: string | null = null) {
   const e: Env = { host: fake.host, cli: makeCli(fake.host, bin), dispatch: (m) => sent.push(m), closed: () => closed };
   return { ...fake, env: e, sent, close: () => (closed = true) };
 }
-const load = (selected: string | null = null, spec: Spec | null = null): Cmd => ({ _tag: "Load", key: "k", root: "/repo", spec, selected });
+const load = (spec: Spec | null = null): Cmd => ({ _tag: "Load", key: "k", root: "/repo", spec });
+const files = (paths: string[], spec: Spec | null = null): Cmd => ({ _tag: "LoadFiles", key: "k", root: "/repo", spec, paths });
 const execs = (calls: { method: string; args: unknown[] }[]) => calls.filter((c) => c.method === "exec").map((c) => ({ command: c.args[0], argv: c.args[1] as string[] }));
 
-test("a load runs state, then file for the first file, and answers Loaded with the key it was asked for", async () => {
+test("a load runs state alone and answers Loaded with the key it was asked for", async () => {
   const t = env();
   const msg = await run(t.env, load());
   assert.ok(msg && msg._tag === "Loaded");
   assert.equal(msg.key, "k");
   assert.equal(msg.state.files.length, 5);
-  assert.equal(msg.file?.path, "src/a.rs");
+  assert.deepEqual(execs(t.calls).map((c) => c.argv), [["state", "--json", "--repo", "/repo"]]);
+});
+
+test("a fetch of files runs one file after the other, in the order asked, and answers FilesLoaded with the key", async () => {
+  const t = env();
+  const msg = await run(t.env, files(["src/a.rs", "notes.txt"]));
+  assert.ok(msg && msg._tag === "FilesLoaded");
+  assert.equal(msg.key, "k");
+  assert.equal(msg.files.length, 2);
   assert.deepEqual(execs(t.calls).map((c) => c.argv), [
-    ["state", "--json", "--repo", "/repo"],
-    ["file", "--json", "--repo", "/repo", "--path", "img.png"],
+    ["file", "--json", "--repo", "/repo", "--path", "src/a.rs"],
+    ["file", "--json", "--repo", "/repo", "--path", "notes.txt"],
   ]);
 });
 
-test("the file is the selected one when the state lists it, else the first", async () => {
-  const t = env({ });
-  await run(t.env, load("src/a.rs"));
-  assert.deepEqual(execs(t.calls)[1]?.argv.slice(-2), ["--path", "src/a.rs"]);
-  await run(t.env, load("left/the/diff.rs"));
-  assert.deepEqual(execs(t.calls)[3]?.argv.slice(-2), ["--path", "img.png"]);
-});
-
-test("a state with no files skips the file call", async () => {
-  const empty = { ...JSON.parse(fixture("state")), files: [] };
-  const t = env({ exec: () => ok(JSON.stringify(empty)) });
-  const msg = await run(t.env, load());
-  assert.ok(msg && msg._tag === "Loaded");
-  assert.equal(msg.file, null);
+test("E: a file that fails fails the fetch, as op files, and the files after it are not asked for", async () => {
+  const t = env({ exec: (_c, args) => exit(2, `not in diff: ${args[args.length - 1]}`) });
+  const msg = await run(t.env, files(["gone.rs", "src/a.rs"]));
+  assert.deepEqual(msg, { _tag: "Failed", op: "files", error: { _tag: "BadRequest", stderr: "not in diff: gone.rs" } });
   assert.equal(execs(t.calls).length, 1);
 });
 
 test("the spec goes on both calls as --spec and --base", async () => {
   const t = env();
-  await run(t.env, load("src/a.rs", { kind: "branch", base: "origin/main" }));
+  const spec: Spec = { kind: "branch", base: "origin/main" };
+  await run(t.env, load(spec));
+  await run(t.env, files(["src/a.rs"], spec));
   assert.deepEqual(execs(t.calls)[0]?.argv, ["state", "--json", "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
   assert.deepEqual(execs(t.calls)[1]?.argv.slice(0, 8), ["file", "--json", "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
 });
@@ -75,7 +76,7 @@ test("no Host method other than exec and watchFolder is called by a load or a wa
 
 test("E: BinaryMissing -> the next candidate, in the order props.bin, the staged copy, PATH", async () => {
   const t = env({ exec: (command, args) => (command === "herdr-review" ? defaultExec(command, args) : "reject") }, "/custom/herdr-review");
-  const msg = await run(t.env, { _tag: "Load", key: "k", root: "/repo", spec: null, selected: null });
+  const msg = await run(t.env, load());
   assert.ok(msg && msg._tag === "Loaded");
   assert.deepEqual(execs(t.calls).slice(0, 3).map((c) => c.command), ["/custom/herdr-review", STAGED, "herdr-review"]);
 });
@@ -84,7 +85,7 @@ test("the binary that started is kept for every later call", async () => {
   const t = env({ exec: (command, args) => (command === STAGED ? defaultExec(command, args) : "reject") });
   await run(t.env, load());
   await run(t.env, load());
-  assert.deepEqual(execs(t.calls).map((c) => c.command), [STAGED, STAGED, STAGED, STAGED]);
+  assert.deepEqual(execs(t.calls).map((c) => c.command), [STAGED, STAGED]);
 });
 
 test("E: no candidate left -> Failed BinaryMissing", async () => {
@@ -104,7 +105,7 @@ test("E: TooOld -> exit 2 with an unknown command, option or comment command, an
 });
 
 test("E: BadRequest -> any other exit 2", async () => {
-  const t = env({ exec: (_c, args) => (args[0] === "state" ? ok(fixture("state")) : exit(2, "not in diff: img.png")) });
+  const t = env({ exec: () => exit(2, "not in diff: img.png") });
   const msg = await run(t.env, load());
   assert.deepEqual(msg, { _tag: "Failed", op: "load", error: { _tag: "BadRequest", stderr: "not in diff: img.png" } });
 });
@@ -133,8 +134,8 @@ test("E: ContractMismatch -> a schema number that differs, a field that is missi
   assert.equal(b.error.path, "$.root");
   const c = await run(env({ exec: () => ok("half a reply") }).env, load());
   assert.ok(c && c._tag === "Failed" && c.error._tag === "ContractMismatch");
-  const fileBad = await run(env({ exec: (_c, args) => (args[0] === "state" ? ok(fixture("state")) : ok("{}")) }).env, load());
-  assert.ok(fileBad && fileBad._tag === "Failed" && fileBad.error._tag === "ContractMismatch");
+  const fileBad = await run(env({ exec: () => ok("{}") }).env, files(["src/a.rs"]));
+  assert.ok(fileBad && fileBad._tag === "Failed" && fileBad.op === "files" && fileBad.error._tag === "ContractMismatch");
 });
 
 test("E: WatchUnavailable -> watchFolder rejects", async () => {
