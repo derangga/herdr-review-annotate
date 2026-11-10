@@ -1,7 +1,7 @@
 // The side-by-side layout: the pairing, where cards sit, the width rule and the toggle, and the half each pointer message names.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diffWidth, heightOf, indexOfKey, isSplit, layoutButton, layoutCache, partner, pick, plusTarget, ROW, rowState, scrolled, span, SPLIT_W, streamLayout } from "../src/rows.ts";
+import { codeWidth, heightOf, indexOfKey, isSplit, layoutButton, layoutCache, maxShift, partner, pick, plusTarget, ROW, rowState, scrolled, span, SPLIT_W, streamLayout, wheelShift } from "../src/rows.ts";
 import type { RowItem, SplitItem, StreamItem } from "../src/rows.ts";
 import type { FileView, Model, Msg } from "../src/types.ts";
 import { fixtureFile, fixtureState, loadedModel, steps } from "./model.ts";
@@ -83,11 +83,28 @@ test("the cache is rebuilt when the layout flips at the same width", () => {
   assert.ok(b.items.every((i) => i.kind !== "split"));
 });
 
-test("a split row is as wide as two of its wider half", () => {
+test("side by side fits the pane, and its halves' code shifts sideways together, held to the longest line", () => {
   const item = (text: string): RowItem => ({ kind: "add", key: "f|r1", index: 1, old: "", new: "1", text, runs: [] });
-  const long = "x".repeat(100);
-  assert.equal(diffWidth([{ kind: "split", key: "f|p1", left: null, right: item(long) }]), 2 * (100 * 7 + 110));
-  assert.equal(diffWidth([{ kind: "split", key: "f|p1", left: item("a"), right: null }]), 300);
+  const long = "x".repeat(300);
+  assert.equal(codeWidth([{ kind: "split", key: "f|p1", left: item("a"), right: item(long) }]), 300 * 7);
+  // A long line does not widen a side-by-side stream; unified still scrolls as a whole.
+  const m = split();
+  assert.equal(streamLayout(m, NOW).wide, 0);
+  assert.ok(streamLayout({ ...m, split: false }, NOW).wide >= 300);
+  assert.equal(maxShift(2100, 1001), 2100 - (500 - 88));
+  assert.equal(maxShift(100, 1001), 0);
+  // Sideways moves the code, vertical does not; a reported line is four characters.
+  assert.equal(wheelShift({ delta: { x: -30, y: 2 } }), 30);
+  assert.equal(wheelShift({ delta: { x: 1, y: 10 } }), null);
+  assert.equal(wheelShift({ delta: { x: -3, y: 0 }, delta_lines: { x: -1, y: 0 } }), 28);
+  const right = steps(m, { _tag: "Shifted", dx: 500, max: 200 }).model;
+  assert.equal(right.shift, 200);
+  assert.equal(steps(right, { _tag: "Shifted", dx: -900, max: 200 }).model.shift, 0);
+  // Past the limit of the lines now on screen, a scroll right holds still and a scroll left moves smoothly from where it is.
+  assert.equal(steps(right, { _tag: "Shifted", dx: 30, max: 50 }).model.shift, 200);
+  assert.equal(steps(right, { _tag: "Shifted", dx: -30, max: 50 }).model.shift, 170);
+  // A flip starts the code at its left edge again.
+  assert.equal(steps(right, { _tag: "LayoutToggled" }).model.shift, 0);
 });
 
 test("a half decides the side: pick, span and plusTarget take it, a row with no line there gives nothing", () => {

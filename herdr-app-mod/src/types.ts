@@ -174,6 +174,7 @@ export type Model = {
   offset: number; // how far the stream is scrolled, in pixels from its top; the mod scrolls it itself
   total: number; // the stream's height in pixels as the last Scrolled saw it, to clamp the offset and size the thumb
   split: boolean | null; // the layout the user forced (true: side by side), null for the width to decide; not saved
+  shift: number; // how far, in pixels, the code of the side-by-side halves is shifted left
   hover: Hover | null; // the code row under the pointer: the one that draws a [+]
   drag: Drag | null; // a press on a row that has not been released
   grip: Grip | null; // a press on the scrollbar's thumb that has not been released
@@ -251,6 +252,7 @@ export type Msg =
   | { _tag: "SidebarToggled" }
   | { _tag: "SidebarFlipped" }
   | { _tag: "LayoutToggled" }
+  | { _tag: "Shifted"; dx: number; max: number }
   | { _tag: "FilterChanged"; text: string }
   | { _tag: "FilterFocused"; on: boolean }
   | { _tag: "FilterOpened" }

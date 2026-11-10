@@ -477,7 +477,8 @@ export function streamLayout(m: Model, now: number): Stream {
   }
   const starts = [0];
   for (const size of sizes) starts.push((starts[starts.length - 1] as number) + size);
-  return { items, sizes, starts, total: starts[starts.length - 1] as number, wide: diffWidth(items) };
+  // Side by side fits the pane: each half shifts its code sideways itself, so a long line does not widen the stream.
+  return { items, sizes, starts, total: starts[starts.length - 1] as number, wide: isSplit(m) ? 0 : diffWidth(items) };
 }
 
 // streamLayout, kept while nothing it reads changes. A wheel tick, a hover, a drag or a selection changes none of these,
@@ -549,6 +550,17 @@ export function scrolled(m: Model, stream: Stream): Msg | null {
 
 // A wheel or trackpad event as the pixels to scroll down by, or null when it is mostly sideways, which the code box's own
 // sideways scroll takes. A device that reports lines is taken at a row a line.
+// The pixels a mostly sideways wheel or trackpad event shifts the halves' code right by, null for a mostly vertical one. A
+// device that reports lines is taken at four characters a line.
+export function wheelShift(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
+  if (Math.abs(e.delta.x) <= Math.abs(e.delta.y)) return null;
+  return -(e.delta_lines !== undefined ? e.delta_lines.x * 4 * CODE_CHAR : e.delta.x);
+}
+
+// How far the halves' code can shift: the longest line past the room a half leaves for code (the [+] gutter, the number,
+// the sign and the gaps take 88 px).
+export const maxShift = (code: number, width: number): number => Math.max(0, code - ((width - 1) / 2 - 88));
+
 export function wheelDelta(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
   if (Math.abs(e.delta.x) > Math.abs(e.delta.y)) return null;
   const dy = e.delta_lines !== undefined ? e.delta_lines.y * ROW : e.delta.y;
@@ -773,14 +785,21 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
   return { label, buttons, actions, note };
 }
 
+// The width of a code character, which diffWidth and codeWidth count lines in.
+const CODE_CHAR = 7;
+
+// The width the longest text of a side-by-side half among `items` needs: the view passes the items on screen, so the code
+// shifts until the end of the longest line in view reaches the edge, and no further.
+export function codeWidth(items: StreamItem[]): number {
+  let wide = 0;
+  for (const i of items) if (i.kind === "split") wide = Math.max(wide, (i.left?.text.length ?? 0) * CODE_CHAR, (i.right?.text.length ?? 0) * CODE_CHAR);
+  return wide;
+}
+
 // A width that fits the longest line, for the horizontal scroll of the diff.
 export function diffWidth(items: StreamItem[]): number {
   let wide = 300;
-  for (const i of items) {
-    if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") wide = Math.max(wide, i.text.length * 7 + 150);
-    // Both halves are as wide as the wider text, so the row needs two of them.
-    else if (i.kind === "split") wide = Math.max(wide, 2 * (Math.max(i.left?.text.length ?? 0, i.right?.text.length ?? 0) * 7 + 110));
-  }
+  for (const i of items) if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") wide = Math.max(wide, i.text.length * CODE_CHAR + 150);
   return wide;
 }
 

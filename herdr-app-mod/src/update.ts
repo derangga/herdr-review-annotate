@@ -28,6 +28,7 @@ export function initModel(): Model {
     offset: 0,
     total: 0,
     split: null,
+    shift: 0,
     hover: null,
     drag: null,
     grip: null,
@@ -112,7 +113,7 @@ const rowOf = (m: Model, path: string, row: number): FileView | null => {
 // would land elsewhere: the stream scrolls back to the item on top (or the one that holds its row), unless a scroll is
 // already on its way, and no hover is kept.
 function flipped(m: Model, next: Model): Model {
-  return isSplit(m) === isSplit(next) ? next : { ...next, hover: null, reveal: next.reveal ?? (m.top === null ? null : { key: m.top }) };
+  return isSplit(m) === isSplit(next) ? next : { ...next, hover: null, shift: 0, reveal: next.reveal ?? (m.top === null ? null : { key: m.top }) };
 }
 
 // The pointer is over a row, or left it. The [+] is drawn on the hovered row. A leave only counts when it is the row
@@ -428,6 +429,12 @@ export function update(m: Model, msg: Msg): Step {
       return pressed(m, msg.path, msg.row, msg.side);
     case "LayoutToggled":
       return [flipped(m, { ...m, split: !isSplit(m) }), []];
+    case "Shifted": {
+      // Left always moves (down to 0). Right stops at `max`, and past it, after a vertical scroll to shorter lines, does not jump back.
+      const next = m.shift + msg.dx;
+      const shift = msg.dx < 0 ? Math.max(0, next) : Math.max(m.shift, Math.min(msg.max, next));
+      return shift === m.shift ? [m, []] : [{ ...m, shift }, []];
+    }
     case "Released":
       return released(m);
     case "FoldToggled": {

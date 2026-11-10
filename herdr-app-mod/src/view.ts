@@ -4,7 +4,7 @@ import { div, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { badgeColor, CARD_W, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, itemClick, keyPath, layoutButton, letterColor, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, WARN } from "./rows.ts";
+import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
 import type { BodyItem, DockButton, FileItem, HeadItem, RowItem, SideRow, SplitItem, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
 
@@ -117,7 +117,7 @@ function fileHead(item: FileItem, t: Theme): Element {
 
 // One item of the stream, in a box of the height the stream counted for it. A header, a card and a thread take a click of
 // their own; a code row takes the hover, the press and the [+], on the row itself.
-function item(i: StreamItem, size: number, m: Model, t: Theme, dispatch: Dispatch): Element {
+function item(i: StreamItem, size: number, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
   const click = itemClick(i.key);
   return div()
     .id(`s-${i.key}`)
@@ -128,18 +128,18 @@ function item(i: StreamItem, size: number, m: Model, t: Theme, dispatch: Dispatc
     .when(click !== null, (e) => e.cursor_pointer().on_click(() => {
       if (click !== null) dispatch(click);
     }))
-    .child(inner(i, m, t, dispatch));
+    .child(inner(i, shift, m, t, dispatch));
 }
 
-function inner(i: StreamItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+function inner(i: StreamItem, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
   if (i.kind === "head") return head(i, t);
   if (i.kind === "body") return body(i, t);
   if (i.kind === "file") return fileHead(i, t);
   if (i.kind === "wait") return div().w_full().pl(48).pt(8).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "note") return div().w_full().pl(48).pt(4).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "label") return div().w_full().px(12).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(i.text);
-  if (i.kind === "split") return splitRow(i, m, t, dispatch);
-  return diffRow(i, null, m, t, dispatch);
+  if (i.kind === "split") return splitRow(i, shift, m, t, dispatch);
+  return diffRow(i, null, 0, m, t, dispatch);
 }
 
 // A code row is an ordinary element, so it can carry the pointer's events: the hover (and the move, which also reports the
@@ -147,7 +147,7 @@ function inner(i: StreamItem, m: Model, t: Theme, dispatch: Dispatch): Element {
 // drawn only on the hovered line, with a click of its own that does not start a drag.
 // `side` is null for a unified row (two number columns, the whole width) and "old" or "new" for one half of a side-by-side
 // item (one number column, half the width); the half is the side its events and its tint are for.
-function diffRow(item: RowItem, side: "old" | "new" | null, m: Model, t: Theme, dispatch: Dispatch): Element {
+function diffRow(item: RowItem, side: "old" | "new" | null, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
   const path = keyPath(item.key);
   const over = (on: boolean): void => dispatch({ _tag: "Hovered", path, row: item.index, on, side });
   const key = side === null ? item.key : `${item.key}-${side}`;
@@ -192,18 +192,24 @@ function diffRow(item: RowItem, side: "old" | "new" | null, m: Model, t: Theme, 
     .when(side !== "old", (e) => e.child(num(item.new)))
     .child(div().w(10).flex_none().text_color(item.kind === "add" ? t.ansi2 : item.kind === "del" ? t.ansi1 : t.dim).child(sign))
     .child(
-      h_flex()
+      // A half clips its code and shifts it by the model's shift; the unified stream scrolls sideways as a whole instead.
+      div()
         .flex_1()
         .min_w(0)
-        .children(item.runs.map((r) => div().flex_none().whitespace_nowrap().text_color(t[r.color] ?? t.foreground).child(r.text))),
+        .overflow_hidden()
+        .child(
+          h_flex()
+            .when(side !== null, (e) => e.ml(-shift))
+            .children(item.runs.map((r) => div().flex_none().whitespace_nowrap().text_color(t[r.color] ?? t.foreground).child(r.text))),
+        ),
     );
 }
 
 // A side-by-side item: the old half and the new half with a 1px rule between. A missing half faces the longer run of a
 // change and is an empty faint box with no handlers.
-function splitRow(i: SplitItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+function splitRow(i: SplitItem, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
   const half = (row: RowItem | null, side: "old" | "new"): Element =>
-    row === null ? div().flex_1().min_w(0).h_full().bg(tint(t.dim, "10")) : diffRow(row, side, m, t, dispatch);
+    row === null ? div().flex_1().min_w(0).h_full().bg(tint(t.dim, "10")) : diffRow(row, side, shift, m, t, dispatch);
   return h_flex()
     .w_full()
     .h(ROW)
@@ -361,13 +367,22 @@ function sidebar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui, empty: string):
 function diffPane(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   const { first, end, shift } = visibleRange(stream, m.offset, m.height);
   const kids: Element[] = [];
+  // How far a sideways scroll may take the code: until the end of the longest line on screen reaches the edge. It is a limit
+  // on the scroll only; the code is drawn at the model's shift, so a vertical scroll never moves it sideways.
+  const max = maxShift(codeWidth(stream.items.slice(first, end)), m.width);
   for (let i = first; i < end; i++) {
     const it = stream.items[i];
-    if (it !== undefined) kids.push(item(it, stream.sizes[i] ?? ROW, m, t, dispatch));
+    if (it !== undefined) kids.push(item(it, stream.sizes[i] ?? ROW, m.shift, m, t, dispatch));
   }
-  // A mostly sideways event is left to the box's own sideways scroll. Any other is the stream's, and must not also move
-  // that box sideways, which a vertical wheel over it would.
+  // A mostly sideways event is left to the box's own sideways scroll, or side by side shifts the halves' code. Any other
+  // is the stream's, and must not also move that box sideways, which a vertical wheel over it would.
   const wheel = (e: ScrollWheelEvent, cx: Context): void => {
+    const dx = isSplit(m) ? wheelShift(e) : null;
+    if (dx !== null) {
+      cx.stop_propagation();
+      dispatch({ _tag: "Shifted", dx, max });
+      return;
+    }
     const dy = wheelDelta(e);
     if (dy === null) return;
     cx.stop_propagation();

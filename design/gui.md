@@ -526,6 +526,11 @@ lines" rows, because the stream already shows every row. A card sits under the p
 - `isSplit(m)` is `m.split ?? m.width >= SPLIT_W` and is part of the layout cache's inputs. `LayoutToggled` sets `split` to the opposite of
   `isSplit` and clears `hover`. A flip, by the button or by a resize across 900 px with no forced layout, reveals the item that was on top: its
   key `r<n>` or `p<n>` maps to the item that holds row `n` in the other layout.
+- Side by side fits the pane: the stream's `wide` is 0, so a long line anywhere in the review does not stretch the halves. Each half clips
+  its code, and a mostly sideways wheel or trackpad event (`wheelShift`) moves the code of every half together by `shift` (`Shifted`), as
+  the TUI's sideways keys do. The numbers, the sign and the `[+]` stay put. A scroll right stops when the end of the longest line on screen
+  reaches the half's edge (`maxShift(codeWidth(items on screen), width)`). The limit applies to the sideways scroll only: a vertical scroll
+  never moves the code sideways, and past the limit a scroll right holds still while a scroll left moves from where it is. A flip sets it back to 0. Unified keeps the sideways scroll of the whole stream.
 
 ### The filter box
 

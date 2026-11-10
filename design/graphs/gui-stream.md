@@ -20,7 +20,8 @@ copies is "How the body behaves" in [tui](../tui.md).
              a run of del rows pairs line by line with the add run after it, the longer run's rest faces a null half;
              a ctx row is on both halves; a hunk header stays a plain row; the cards of a pair come after it, its left row's first
          else a placeholder `<path>|wait`              rows.estimateRows(summary) lines of 20 px
-       starts = the prefix sum of sizes (one longer than items), total = the last of it, wide = the width the longest line needs
+       starts = the prefix sum of sizes (one longer than items), total = the last of it, wide = the width the longest line needs (0 side by side,
+       which fits the pane: a half's code shifts sideways only as far as the longest line on screen needs)
        E: the item at a pixel is the last one that begins at or above it (rows.itemAt, the hit test of a pixel)
        per file, built once and kept (rows.fileStream) until an opened thread, the focus, the minute, the width or the layout changes
        E: the stream is built once and kept while a wheel tick, a hover, a drag or a selection changes nothing it is built from
