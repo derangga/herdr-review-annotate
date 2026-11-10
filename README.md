@@ -245,7 +245,7 @@ answers the same way, with `herdr-review comment ...` from its shell, and the pa
 Tell your agent (Claude Code, or any agent that can read files and run a shell):
 
 ```text
-Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/derangga/herdr-review-annotate/tree/v0.5.0/herdr-app-mod/dist
+Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/derangga/herdr-review-annotate/tree/v0.6.0/herdr-app-mod/dist
 ```
 
 The agent copies `mods/herdr-review/` into `~/.config/herdr-app/mods/`, merges `keys.json` (the panel opens with
