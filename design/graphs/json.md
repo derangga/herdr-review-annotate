@@ -36,6 +36,9 @@ by `state` would wake the mod, which would call `state` again.
      threads, open, new, unsent = the threads placed Matched or Outdated in this file (threads counts
      them all, resolved ones too; unsent counts open ones only, so a resolved
      thread the user never sent is not counted)
+     hash = FNV-1a of the rows (DiffFile::content_hash), then the JSON of this file's threads in review order
+                                                      E: an edit that keeps the counts changes the file's
+                                                         hash, and another file's stays
 -> threads placed NotInDiff -> orphans     (pure)
 -> archivable = the threads of the review with `Thread::archivable` (pure)
                                                       every thread, orphans too, the filter `store::archive`

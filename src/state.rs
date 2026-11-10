@@ -366,7 +366,7 @@ pub fn state(
                 change: change_json(file.change),
                 add,
                 del,
-                hash: file.content_hash(),
+                hash: String::new(),
                 viewed: viewed(&loaded, file),
                 threads: 0,
                 open: 0,
@@ -376,22 +376,27 @@ pub fn state(
         })
         .collect::<Vec<_>>();
     let mut orphans = Vec::new();
+    // The cards each file draws, as JSON, so a reply or an edit that leaves the counts as they were still changes `hash`.
+    let mut cards = vec![Vec::new(); files.len()];
     for (thread, placement) in placed(&loaded) {
-        let file = match placement {
+        let index = match placement {
             Placement::NotInDiff => None,
-            _ => diff
-                .file_index(&thread.anchor.path)
-                .and_then(|index| files.get_mut(index)),
+            _ => diff.file_index(&thread.anchor.path),
         };
-        match file {
-            Some(file) => {
+        let json = thread_json(thread, placement, &[]);
+        match index.and_then(|index| Some((files.get_mut(index)?, cards.get_mut(index)?))) {
+            Some((file, card)) => {
                 file.threads += 1;
                 file.open += usize::from(thread.is_open());
                 file.new += usize::from(thread.is_new);
                 file.unsent += usize::from(thread.unsent);
+                card.extend(serde_json::to_vec(&json).unwrap_or_default());
             }
-            None => orphans.push(thread_json(thread, placement, &[])),
+            None => orphans.push(json),
         }
+    }
+    for ((summary, file), card) in files.iter_mut().zip(&diff.files).zip(&cards) {
+        summary.hash = file.content_hash(card);
     }
     Ok(print(&StateJson {
         schema: SCHEMA,
@@ -906,6 +911,35 @@ rename to src/b.rs
         // Every thread counts, the two closed ones too.
         assert_eq!(a.threads, 4);
         assert!(state.orphans.is_empty());
+    }
+
+    #[test]
+    fn an_edit_that_keeps_the_counts_still_changes_the_files_hash() {
+        let world = World::new("cards-hash");
+        let summary = |world: &World| {
+            let state = state_of(&world.state("").unwrap());
+            let file = |path: &str| state.files.iter().find(|f| f.path == path).unwrap().clone();
+            let (a, b) = (file("src/a.rs"), file("src/b.rs"));
+            assert_eq!(b.threads, 1);
+            (a.hash, (a.threads, a.open, a.new, a.unsent), b.hash)
+        };
+        let root = on_line("u1", "new", 2, "    new();");
+        // A thread on src/b.rs, so its hash takes cards that do not change.
+        let other = add(
+            "u2",
+            "user",
+            r#""path":"src/b.rs","spec":"worktree","body":"b""#,
+        );
+        world.log(&lines(&[root.clone(), other.clone()]));
+        let (before, counts, b_before) = summary(&world);
+        let at = r#""at":"2026-11-09T10:01:00Z""#;
+        let edit = format!(r#"{{{at},"by":"user","kind":"edit","id":"u1","body":"b2"}}"#);
+        world.log(&lines(&[root, other, edit]));
+        let (after, counts_after, b_after) = summary(&world);
+        assert_eq!(counts, counts_after);
+        assert_ne!(before, after);
+        // A file whose cards did not change keeps its hash.
+        assert_eq!(b_before, b_after);
     }
 
     #[test]

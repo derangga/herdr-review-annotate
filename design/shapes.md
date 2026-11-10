@@ -138,8 +138,9 @@ FileSummary
           | "too_large" | "unparsed",
   "add": 12, "del": 3,             0 for a file with no rows
   "hash": "9e3779b97f4a7c15",      16 hex chars, FNV-1a of everything drawn for the file's diff: change, old
-                                   path, mode flag, each hunk header and row (kind, line numbers, text).
-                                   Differs from the fingerprint: it takes context and line numbers too
+                                   path, mode flag, each hunk header and row (kind, line numbers, text),
+                                   then the file's threads as `Thread` JSON. Differs from the fingerprint:
+                                   it takes context, line numbers and the cards too
   "viewed": false,                 its fingerprint equals the one in meta.json
   "threads": 2, "open": 1, "new": 0, "unsent": 1 }   counts of the threads placed in this file
 ```

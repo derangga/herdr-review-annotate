@@ -178,8 +178,8 @@ resolved card ([gui-thread](gui-thread.md)) adds its id to `seenSent` too.
 ```
 
 A reload of the state marks as `dirty` the files whose summary changed and the files on screen, and nothing else: with
-100 files, a 10 s timer must not run 100 `file` commands. The summary's `hash` changes with any line of the file's diff, so
-a file off screen whose lines changed at the same counts is fetched again too.
+100 files, a 10 s timer must not run 100 `file` commands. The summary's `hash` changes with any line of the file's diff and any
+of its threads, so a file off screen whose lines or cards changed at the same counts is fetched again too.
 
 ## Selecting a file and scrolling to an item
 

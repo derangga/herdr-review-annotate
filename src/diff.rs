@@ -235,7 +235,8 @@ impl DiffFile {
     /// What `state --json` sends as `hash`: the same FNV-1a, over everything the panel draws of the
     /// file's diff. Unlike `fingerprint` it takes each hunk header and every row with its kind and
     /// line numbers, context included, so lines that only moved, or a changed context line, change it.
-    pub fn content_hash(&self) -> String {
+    /// `cards` is what the file's threads draw, hashed after the rows.
+    pub fn content_hash(&self, cards: &[u8]) -> String {
         let mut hash = Fnv::new(self);
         for hunk in &self.hunks {
             hash.eat(format!("@{}\n", hunk.header).as_bytes());
@@ -249,6 +250,7 @@ impl DiffFile {
                 hash.eat(format!("{kind}{old}\0{new}\0{}\n", row.text).as_bytes());
             }
         }
+        hash.eat(cards);
         hash.finish()
     }
 
@@ -1272,18 +1274,18 @@ mod tests {
     fn the_content_hash_covers_every_drawn_row() {
         let file = two_hunks();
         let again = parse(TWO_HUNKS.as_bytes(), MAX_PATCH).remove(0);
-        assert_eq!(file.content_hash(), again.content_hash());
-        assert_eq!(file.content_hash().len(), 16);
+        assert_eq!(file.content_hash(b""), again.content_hash(b""));
+        assert_eq!(file.content_hash(b"").len(), 16);
         let edited = parse(TWO_HUNKS.replace("+L16\n", "+Z16\n").as_bytes(), MAX_PATCH).remove(0);
         assert_eq!(file.stat(), edited.stat());
-        assert_ne!(file.content_hash(), edited.content_hash());
+        assert_ne!(file.content_hash(b""), edited.content_hash(b""));
         let moved = parse(
             TWO_HUNKS.replace("-13,7 +14,7", "-30,7 +31,7").as_bytes(),
             MAX_PATCH,
         )
         .remove(0);
         assert_eq!(file.fingerprint(), moved.fingerprint());
-        assert_ne!(file.content_hash(), moved.content_hash());
+        assert_ne!(file.content_hash(b""), moved.content_hash(b""));
     }
 
     #[test]

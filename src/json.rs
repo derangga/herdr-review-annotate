@@ -56,7 +56,7 @@ pub struct FileSummary {
     pub change: ChangeJson,
     pub add: usize,
     pub del: usize,
-    /// Changes whenever anything drawn for the file's diff does. See `DiffFile::content_hash`.
+    /// Changes whenever anything drawn for the file does, its rows or its cards. See `DiffFile::content_hash`.
     pub hash: String,
     pub viewed: bool,
     pub threads: usize,
