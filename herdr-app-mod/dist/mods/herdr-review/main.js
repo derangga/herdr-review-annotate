@@ -467,11 +467,12 @@ var realHost = {
 
 // src/icons.ts
 var GENERIC = "file";
+var FOLDER = "folder";
 var NAMES = /* @__PURE__ */ new Map([
   ["Cargo.toml", "rust"],
   ["Cargo.lock", "rust"],
   ["Dockerfile", "docker"],
-  ["Makefile", "make"],
+  ["Makefile", "makefile"],
   ["LICENSE", "license"],
   [".gitignore", "git"],
   [".gitattributes", "git"]
@@ -484,12 +485,35 @@ var EXTENSIONS = new Map([
   ...group("markdown", "md"),
   ...group("json", "json jsonc"),
   ...group("yaml", "yaml yml"),
-  ...group("shell", "sh bash zsh fish"),
-  ...group("js", "js mjs cjs jsx"),
-  ...group("ts", "ts tsx mts cts"),
-  ...group("code", "py go c h cpp hpp java kt swift rb php lua nix sql vue svelte astro html css scss less"),
-  ...group("image", "png jpg jpeg gif svg webp ico"),
-  ...group("text", "txt"),
+  ...group("console", "sh bash zsh fish"),
+  ...group("javascript", "js mjs cjs"),
+  ...group("react", "jsx"),
+  ...group("typescript", "ts mts cts"),
+  ...group("react_ts", "tsx"),
+  ...group("python", "py"),
+  ...group("go", "go"),
+  ...group("c", "c"),
+  ...group("h", "h"),
+  ...group("cpp", "cpp"),
+  ...group("hpp", "hpp"),
+  ...group("java", "java"),
+  ...group("kotlin", "kt"),
+  ...group("swift", "swift"),
+  ...group("ruby", "rb"),
+  ...group("php", "php"),
+  ...group("lua", "lua"),
+  ...group("nix", "nix"),
+  ...group("database", "sql"),
+  ...group("vue", "vue"),
+  ...group("svelte", "svelte"),
+  ...group("astro", "astro"),
+  ...group("html", "html"),
+  ...group("css", "css"),
+  ...group("sass", "scss"),
+  ...group("less", "less"),
+  ...group("image", "png jpg jpeg gif webp ico"),
+  ...group("svg", "svg"),
+  ...group("document", "txt"),
   ...group("diff", "patch diff")
 ]);
 function fileIcon(name) {
@@ -500,7 +524,7 @@ function fileIcon(name) {
   const dot = name.lastIndexOf(".");
   return dot < 0 ? GENERIC : EXTENSIONS.get(name.slice(dot + 1).toLowerCase()) ?? GENERIC;
 }
-var ICON_NAMES = [.../* @__PURE__ */ new Set([GENERIC, ...NAMES.values(), ...EXTENSIONS.values()])];
+var ICON_NAMES = [.../* @__PURE__ */ new Set([GENERIC, FOLDER, ...NAMES.values(), ...EXTENSIONS.values()])];
 
 // src/rows.ts
 function cleanText(text) {
@@ -2875,7 +2899,7 @@ function reduceError(m, error) {
 }
 
 // src/view.ts
-import { div as div2, svg as svg3 } from "gpui-kit";
+import { div as div2, image, list as list2, svg as svg3 } from "gpui-kit";
 import { h_flex as h_flex3, Input, Scrollbar as Scrollbar2, Textarea, v_flex as v_flex2 } from "gpui-base";
 
 // src/message-view.ts
@@ -2934,6 +2958,7 @@ function drawMessage(m, t, dispatch, ui) {
 
 // src/view.ts
 var SIDEBAR_W = 280;
+var INDENT = 20;
 var tint2 = (color, alpha) => `${color}${alpha}`;
 var drawing = (name) => `mods/herdr-review/icons/${name}.svg`;
 function button(id, label, on, t, click, danger = false, icon, tip) {
@@ -3185,19 +3210,21 @@ function dockBar(m, t, dispatch, ui) {
     )
   );
 }
-function sideRow(r, m, t, dispatch) {
+function sideRow(r, m, t) {
   if (r.kind === "dir") {
-    return div2().w_full().flex_none().px(8).pt(8).pb(2).truncate().text_ellipsis_start().text_size(11).text_color(t.dim).child(r.text);
+    return h_flex3().w_full().flex_none().px(8).pt(8).pb(2).gap(6).items_center().child(image(drawing(FOLDER)).size(14).flex_none()).child(div2().flex_1().min_w(0).truncate().text_ellipsis_start().text_size(11).text_color(t.dim).child(r.text));
   }
   const letter = pick2(letterColor(r.letter), t);
-  return v_flex2().id(r.key).w_full().flex_none().px(8).py(3).rounded(7).cursor_pointer().when(m.selected === r.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(() => dispatch({ _tag: "FileChosen", path: r.path })).child(
-    h_flex3().w_full().gap(6).items_center().child(div2().w(12).flex_none().text_size(11).text_color(letter).child(r.letter)).child(svg3(`mods/herdr-review/icons/${r.icon}.svg`).size(14).flex_none().text_color(t.dim)).child(
+  return v_flex2().id(r.key).w_full().flex_none().px(8).py(3).rounded(7).cursor_pointer().when(m.selected === r.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).child(
+    h_flex3().w_full().pl(INDENT).gap(6).items_center().child(div2().w(12).flex_none().text_size(11).text_color(letter).child(r.letter)).child(
+      image(drawing(r.icon)).size(14).flex_none().when(r.viewed, (e) => e.opacity(0.5))
+    ).child(
       div2().flex_1().min_w(0).truncate().text_color(r.viewed ? t.dim : t.foreground).child(r.name)
     ).when(r.add > 0, (e) => e.child(div2().flex_none().text_size(11).text_color(t.ansi2).child(`+${r.add}`))).when(r.del > 0, (e) => e.child(div2().flex_none().text_size(11).text_color(t.ansi1).child(`-${r.del}`)))
   ).when(
     r.badges.length > 0,
     (e) => e.child(
-      h_flex3().w_full().pl(38).gap(8).children(
+      h_flex3().w_full().pl(38 + INDENT).gap(8).children(
         r.badges.map(
           (b) => div2().flex_none().text_size(10).text_color(pick2(badgeColor(b), t)).child(b.text)
         )
@@ -3215,7 +3242,20 @@ function sidebar(m, t, dispatch, ui, empty) {
     ).when(info.none, (e) => e.child(div2().px(8).pt(4).text_size(11).text_color(t.dim).child("no match")))
   ).child(
     div2().flex_1().min_h(0).relative().child(
-      v_flex2().id("review-files").absolute().inset_0().overflow_y_scroll().p(6).children(rows.map((r) => sideRow(r, m, t, dispatch))).when(rows.length === 0 && !info.none, (e) => e.child(div2().p(8).text_color(t.dim).child(empty)))
+      rows.length === 0 ? div2().p(14).text_color(t.dim).child(info.none ? "" : empty) : list2(
+        "review-files",
+        rows.length,
+        (i) => rows[i]?.key ?? `row:${i}`,
+        (i) => {
+          const r = rows[i];
+          return div2().w_full().px(6).when(i === 0, (e) => e.pt(6)).when(i === rows.length - 1, (e) => e.pb(6)).child(r === void 0 ? div2() : sideRow(r, m, t));
+        }
+      ).absolute().inset_0().on_item_click((key) => {
+        const r = rows.find((x) => x.key === key);
+        if (r?.kind === "file") {
+          dispatch({ _tag: "FileChosen", path: r.path });
+        }
+      })
     ).child(Scrollbar2.vertical("review-files").absolute().inset_0())
   );
 }
