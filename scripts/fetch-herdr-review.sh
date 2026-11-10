@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Put the release binary into bin/. Herdr runs this with cwd = plugin root.
-# The version is the one in Cargo.toml. HERDR_REVIEW_BASE_URL replaces the release URL (tests).
+# Put the release binary into bin/. Herdr runs this with cwd = plugin root, where the version is the one in Cargo.toml.
+# build-dist.sh copies this file into the herdr-app mod folder as fetch-binary.sh, next to a VERSION file. There the
+# folder it sits in is the root, and bin/ goes beside it.
+# HERDR_REVIEW_BASE_URL replaces the release URL (tests).
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-[ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+here="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$here/VERSION" ]; then
+  cd "$here"
+  version="$(tr -d '[:space:]' < VERSION)"
+  [ -n "$version" ] || { echo "VERSION is empty" >&2; exit 1; }
+else
+  cd "$here/.."
+  version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+  [ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+fi
 mkdir -p bin
 if [ -x bin/herdr-review ] && [ "$(cat bin/herdr-review.version 2>/dev/null || true)" = "$version" ]; then
   echo "herdr-review $version already installed"

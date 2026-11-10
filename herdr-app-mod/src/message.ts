@@ -7,6 +7,8 @@ import type { Cmd, MessageComment, MessageView, Model, ReviewError } from "./typ
 type Step = [Model, Cmd[]];
 
 const BUSY_EDITOR = "finish or cancel the comment first";
+// The repair for a missing or old binary, for a shell. A panel installed through an agent has no clone to run a script from.
+export const FETCH = 'bash "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/herdr-review/fetch-binary.sh"';
 export const NO_AGENT = "no agent to read: send once to choose one, or open the panel from an agent's terminal";
 
 export const initMessage = (): MessageView => ({ data: null, loading: false, sending: false, comments: [], next: 1, selection: null, drag: null, hover: null, status: null });
@@ -195,9 +197,9 @@ const firstLine = (text: string): string => text.trim().split("\n")[0] ?? "";
 export function errorText(error: ReviewError): string {
   switch (error._tag) {
     case "BinaryMissing":
-      return "herdr-review not found, set props.bin or run scripts/stage-app-mod.sh";
+      return `herdr-review not found. Run: ${FETCH}`;
     case "TooOld":
-      return "update herdr-review";
+      return `update herdr-review. Run: ${FETCH}`;
     case "ContractMismatch":
       return `unexpected reply at ${error.path}: ${error.detail}`;
     case "Busy":

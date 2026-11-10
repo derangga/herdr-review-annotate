@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the herdr-app mod and the release binary, and copies both to the mod's own folder:
+# Builds the herdr-app mod (build-dist.sh) and the release binary, and copies both to the mod's own folder:
 # ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review (the binary under bin/, the file-type and button drawings under icons/), and the
 # herdr-review layout to layouts/. Nothing else under
 # the app folder is touched. Saving any file in the mod folder reloads the mod, so main.js goes last.
@@ -8,11 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 dest="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/herdr-review"
 
-(
-  cd herdr-app-mod
-  [ -d node_modules ] || npm ci
-  npm run build
-)
+# The mod folder comes from herdr-app-mod/dist, the one an agent installs, so a staged copy and an installed one match.
+bash scripts/build-dist.sh
+src=herdr-app-mod/dist/mods/herdr-review
 cargo build --release
 
 mkdir -p "$dest/bin"
@@ -20,9 +18,9 @@ mkdir -p "$dest/bin"
 cp target/release/herdr-review "$dest/bin/herdr-review.new"
 mv "$dest/bin/herdr-review.new" "$dest/bin/herdr-review"
 mkdir -p "$dest/icons"
-cp herdr-app-mod/icons/*.svg "$dest/icons/"
-cp herdr-app-mod/mod.json "$dest/mod.json"
-cp herdr-app-mod/out/main.js "$dest/main.js"
+cp "$src"/icons/*.svg "$dest/icons/"
+cp "$src/mod.json" "$src/VERSION" "$src/fetch-binary.sh" "$dest/"
+cp "$src/main.js" "$dest/main.js"
 # The layout with the Review button in the tab bar: Herdr's main with one more block. Ours, so it is replaced.
 cp herdr-app-mod/layouts/herdr-review.json "$dest/../../layouts/herdr-review.json"
 

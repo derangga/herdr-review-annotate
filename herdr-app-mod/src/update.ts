@@ -36,7 +36,7 @@ import {
   wanted,
 } from "./rows.ts";
 import type { Spot } from "./rows.ts";
-import { commentAction, hovered as messageHovered, initMessage, messageFailed, messageLoaded, messageSaved, messageSent, plusClicked as messagePlusClicked, pressed as messagePressed, refreshed as messageRefreshed, released as messageReleased, sendClicked as messageSendClicked, viewChosen } from "./message.ts";
+import { FETCH, commentAction, hovered as messageHovered, initMessage, messageFailed, messageLoaded, messageSaved, messageSent, plusClicked as messagePlusClicked, pressed as messagePressed, refreshed as messageRefreshed, released as messageReleased, sendClicked as messageSendClicked, viewChosen } from "./message.ts";
 import type { Cmd, Colors, FileView, Jump, Model, Msg, Panel, ReviewError, Reveal, Spec, State, ThreadActionKind, WriteOp } from "./types.ts";
 
 type Side = "old" | "new" | null;
@@ -907,9 +907,9 @@ export function failed(m: Model, msg: Extract<Msg, { _tag: "Failed" }>): Step {
 function reduceError(m: Model, error: ReviewError): Step {
   switch (error._tag) {
     case "BinaryMissing":
-      return [{ ...m, banner: "herdr-review not found, set props.bin or run scripts/stage-app-mod.sh", stopped: true, pending: false }, []];
+      return [{ ...m, banner: `herdr-review not found. Run: ${FETCH}`, stopped: true, pending: false }, []];
     case "TooOld":
-      return [{ ...m, banner: "update herdr-review", stopped: true, pending: false }, []];
+      return [{ ...m, banner: `update herdr-review. Run: ${FETCH}`, stopped: true, pending: false }, []];
     case "ContractMismatch":
       return [{ ...m, banner: `unexpected reply at ${error.path}: ${error.detail}`, stopped: true, pending: false }, []];
     case "Busy":

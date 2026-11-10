@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeCli } from "../src/cli.ts";
 import { decodeMessage, decodeMessageSent } from "../src/decode.ts";
-import { messageItems, NO_AGENT, sendButton, viewButton } from "../src/message.ts";
+import { FETCH, messageItems, NO_AGENT, sendButton, viewButton } from "../src/message.ts";
 import { editorTitle } from "../src/rows.ts";
 import { run } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
@@ -206,7 +206,7 @@ test("E: a refused request shows its first line, and a binary too old says to up
   const usage = steps(m, failedMsg({ _tag: "BadRequest", stderr: "the agent's message changed, refresh\nusage: herdr-review ..." }, "message-send")).model;
   assert.equal(usage.message.status, "the agent's message changed, refresh");
   const old = steps(m, failedMsg({ _tag: "TooOld" }, "message")).model;
-  assert.equal(old.message.status, "update herdr-review");
+  assert.equal(old.message.status, `update herdr-review. Run: ${FETCH}`);
   assert.equal(old.stopped, false); // the diff keeps working with an older binary
 });
 

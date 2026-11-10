@@ -49,4 +49,12 @@ if [ "$stage" != test ]; then
     [ "$stage" = all ] || npm ci
     npm run build
   )
+  # The folder an agent installs is committed, so it has to match what the source builds.
+  dist="$(mktemp -d)"
+  trap 'rm -rf "$dist"' EXIT
+  bash scripts/build-dist.sh "$dist"
+  diff -r "$dist/mods/herdr-review" herdr-app-mod/dist/mods/herdr-review || {
+    echo "herdr-app-mod/dist is stale: run scripts/build-dist.sh and commit it" >&2
+    exit 1
+  }
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cuts a release from a clean master. Asks for the new version, writes it to Cargo.toml, Cargo.lock
-# and herdr-plugin.toml, commits that, tags the commit, then asks before pushing. release.yml builds
-# on any pushed v* tag.
+# and herdr-plugin.toml, rebuilds herdr-app-mod/dist and the README's install URL, commits that, tags the
+# commit, then asks before pushing. release.yml builds on any pushed v* tag.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,7 +21,8 @@ version=${version#v}
 tag=v$version
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "tag $tag already exists" >&2; exit 1; }
 
-# release.yml requires the tag, Cargo.toml and herdr-plugin.toml to agree.
+# release.yml requires the tag, Cargo.toml, herdr-plugin.toml, the mod folder's VERSION and the README's install URL
+# to agree. The URL names this tag, so the tag's commit has to hold the dist/ an agent installs from it.
 if [ "$(version_of Cargo.toml)" != "$version" ] || [ "$(version_of herdr-plugin.toml)" != "$version" ]; then
   for file in Cargo.toml herdr-plugin.toml; do
     # Only the first version line, the package's, changes.
@@ -29,12 +30,16 @@ if [ "$(version_of Cargo.toml)" != "$version" ] || [ "$(version_of herdr-plugin.
       "$file" > "$file.new" && mv "$file.new" "$file"
   done
   cargo update --offline --package herdr-review
-  git add Cargo.toml Cargo.lock herdr-plugin.toml
-  git commit -q -m "Release $tag"
   echo "Set $version in Cargo.toml, Cargo.lock and herdr-plugin.toml"
-  undo="git tag -d $tag && git reset --hard HEAD~1"
-else
+fi
+bash scripts/build-dist.sh
+sed "s|/tree/v[^/]*/herdr-app-mod/dist|/tree/$tag/herdr-app-mod/dist|g" README.md > README.md.new && mv README.md.new README.md
+git add Cargo.toml Cargo.lock herdr-plugin.toml README.md herdr-app-mod/dist/mods
+if git diff --cached --quiet; then
   undo="git tag -d $tag"
+else
+  git commit -q -m "Release $tag"
+  undo="git tag -d $tag && git reset --hard HEAD~1"
 fi
 
 git tag -a "$tag" -m "$tag"

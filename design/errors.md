@@ -29,8 +29,8 @@ breaks). One row per error.
 
 | Error | Panel edge |
 |---|---|
-| `BinaryMissing` | Next candidate binary, then banner "herdr-review not found". No retry |
-| `TooOld` | Banner "update herdr-review". No retry |
+| `BinaryMissing` | Next candidate binary, then banner "herdr-review not found. Run: <fetch-binary.sh command>". No retry |
+| `TooOld` | Banner "update herdr-review. Run: <fetch-binary.sh command>". No retry |
 | `ContractMismatch` | Banner with the field path and both schema numbers. No retry |
 | `Busy` | Status line, the user repeats the action |
 | `BackendFailed` | Status line and the last good screen kept. Banner when there is none |

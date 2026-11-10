@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeCli } from "../src/cli.ts";
+import { FETCH } from "../src/message.ts";
 import { open, run, watch, withRecovery } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
 import { initModel, update } from "../src/update.ts";
@@ -314,11 +315,11 @@ test("E: ReadTheme under app answers colors null", async () => {
 
 test("E: ReadTheme that fails (TooOld, ContractMismatch, BackendFailed, a timeout, no binary) answers colors null and one status, not Failed", async () => {
   const replies = [exit(2, "unknown command 'theme'"), themeReply({ schema: 2 }), ok("not json"), exit(1, "boom\nmore"), exit(124, "")] as const;
-  const texts = ["update herdr-review", "unexpected reply at schema: this mod reads schema 1, the binary sent 2", "unexpected reply at $: the reply is not JSON", "boom", "herdr-review failed (124)"];
+  const texts = [`update herdr-review. Run: ${FETCH}`, "unexpected reply at schema: this mod reads schema 1, the binary sent 2", "unexpected reply at $: the reply is not JSON", "boom", "herdr-review failed (124)"];
   for (const [i, reply] of replies.entries()) {
     const msg = await run(env({ exec: () => reply }).env, { _tag: "ReadTheme" });
     assert.deepEqual(msg, { _tag: "ThemeLoaded", colors: null, warnings: [unreadable + texts[i]] });
   }
   const missing = await run(env({ exec: () => "reject" }).env, { _tag: "ReadTheme" });
-  assert.deepEqual(missing, { _tag: "ThemeLoaded", colors: null, warnings: [unreadable + "herdr-review not found, set props.bin or run scripts/stage-app-mod.sh"] });
+  assert.deepEqual(missing, { _tag: "ThemeLoaded", colors: null, warnings: [unreadable + `herdr-review not found. Run: ${FETCH}`] });
 });

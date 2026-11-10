@@ -14,11 +14,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: tag matches Cargo.toml and the manifest
+      - name: tag matches Cargo.toml, the manifest, the mod folder and the README install URL
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "${GITHUB_REF_NAME}"
           test "$version" = "$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml | head -1)"
+          test "$version" = "$(tr -d '[:space:]' < herdr-app-mod/dist/mods/herdr-review/VERSION)"
+          grep -q "/tree/${GITHUB_REF_NAME}/herdr-app-mod/dist" README.md
 
   # The same checks as ci.yml's test job, on the tagged commit. verify, test, build and publish are separate jobs
   # so a failed one can be re-run alone from the Actions page.

@@ -242,13 +242,39 @@ answers the same way, with `herdr-review comment ...` from its shell, and the pa
 
 ### Install the panel
 
-From a checkout, with `cargo`, `node` and `npm` installed:
+Tell your agent (Claude Code, or any agent that can read files and run a shell):
+
+```text
+Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/derangga/herdr-review-annotate/tree/v0.5.0/herdr-app-mod/dist
+```
+
+The agent copies `mods/herdr-review/` into `~/.config/herdr-app/mods/`, merges `keys.json` (the panel opens with
+`cmd-shift-r`), downloads the `herdr-review` binary of the same release with `fetch-binary.sh`, which checks its
+sha256, and runs `herdr-app check`. It needs no `cargo`, `node` or `npm`. It runs on macOS and Linux and was tried on herdr-app 0.1.14.
+
+What the mod runs: the `herdr-review` binary (which runs `git` and `hc`), and `mkdir` and `chmod` for a private
+scratch folder under `~/.config/herdr-app/data/herdr-review`. The panel itself does not use the network. Only
+`fetch-binary.sh` does, to download the release binary from GitHub.
+
+To update, give your agent the same prompt with the new tag from the release page and add "this updates the
+herdr-review mod that is already installed". The agent replaces that folder's files and keeps `bin/`.
+
+The mod folder must stay named `herdr-review`, because the key binding names it. If the name is taken, the agent
+renames the folder and the key together.
+
+If the panel shows `herdr-review not found` or `update herdr-review`, the banner prints the command that fetches
+the binary. Run it, then press `Refresh`.
+
+#### From a checkout
+
+For development, with `cargo`, `node` and `npm` installed:
 
 ```sh
 bash scripts/stage-app-mod.sh
 ```
 
-The script builds the mod and the release binary, and copies them into
+The script builds the mod (`scripts/build-dist.sh`, which rewrites `herdr-app-mod/dist/`, the folder above) and the
+release binary, and copies them into
 `~/.config/herdr-app/mods/herdr-review` (or `$HERDR_APP_HOME/mods/herdr-review`): `mod.json`, `main.js`, and
 the binary at `bin/herdr-review`. Nothing else under the app folder is touched. It stages its own binary
 because the panel needs `herdr-review state`, which a copy on `PATH` may be too old to have. The panel runs
@@ -256,7 +282,8 @@ the staged binary first and `herdr-review` on `PATH` second. The prompt it sends
 so the agent replies with the same version.
 
 Run `herdr-app check ~/.config/herdr-app/mods/herdr-review`. Run the script again after an update. Saving
-the mod folder reloads a panel that is open.
+the mod folder reloads a panel that is open. Commit the rebuilt `herdr-app-mod/dist/` with the source change, CI
+fails when it is stale.
 
 The script never edits `keys.json`. To open the panel, add this line under `"global"` in
 `~/.config/herdr-app/keys.json`:
