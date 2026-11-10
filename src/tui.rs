@@ -556,7 +556,8 @@ impl App {
 
     /// Once per tick: when the log changed, read it and reload the diff, since an agent replying
     /// is the moment its fix landed. It waits while the editor is open or a range is being
-    /// selected. A failed read is a warning and the next tick tries again. True when it read the
+    /// selected. A failed read is a warning and the next tick tries again. A failed diff reload is
+    /// a failure on the status line, and the next tick tries it again. True when it read the
     /// log or warned, whether or not the diff reload worked, since the screen may differ.
     pub fn check_store(&mut self, git: &mut Git) -> bool {
         if self.view.select.is_some() {
@@ -578,9 +579,13 @@ impl App {
                 return true;
             }
         }
+        let before = self.seen_len;
         match self.read_store(&dir) {
             Ok(()) => {
                 if let Err(message) = self.read_diff(&root, git) {
+                    // The diff on screen is not the one for this log. Forget that the log was
+                    // read, so the next tick loads the diff again.
+                    self.seen_len = before;
                     self.fail(message);
                     self.rebuild_view();
                 }

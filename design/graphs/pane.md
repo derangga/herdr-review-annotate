@@ -63,6 +63,7 @@ This is the only stream in the program. It merges two sources.
     -> apply Action to the app state       R: per action, see the next graphs
   -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
     -> read from offset, fold, reload diff
+                                                      E: git fails on the diff reload -> failure on the status line, diff kept, seen length put back, retry next tick
 ```
 
 An idle tick builds no frame. The loop holds no lock between ticks. A panic hook restores the terminal

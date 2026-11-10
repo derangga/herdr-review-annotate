@@ -658,6 +658,30 @@ fn a_change_to_the_log_is_read_and_the_diff_is_reloaded() {
 }
 
 #[test]
+fn a_failed_diff_reload_after_a_log_change_is_tried_again_on_the_next_tick() {
+    let fixture = Fixture::new("store-change-retry");
+    let mut app = fixture.started();
+    let path = fixture.dir().join("review.jsonl");
+    let line = log_line(&add_event("u1"));
+    *fixture.diff_error.borrow_mut() = Some(GitError::Failed {
+        args: "diff".into(),
+        stderr: "fatal: index locked".into(),
+    });
+    drive(&fixture, &mut app, vec![None, None], |tick| {
+        if tick == 0 {
+            std::fs::write(&path, &line).unwrap();
+        }
+    });
+    assert!(screen_of(&app).contains("fatal: index locked"));
+    let failed_at = fixture.diffs.get();
+    // Git works again and nothing else changes: the next tick must load the diff.
+    *fixture.diff_error.borrow_mut() = None;
+    drive(&fixture, &mut app, vec![None], |_| {});
+    assert!(fixture.diffs.get() > failed_at);
+    assert_eq!(app.review.threads.len(), 1);
+}
+
+#[test]
 fn a_thread_in_the_log_is_drawn_as_a_card_wrapped_to_the_panes_width() {
     let fixture = Fixture::new("cards");
     std::fs::create_dir_all(fixture.dir()).unwrap();
