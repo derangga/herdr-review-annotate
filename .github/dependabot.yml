@@ -1,0 +1,18 @@
+# Weekly update PRs. The Rust toolchain pin is not here on purpose: the workflows say that moving it is a
+# change of its own, and Dependabot would read `dtolnay/rust-toolchain@1.98.1` as an action version.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /herdr-app-mod
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain

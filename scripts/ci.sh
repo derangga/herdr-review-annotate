@@ -24,8 +24,11 @@ node --version
 
 if [ "$stage" != build ]; then
   cargo fmt --all --check
-  cargo clippy --all-targets -- -D warnings
-  cargo test --all-targets
+  cargo clippy --all-targets --locked -- -D warnings
+  # The build without the `syntax` feature has its own cfg branches, so it is linted and tested too.
+  cargo clippy --all-targets --no-default-features --locked -- -D warnings
+  cargo test --all-targets --locked
+  cargo test --all-targets --no-default-features --locked
   bash scripts/test-fetch-herdr-review.sh
 
   # The herdr-app mod. The typecheck is local only, it needs gpui-kit.d.ts, which only a machine where
@@ -39,7 +42,7 @@ if [ "$stage" != build ]; then
 fi
 
 if [ "$stage" != test ]; then
-  cargo build --no-default-features
+  cargo build --no-default-features --locked
   (
     cd herdr-app-mod
     # With no stage the test steps above already installed the mod's packages.

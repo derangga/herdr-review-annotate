@@ -12,7 +12,8 @@ concurrency:
 permissions:
   contents: read
 
-# test, then build. Each is its own job so a failed one can be re-run alone from the Actions page.
+# test, then build, and an msrv check of the Rust version Cargo.toml declares. Each is its own job so a
+# failed one can be re-run alone from the Actions page.
 jobs:
   test:
     strategy:
@@ -23,8 +24,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # Keep in step with the cargo you run scripts/ci.sh with, and with the build job and release.yml's test
-      # job. Moving it is a change of its own.
+      # and build jobs. Moving it is a change of its own.
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
@@ -46,6 +49,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
@@ -54,3 +59,18 @@ jobs:
           cache: npm
           cache-dependency-path: herdr-app-mod/package-lock.json
       - run: bash scripts/ci.sh build
+
+  # `rust-version` in Cargo.toml is a promise. This job builds with exactly that version, so a
+  # dependency or a std call that needs a newer one fails here. Keep the two in step.
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets

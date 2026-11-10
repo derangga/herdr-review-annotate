@@ -80,7 +80,8 @@ herdr-review/
   tests/*.rs           integration tests: store processes, live pickup, a temporary repository
   tests/fixtures/*.patch
   src/<module>/tests.rs  unit tests of the modules that have one
-  .github/workflows/ci.yml, release.yml
+  .github/workflows/ci.yml, release.yml   test, build and msrv jobs, and the release
+  .github/dependabot.yml                  weekly update PRs for cargo, npm and actions
 ```
 
 Dependencies: `ratatui` 0.30 (brings crossterm), `serde`, `serde_json`, `toml` (for the keymap file,
@@ -90,7 +91,8 @@ the cargo feature `syntax`, which is on by default: `syntect` with `regex-fancy`
 default features, and `two-face` with `syntect-fancy` for TypeScript, TSX, TOML and the other grammars `bat`
 ships. Neither builds C code. `cargo build --no-default-features` leaves both out. No `uuid`, `notify`, `tokio`, `similar`,
 `rustix` or git library. Lints and the release profile are copied from
-`herdr-annotate/rust/Cargo.toml`. `rust-version` is 1.89 or newer, for `std::fs::File::lock`.
+`herdr-annotate/rust/Cargo.toml`. `rust-version` is 1.89 or newer, for `std::fs::File::lock`, and the `msrv`
+job in `ci.yml` builds with exactly that version.
 
 The panel is TypeScript and adds a second toolchain, kept small:
 
