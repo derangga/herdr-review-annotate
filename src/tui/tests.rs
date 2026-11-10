@@ -2422,7 +2422,8 @@ fn log_of(fixture: &Fixture, file: &str) -> String {
 #[test]
 fn archive_asks_first_and_then_moves_the_resolved_threads_out_of_the_pane() {
     let (fixture, mut app) = with_resolved_threads("archive");
-    assert_eq!(app.unsent(), 1);
+    // u2 was never sent but the user resolved it, so it is not unsent. The archive still reports it.
+    assert_eq!(app.unsent(), 0);
     press(&fixture, &mut app, [key('A')]);
     assert_eq!(app.prompt, Some(Prompt::Archive));
     let screen = screen_of(&app);

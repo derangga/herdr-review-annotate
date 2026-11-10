@@ -105,7 +105,7 @@ test("the sidebar has a heading where the folder changes, and the files under it
     del: 1,
     viewed: false,
     badges: [
-      { text: "4 unsent", tone: "unsent" },
+      { text: "3 unsent", tone: "unsent" },
       { text: "3 open", tone: "open" },
       { text: "1 new", tone: "new" },
     ],

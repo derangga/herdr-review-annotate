@@ -11,7 +11,10 @@ in [commands](commands.md), user writes, and the store side in [store](store.md)
        a load is in flight or the editor is open                E: nothing (the button is off), no call
        State.archivable is 0, or no state yet                   E: nothing (the button is off), no call
        else confirmArchive = true and nothing else. The bar under the diff becomes the question
-       "Archive 3 resolved threads?" ("Archive 1 resolved thread?" for one), a red Archive and a Cancel
+       "Archive 3 resolved threads?" ("Archive 1 resolved thread?" for one), an accent Archive and a Cancel.
+       State.unread_resolved above 0 adds " N more resolved by the agent is unread." ("are unread" for
+       more than one), the threads archive leaves because the user has not seen the agent's resolve
+       E: unread_resolved 0 -> the sentence is the plain question
 -> ConfirmCancelled                                    the Cancel button, or Esc on the bar
   -> confirmArchive = false, nothing else changes
 -> Loaded while the question is up
@@ -36,8 +39,13 @@ in [commands](commands.md), user writes, and the store side in [store](store.md)
   -> Triggered
 ```
 
+The Archive button with nothing archivable and `unread_resolved` above 0 is off, and `rows.dock` returns a dim note,
+"Nothing to archive yet: N resolved by the agent is unread (marked new)", which `view.ts` draws next to the buttons.
+The unread cards become seen by being opened or by staying on screen for a tick ([gui-stream](gui-stream.md), seen by
+looking), and the reload that follows brings `archivable` up.
+
 The panel counts before asking: `state` carries `archivable`, the threads `archive` would move now, and the
-Archive button shows it and turns off at 0 ([shapes](../shapes.md)). The number is from the last load, and the
+Archive button shows it and turns off at 0 ([shapes](../shapes.md)); `unread_resolved` is the rest of the resolved threads. The number is from the last load, and the
 reply of the archive says what moved.
 
 The store counts under its lock, so it archives what is resolved then and not what the button counted. A
@@ -77,7 +85,8 @@ Cardinality: once per user action.
 
 Each `E:` line is one test. Also: the archive button is disabled while a load is in flight and when `archivable` is 0 (a click then
 asks nothing), and otherwise reads `Archive N`, a click on Archive
-only asks and the row has the sentence with the number (3 plural, 1 singular) and the two buttons, a reload to 0
+only asks and the row has the sentence with the number (3 plural, 1 singular) and the two buttons, the sentence with one unread, with several, and with none, the off button and its note when
+nothing is archivable but some are unread (and no note with something archivable or nothing unread), a reload to 0
 drops the question and a reload to another number changes it, ArchiveConfirmed without the question sends nothing,
 Cancel and Esc leave the model as it was, a reload keeps the question and a send drops it, the status text for 0, 1 and several unsent, and the `view` argv carries the
 model's spec. A status that reports a result (sent, archived, sending) survives the reload it starts and goes at

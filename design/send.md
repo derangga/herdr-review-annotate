@@ -121,7 +121,7 @@ The chosen target is written to `meta.json` as `hc_target`.
 
 ## Steps
 
-1. Collect unsent threads. With `--all-open` or the resend key, collect the chosen open threads too. With
+1. Collect unsent threads (open ones; a thread the user resolved before sending is skipped until reopened). With `--all-open` or the resend key, collect the chosen open threads too. With
    `--thread <id>`, collect exactly the named open threads, sent or not, and no others.
 2. None: say "nothing to send".
 3. Resolve the target. Call `deliver_to_agent(Delivery::Send, pane, text, run_herdr_output)`, or the hc

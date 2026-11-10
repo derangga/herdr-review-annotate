@@ -475,9 +475,10 @@ export function scrolled(m: Model, stream: Stream): Msg | null {
   const { first, end } = visibleRange(stream, offset, m.height);
   const top = stream.items[first]?.key ?? null;
   const visible = pathsOf(stream.items, first, end);
-  const same = visible.length === m.visible.length && visible.every((p, i) => p === m.visible[i]);
-  if (target === null && offset === m.offset && stream.total === m.total && top === m.top && same) return null;
-  return { _tag: "Scrolled", offset, total: stream.total, top, visible, revealed: target !== null };
+  const fresh = freshOn(stream.items, first, end);
+  const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((p, i) => p === b[i]);
+  if (target === null && offset === m.offset && stream.total === m.total && top === m.top && same(visible, m.visible) && same(fresh, m.fresh)) return null;
+  return { _tag: "Scrolled", offset, total: stream.total, top, visible, fresh, revealed: target !== null };
 }
 
 // A wheel or trackpad event as the pixels to scroll down by, or null when it is mostly sideways, which the code box's own
@@ -502,6 +503,12 @@ export function offsetOfThumb(total: number, height: number, top: number): numbe
   const thumb = thumbOf(total, height, 0);
   if (thumb === null) return 0;
   return clampOffset((top / Math.max(1, height - thumb.size)) * maxOffset(total, height), total, height);
+}
+
+// The threads an agent resolved that the user has not seen, whose card is among the items from `start` to `end`. The head
+// carries the "new" badge exactly for those, so this reads the card and not a second copy of the rule.
+export function freshOn(items: StreamItem[], start: number, end: number): string[] {
+  return items.slice(Math.max(0, start), Math.max(0, end)).flatMap((i) => (i.kind === "head" && i.tone === "resolved" && i.badges.includes("new") ? [i.id] : []));
 }
 
 // The distinct files of the items from `start` to `end`, topmost first. The threads not in the diff have none.
@@ -601,6 +608,9 @@ export const plural = (n: number, one: string, many: string): string => `${n} ${
 // What archive would move now, as the last state said. Nothing known is nothing to archive.
 export const archivableCount = (state: State | null): number => (state === null ? 0 : state.archivable);
 
+// What archive leaves only because the agent's resolve is unseen, as the last state said.
+export const unreadCount = (state: State | null): number => (state === null ? 0 : state.unread_resolved);
+
 export function unsentCount(state: State | null): number {
   if (state === null) return 0;
   return state.files.reduce((n, f) => n + f.unsent, 0) + state.orphans.filter((t) => t.unsent).length;
@@ -635,7 +645,9 @@ export function confirmRow(m: Model): ConfirmRow | null {
   }
   if (!m.confirmArchive) return null;
   const ok: DockButton = { id: "confirm-archive", label: "Archive", msg: { _tag: "ArchiveConfirmed" }, danger: false, off: m.inFlight, accent: true };
-  return { sentence: `Archive ${plural(archivableCount(m.state), "resolved thread", "resolved threads")}?`, color: "foreground", buttons: [ok, cancel] };
+  const unread = unreadCount(m.state);
+  const more = unread === 0 ? "" : ` ${unread} more resolved by the agent ${unread === 1 ? "is" : "are"} unread.`;
+  return { sentence: `Archive ${plural(archivableCount(m.state), "resolved thread", "resolved threads")}?${more}`, color: "foreground", buttons: [ok, cancel] };
 }
 
 // What a key pressed while the question is up means: Esc cancels.
@@ -644,7 +656,9 @@ export function confirmKey(keystroke: string): Msg | null {
 }
 
 // The bar under the diff when no editor is open: what is selected or focused, and what can be done with it.
-export function dock(m: Model): { label: string; buttons: DockButton[]; actions: DockButton[] } {
+export type DockNote = { text: string; color: string };
+
+export function dock(m: Model): { label: string; buttons: DockButton[]; actions: DockButton[]; note: DockNote | null } {
   const buttons: DockButton[] = [];
   const add = (id: string, label: string, msg: Msg, danger = false): void => void buttons.push({ id, label, msg, danger, off: false });
   const hit = findComment(m.files, m.state, m.focus);
@@ -677,7 +691,10 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
     { id: "archive", label: archivable > 0 ? `Archive ${archivable}` : "Archive", msg: { _tag: "ArchiveClicked" }, danger: false, off: m.inFlight || archivable === 0 },
   ];
   if (shown !== undefined) actions.push({ id: "viewed", label: shown.viewed ? "Mark unviewed" : "Mark viewed", msg: { _tag: "ViewedClicked", path: shown.path, viewed: !shown.viewed }, danger: false, off: false });
-  return { label, buttons, actions };
+  // Why Archive is off when threads are resolved: the agent's resolve is unread, and archive waits for the user to see it.
+  const unread = unreadCount(m.state);
+  const note = archivable === 0 && unread > 0 ? { text: `Nothing to archive yet: ${unread} resolved by the agent ${unread === 1 ? "is" : "are"} unread (marked new)`, color: "dim" } : null;
+  return { label, buttons, actions, note };
 }
 
 // A width that fits the longest line, for the horizontal scroll of the diff.

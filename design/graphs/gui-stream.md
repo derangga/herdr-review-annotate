@@ -84,10 +84,11 @@ A wheel tick during a fling is one message and one render of the visible items o
   -> offset = clampOffset(offset, stream.total, height)
   -> first, end = rows.visibleRange(stream, offset, height)
   -> top = the key of the first item, visible = rows.pathsOf(items, first, end), topmost first
-  -> all of offset, total, top and visible as the model has them, and no request?   null: nothing to say
-  -> Msg.Scrolled { offset, total, top, visible, revealed }
+  -> fresh = rows.freshOn(items, first, end): the ids of the cards in the range whose thread is resolved by an agent and new
+  -> all of offset, total, top, visible and fresh as the model has them, and no request?   null: nothing to say
+  -> Msg.Scrolled { offset, total, top, visible, fresh, revealed }
 -> update(model, Scrolled)                             (pure)
-  -> offset, total, top, visible = the message
+  -> offset, total, top, visible, fresh = the message
   -> selected = the file the request scrolled to when it is on screen (revealed), else the topmost file on screen
        no file on screen (only the threads not in the diff): selected stays
   -> reveal = null when the request was served; a request whose key is not in the stream yet is kept
@@ -114,6 +115,31 @@ sidebar and the fetches follow a wheel tick, the thumb, a file arriving and a re
   -> the files the stream wants, if nothing runs:      Cmd.LoadFiles, below
 -> main.dispatch: no frame for a Scrolled that left `selected` as it was
 ```
+
+## Seen by looking
+
+A resolved card an agent closed counts as seen once it has been on screen, as the TUI counts a cursor landing on it
+([tui](../tui.md)). Only a card of a resolved thread with `is_new` is fresh: an open thread, a thread the user resolved and a
+thread already seen never are.
+
+```
+-> a 500 ms timer in main.ts                           cx.timer.every, started with the root watch
+  -> Msg.Glanced
+-> update(model, Glanced)                              (pure)
+  -> no root, or stopped?                              nothing
+  -> the first id in `fresh` that is also in `glance` and not in `seenSent`
+       none                                            glance = fresh, no Cmd
+       found                                           glance = fresh, seenSent gains the id, Cmd.Write { seen, id }
+-> run Cmd.Write { seen }                              the command opening a card sends (gui-thread.md), by runner.ts
+       E: seen failed of any kind -> nothing shown (gui-thread.md); seenSent keeps the id, so looking does not send it
+          again, and opening the card does
+  -> Msg.Wrote { seen } -> Triggered                   the reload brings is_new false, and the card leaves `fresh`
+```
+
+A card has to be on screen at two ticks in a row, so a card that a fast scroll carries past between ticks sends nothing, and
+one id goes a tick, so a screen of new cards is a queue of a few writes and not a burst. Rendering writes nothing: the model
+learns `fresh` from the stream in `Scrolled`, and the write is a `Cmd` from `update` that `runner.ts` runs. Opening a new
+resolved card ([gui-thread](gui-thread.md)) adds its id to `seenSent` too.
 
 ## Fetching the files
 
@@ -181,7 +207,10 @@ A folded file is not fetched, so its colours are not read, as in the TUI.
 
 ## Tests
 
-Each `E:` line is one test, in `test/scroll.test.ts` and `test/stream.test.ts`. Also: the prefix sums and total of the stream, the
+Each `E:` line is one test, in `test/scroll.test.ts` and `test/stream.test.ts`; seen by looking is in `test/glance.test.ts`: the
+fresh cards (open, user-resolved and seen threads are not), a seen after a whole tick and once, nothing for a card scrolled past
+between ticks, one write a tick, nothing again after a stale or a fresh reload, nothing after opening the card, nothing when
+stopped or without a root, and a failed seen not retried by looking. Also: the prefix sums and total of the stream, the
 items and heights across a file boundary, a folded
 file (viewed, or folded by a click) and what its header says it hides, the placeholder heights, the card height
 estimate for the text, the width and the line count, the layout kept while a wheel tick, a hover, a drag and a selection leave

@@ -70,7 +70,7 @@ variants   Spec          WorkTree | Branch { base }
            Placement     matched | outdated | not_in_diff, with a row index or null
            Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked, SelectionCleared,
                          FileCommentClicked, EditorSaved, EditorCancelled, ThreadAction, SendClicked, PickerChosen, PickerCancelled, ArchiveClicked, ArchiveConfirmed, DeleteConfirmed, ConfirmCancelled, Archived, ViewedClicked,
-                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
+                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
            Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel
 errors     BinaryMissing | TooOld | ContractMismatch { path } | Busy | BackendFailed { code, stderr }
            BadRequest { stderr } | Refused { Blocked | NotReady | AgentGone }
@@ -91,7 +91,7 @@ index in it counts into the `rows` of the same `file` reply.
   `Scrolled` saw it), `hover` (the code row under the pointer), `drag` (a press on a row that has not been released) and `grip` (a press
   on the scrollbar's thumb that has not been released), `folds` (the files the
   user folded or opened, by path; a file not in it is folded when it is viewed), `dirty` (fetched files to fetch again),
-  `skipped` (files whose last fetch failed) and `batch` (the files the running fetch is for), `expanded` (a set of root ids: the
+  `fresh`, `glance` and `seenSent` (the new resolved cards on screen, as of the last scroll and the last tick, and the threads a seen was sent for), `skipped` (files whose last fetch failed) and `batch` (the files the running fetch is for), `expanded` (a set of root ids: the
   resolved threads the user opened), `selection`,
   `focus` (the comment the thread buttons act on), `confirm` (the comment a click on delete asked about, until Delete or Cancel answers), `jump` (a next or previous comment that waits for its file to be fetched: the path and `first` or `last`),
   `editor`, `saving` (a draft is being written, so a second save does nothing), `picker` (candidates or null), `sending` (a send runs, so a second click does nothing), `sendThreads` (the threads of the send the picker interrupted), `confirmArchive` (a click on archive asked, until Archive or Cancel answers), `sticky` (the status is a result a reload must not clear), `banner`, `status`, `inFlight`, `pending`, `stopped` (after
@@ -110,6 +110,23 @@ index in it counts into the `rows` of the same `file` reply.
   `Archive 3`, plain `Archive` for none, and is off for none as well as during a load (`rows.ts` `dock`). Its question
   names the number, `Archive 3 resolved threads?` and `Archive 1 resolved thread?`. A reload that brings the count
   to 0 drops the question, and one that changes it to another number keeps it with the new number.
+  Archive only takes a resolved thread whose agent resolve the user has seen (`Thread::archivable`), so
+  `State.unread_resolved` counts the resolved threads it leaves for that reason. When it is above 0 the question adds
+  a clause, `Archive 1 resolved thread? 1 more resolved by the agent is unread.` (`are unread` for more). With none
+  the sentence is as it was. When nothing is archivable and some are unread, the button is off and `rows.dock` returns a
+  note that `view.ts` draws in `dim` next to the buttons: `Nothing to archive yet: 2 resolved by the agent are unread
+  (marked new)`. A note beside the button and not a changed label, because the bar's left label is for the focused
+  comment or the selection and the button must read as the same button whose count comes back when the cards are seen.
+  With something archivable the question carries the unread ones and the bar has no note.
+- A resolved card an agent closed counts as seen once it has been on screen, as the TUI counts a cursor landing on it.
+  `Scrolled` carries `fresh`, the ids of the cards on screen whose thread is resolved and `new` (`rows.freshOn`, read from
+  the head item's `new` badge), and the model keeps it with `glance` (`fresh` as the last tick saw it) and `seenSent`
+  (the ids a seen was already sent for). `main.ts` starts a `cx.timer.every(500)` that dispatches `Glanced`; a tick
+  sends `Cmd.Write { seen }` for one id that is in both `fresh` and `glance` and not in `seenSent`, then sets `glance`
+  to `fresh`. So a card must stay on screen for a whole tick, a fast scroll marks nothing, and at most one seen goes per
+  tick, so a screen of new cards is a short queue and not a burst. The write is the one opening the card sends, run
+  by `runner.ts` like any other, never from a draw. Opening a card also adds its id to `seenSent`. A failed seen keeps its
+  handling (nothing shown) and is not retried by looking; opening the card sends it again.
 - Next and previous comment. `ThreadJumped { forward }` comes from two buttons, `Previous comment` and `Next
   comment`, and from the keys. The buttons are the first two of the second row of the bar under the stream, with
   Send, Archive and Mark viewed: the header already wraps on a narrow panel, and the bar is where the other
@@ -248,7 +265,7 @@ The editor defers a reload, and a fetch, so the lines do not move under the text
 `state` and `file` write nothing: no `seen` event, no `meta.json`, nothing in the work tree, and they leave
 `.git/index` as it was ([json](graphs/json.md)). If they wrote, the store watch and the root watch would
 wake the mod, and the mod would call them again without end. Marking a thread seen is its own command,
-`comment seen`, sent when the user opens a resolved thread that is `new`.
+`comment seen`, sent when the user opens a resolved thread that is `new`, or when its card has stayed on screen for a tick.
 
 ### The diff spec
 
@@ -396,6 +413,7 @@ drawn in it read as an error. Red (`ansi1`) is left to removed lines and to Dele
 | Other tags (`outdated`, `edited since sent`, `resolved by`) | `dim` |
 | The Delete question's sentence, and every Delete button | `ansi1` |
 | The Archive question's sentence | `foreground`, plain |
+| The note beside a disabled Archive (resolved threads the agent closed are unread) | `dim` |
 | The Archive button in the question | `accent` (border and fill), not red: archive moves threads to `archive.jsonl` and deletes none |
 
 ## Behavior wrappers
@@ -414,7 +432,7 @@ Per copy of the mod, released in `close(cx)`, which is bounded: start the cleanu
 
 - The two `watchFolder` loops (repo root, store directory). Each loop checks `this.closed` after a wake and
   ends. `watchFolder` cannot be cancelled, so one extra wake after close is accepted.
-- The `cx.timer.every` timer.
+- The `cx.timer.every` timers (the 10 s reload and the 500 ms `Glanced`).
 - Every textarea state: `release()`.
 - The body file of a write that has not reached the CLI. The CLI deletes a file once it has opened it. When
   the `exec` fails before that (`BinaryMissing`, `TooOld`), the runner overwrites the file with an empty

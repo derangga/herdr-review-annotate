@@ -199,6 +199,7 @@ export function decodeState(raw: unknown): State {
     notices: list(o, "notices", "$", strings),
     warnings: list(o, "warnings", "$", strings),
     archivable: int(o, "archivable", "$"),
+    unread_resolved: int(o, "unread_resolved", "$"),
     files: list(o, "files", "$", fileSummary),
     orphans: list(o, "orphans", "$", thread),
   };

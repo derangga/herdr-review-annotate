@@ -14,6 +14,8 @@ import type { Cmd, Model, Msg } from "./types.ts";
 import { draw } from "./view.ts";
 
 const TIMER_MS = 10_000;
+// A card has been looked at once it is still on screen a whole tick later, so a fast scroll marks nothing.
+const GLANCE_MS = 500;
 
 export default class ReviewView extends View {
   model: Model = initModel();
@@ -53,6 +55,7 @@ export default class ReviewView extends View {
       const root = opened.root;
       cx.spawn(() => watch(this.env, root, "watch-root"));
       cx.timer.every(TIMER_MS, () => this.dispatch({ _tag: "Triggered", source: "timer" }));
+      cx.timer.every(GLANCE_MS, () => this.dispatch({ _tag: "Glanced" }));
     }
   }
 

@@ -34,11 +34,16 @@ by `state` would wake the mod, which would call `state` again.
 -> per file: counts and viewed flag        (pure)
      add, del from the hunks; viewed = the fingerprint equals meta.viewed;
      threads, open, new, unsent = the threads placed Matched or Outdated in this file (threads counts
-     them all, resolved ones too)
+     them all, resolved ones too; unsent counts open ones only, so a resolved
+     thread the user never sent is not counted)
 -> threads placed NotInDiff -> orphans     (pure)
 -> archivable = the threads of the review with `Thread::archivable` (pure)
                                                       every thread, orphans too, the filter `store::archive`
                                                       uses: resolved and not new
+-> unread_resolved = the threads of the review with `Thread::unread_resolved` (pure)
+                                                      resolved and not archivable: an agent resolved it and no
+                                                      `seen` follows. Defined as the negation of the predicate
+                                                      above, so archive and this count cannot disagree
 -> print the JSON with schema              R: stdout
 ```
 
@@ -103,8 +108,10 @@ Each `E:` line is one test. The rest are in [tests](../tests.md):
   On the mod side: a missing or odd `tokens` is none, and each kind of bad part is dropped.
 - Archivable: over a review with an open thread, a thread the user resolved, an agent's resolve nobody has
   seen, an agent's resolve the user has seen, and a resolved orphan, `state` says 3. A review with nothing says 0.
+  `unread_resolved` says 1 for that review (the agent's resolve nobody has seen), 0 for a review with nothing, and
+  it still says 1 after `archive` moved the rest.
   After `archive` moves them, `state` says 0, and the count before an archive is what `archive --json` reports.
-  On the mod side: a missing or non-integer `archivable` is a `ContractMismatch`.
+  On the mod side: a missing or non-integer `archivable` or `unread_resolved` is a `ContractMismatch`.
 - A reply that decodes into the shapes of `shapes.md`, with `schema` 1.
 - Golden files: the Rust test compares what `state` and `file` print for a fixed repo, after the root and the
   store directory are replaced by fixed text (the timestamps are those of the events the test writes), with the

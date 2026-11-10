@@ -80,6 +80,7 @@ export type State = {
   notices: string[];
   warnings: string[];
   archivable: number; // what archive would move now: resolved threads whose agent resolve the user has seen
+  unread_resolved: number; // resolved threads archive leaves because the agent's resolve is unseen: the same predicate, negated
   files: FileSummary[];
   orphans: Thread[];
 };
@@ -172,6 +173,9 @@ export type Model = {
   hover: Hover | null; // the code row under the pointer: the one that draws a [+]
   drag: Drag | null; // a press on a row that has not been released
   grip: Grip | null; // a press on the scrollbar's thumb that has not been released
+  fresh: string[]; // the cards on screen of threads an agent resolved and the user has not seen, as the last Scrolled said
+  glance: string[]; // `fresh` as the last Glanced saw it: a card in both has been on screen for a whole tick
+  seenSent: ReadonlySet<string>; // the threads a seen was already sent for, so looking sends one once
   folds: ReadonlyMap<string, boolean>; // files the user folded (true) or opened (false); the rest follow `viewed`
   dirty: ReadonlySet<string>; // loaded files to fetch again
   skipped: ReadonlySet<string>; // files whose last fetch failed, not tried again until the next load
@@ -208,7 +212,8 @@ export type Msg =
   | { _tag: "Triggered"; source: Trigger }
   | { _tag: "Loaded"; key: string; state: State }
   | { _tag: "FilesLoaded"; key: string; files: FileView[] }
-  | { _tag: "Scrolled"; offset: number; total: number; top: string | null; visible: string[]; revealed: boolean }
+  | { _tag: "Scrolled"; offset: number; total: number; top: string | null; visible: string[]; fresh: string[]; revealed: boolean }
+  | { _tag: "Glanced" }
   | { _tag: "Wheeled"; dy: number }
   | { _tag: "ThumbGrabbed"; y: number }
   | { _tag: "ThumbMoved"; y: number }

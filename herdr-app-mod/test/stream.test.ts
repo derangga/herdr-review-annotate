@@ -11,7 +11,7 @@ import { fixtureFile, fixtureState, loadedModel, steps } from "./model.ts";
 const state = fixtureState();
 const file = fixtureFile();
 // A Scrolled as the panel reports it, with no scroll under way.
-const scroll = (top: string | null, visible: string[], revealed = false): Msg => ({ _tag: "Scrolled", offset: 0, total: 0, top, visible, revealed });
+const scroll = (top: string | null, visible: string[], revealed = false): Msg => ({ _tag: "Scrolled", offset: 0, total: 0, top, visible, fresh: [], revealed });
 const NOW = Date.parse("2026-11-09T10:00:30Z");
 
 // The fixtures' review with src/a.rs and notes.txt drawn: notes.txt has three rows, the others are blank.
@@ -137,7 +137,7 @@ test("E: the stream is built once and kept while a wheel tick, a hover, a drag o
     assert.equal(row(x), first, msg._tag);
   }
   assert.ok(x.selection !== null && x.offset > 0); // those did change the model
-  assert.equal(layout(steps(m, { _tag: "Scrolled", offset: 0, total: first.total, top: "notes.txt|file", visible: ["notes.txt"], revealed: false }).model, NOW), first);
+  assert.equal(layout(steps(m, { _tag: "Scrolled", offset: 0, total: first.total, top: "notes.txt|file", visible: ["notes.txt"], fresh: [], revealed: false }).model, NOW), first);
   // What the items are built from does: the minute, the width, the open threads, the focus, the folds, the files.
   assert.notEqual(layout(m, NOW + 120000), first);
   const again = layout(m, NOW + 120000);

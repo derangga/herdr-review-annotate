@@ -2238,6 +2238,28 @@ Comments on the diff (L = line in the original file, R = in the changed file):
     }
 
     #[test]
+    fn a_thread_the_user_resolved_before_sending_is_not_sent_until_it_is_reopened() {
+        let dir = fresh("resolved-unsent");
+        put(
+            &dir,
+            vec![user_comment("u1", "one"), user_comment("u2", "two")],
+        );
+        let id = CommentId::parse("u2").unwrap();
+        put(
+            &dir,
+            vec![event(&Author::User, Kind::Resolve { id: id.clone() })],
+        );
+        assert_eq!(unsent(&dir), ["u1"]);
+        let herdr = agent_ready_in("idle");
+        let sent = run_send(&dir, &herdr, false).unwrap();
+        assert_eq!(sent.outcome.to_string(), "sent 1 to claude");
+        let prompt = &prompts(&herdr)[0];
+        assert!(prompt.contains("[u1]") && !prompt.contains("[u2]"));
+        put(&dir, vec![event(&Author::User, Kind::Reopen { id })]);
+        assert_eq!(unsent(&dir), ["u2"]);
+    }
+
+    #[test]
     fn a_named_id_that_is_not_an_open_thread_is_an_unknown_id_under_both_backends() {
         let dir = fresh("threads-unknown");
         put(
@@ -2265,7 +2287,7 @@ Comments on the diff (L = line in the original file, R = in the changed file):
             |a| herdr.ask(a),
         ));
         assert!(hc.calls().is_empty() && herdr.calls().is_empty());
-        assert_eq!(unsent(&dir), ["u1", "u2"], "nothing was marked");
+        assert_eq!(unsent(&dir), ["u1"], "nothing was marked");
     }
 
     // `send` as a command: the backend, the output, `--json`.

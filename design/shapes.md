@@ -20,7 +20,7 @@ Records:
 |---|---|
 | `Event` | `kind`, `at`, `by: Author`, and the fields in `data.md`, events |
 | `Comment` | `id`, `parent`, `author`, `at` (the time of its `add` event), `body`, `sent_batch`, `edited_since_sent` |
-| `Thread` | `root: Comment`, `anchor: Anchor`, `replies`, `status`, `is_new`, `unsent` |
+| `Thread` | `root: Comment`, `anchor: Anchor`, `replies`, `status`, `is_new`, `unsent` (open only; see `data.md`) |
 | `Anchor` | `path`, `old_path`, `target: AnchorTarget`, `spec: Spec` |
 | `Review` | `threads` in file order, `skipped_lines`, `ids` (the counters the next id comes from). The result of the fold |
 | `Archived` | `threads`, `unsent`: how many threads one archive moved, and how many of them were never sent |
@@ -128,6 +128,7 @@ optional and is left out when it has nothing to say: a row's `tokens`, below.
   "notices": ["..."],              diff notices: a base that is missing, untracked files not shown
   "warnings": ["..."],             unreadable events, an unreadable meta.json
   "archivable": 3,                 the threads `archive` would move now, orphans included
+  "unread_resolved": 1,            resolved threads `archive` leaves only because an agent's resolve is unseen
   "files": [ FileSummary ],
   "orphans": [ Thread ] }          threads placed `not_in_diff`
 
@@ -143,13 +144,16 @@ FileSummary
 `archivable` counts the threads that are resolved and not new: a thread the user resolved, or one an agent
 resolved that the user has seen. A thread an agent resolved and the user has not looked at is `new` and stays,
 as it does in `archive`. Both read the same `Thread::archivable`, so the number is what the next `archive` moves
-unless the review changes in between. It is required and an integer. It is a field a decoder could ignore, so
+unless the review changes in between. `unread_resolved` is the rest of the resolved threads: the ones
+`Thread::archivable` refuses, read through `Thread::unread_resolved`, which is "resolved and not archivable", so the
+rule has one definition and the two numbers never count the same thread. A client uses it to say why Archive has
+less to take than the resolved threads it can see. Both are required and integers. It is a field a decoder could ignore, so
 schema stays 1, but the mod's decoder is strict like the per-file counts, and a binary without it fails the
 decode and not the Archive button.
 
 `threads` counts every thread placed in the file, resolved ones too, so a client knows which files hold a
 thread before it loads them. `open` counts open threads, `new` counts threads an agent resolved that the user has not looked at, and
-`unsent` counts threads with a user comment that no send carried. A thread belongs to the file where it is
+`unsent` counts open threads with a user comment that no send carried, or that the user reopened after a send. A resolved thread is not counted. A thread belongs to the file where it is
 `matched` or `outdated`. A thread that is `not_in_diff` is in `orphans` and in no file.
 
 ### `file`
@@ -223,7 +227,7 @@ Comment
 - `anchor.line` is the start of a range and `end_line` its end, and `end_line` is null for a single line.
   `side`, `line`, `end_line` and `text` are null for a file comment.
 - `author` and `resolved_by` are the strings the log stores (`data.md`).
-- `sent` is whether a send carried the comment. `unsent` on the thread is the fold's value.
+- `sent` is whether a send carried the comment. `unsent` on the thread is the fold's value: false for a resolved thread.
 
 This is a different shape from `comment list --json`, which prints the store's own `Thread`. That output is
 what agents read and has no `schema`, so it does not change.

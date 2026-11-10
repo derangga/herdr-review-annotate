@@ -62,7 +62,7 @@ The agent graph above is unchanged, and an agent that does not pass `--as user` 
 archive
 -> resolve root                            R: git     E: NotARepo -> exit 1
 -> store::archive                          R: dir, now   E: Busy, Io -> exit 1, as in store.md
--> print { schema, archived, unsent } with --json, else one line
+-> print { schema, archived, unsent } with --json   (unsent: taken threads with a never-sent user comment), else one line
                                                       nothing to archive -> exit 0, archived 0
 
 view --path P --set | --unset

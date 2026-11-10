@@ -987,7 +987,10 @@ impl App {
     /// How many resolved threads `archive` takes, and how many of them were never sent.
     fn archivable(&self) -> (usize, usize) {
         let taken = self.review.threads.iter().filter(|t| t.archivable());
-        (taken.clone().count(), taken.filter(|t| t.unsent).count())
+        (
+            taken.clone().count(),
+            taken.filter(|t| t.never_sent()).count(),
+        )
     }
 
     /// `archive`: ask before the resolved threads leave the pane. With none, say so.

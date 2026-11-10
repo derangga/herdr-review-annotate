@@ -22,6 +22,7 @@ test("the state fixture decodes", () => {
   assert.deepEqual(s.spec, { kind: "worktree" });
   assert.equal(s.base, "main");
   assert.equal(s.archivable, 1);
+  assert.equal(s.unread_resolved, 1);
   assert.equal(s.files.length, 5);
   assert.equal(s.files[3]?.path, "src/a.rs");
   assert.equal(s.files[3]?.new, 1);
@@ -34,6 +35,13 @@ test("archivable is required and must be an integer", () => {
   for (const value of [undefined, 1.5, "1", null]) {
     const raw = { ...state(), archivable: value };
     assert.equal(mismatch(() => decodeState(raw)).path, "$.archivable");
+  }
+});
+
+test("unread_resolved is required and must be an integer", () => {
+  for (const value of [undefined, 1.5, "1", null]) {
+    const raw = { ...state(), unread_resolved: value };
+    assert.equal(mismatch(() => decodeState(raw)).path, "$.unread_resolved");
   }
 });
 

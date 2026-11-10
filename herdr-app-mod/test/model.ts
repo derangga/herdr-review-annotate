@@ -49,5 +49,5 @@ export function loadedModel(state: State = fixtureState(), file: FileView = fixt
   if (load === undefined || load._tag !== "Load") throw new Error("opening did not load");
   const arrived = steps(open.model, { _tag: "Loaded", key: load.key, state });
   const done = answer(arrived.model, arrived.cmds, file);
-  return shown === null ? done.model : steps(done.model, { _tag: "Scrolled", offset: 0, total: 0, top: `${shown}|file`, visible: [shown], revealed: false }).model;
+  return shown === null ? done.model : steps(done.model, { _tag: "Scrolled", offset: 0, total: 0, top: `${shown}|file`, visible: [shown], fresh: [], revealed: false }).model;
 }

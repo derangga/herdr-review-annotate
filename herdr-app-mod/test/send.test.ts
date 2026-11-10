@@ -211,7 +211,8 @@ test("a click on Archive only asks, with a sentence, an Archive button and Cance
   assert.deepEqual(first.cmds, []);
   assert.equal(first.model.confirmArchive, true);
   const row = confirmRow(first.model);
-  assert.equal(row?.sentence, "Archive 1 resolved thread?");
+  // The fixture has one resolved thread the agent closed that the user has not seen.
+  assert.equal(row?.sentence, "Archive 1 resolved thread? 1 more resolved by the agent is unread.");
   assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]), [["Archive", false, "ArchiveConfirmed"], ["Cancel", false, "ConfirmCancelled"]]);
   assert.equal(dock(first.model).actions.find((b) => b.id === "archive")?.label, "Archive 1");
 });
@@ -245,8 +246,8 @@ test("the archive button is off while a load is in flight, and a click then asks
   assert.equal(out.model.confirmArchive, false);
 });
 
-// A loaded model whose state counts `n` archivable threads.
-const counting = (n: number): Model => ({ ...loaded(), state: { ...loaded().state!, archivable: n } });
+// A loaded model whose state counts `n` archivable threads and `unread` resolved ones the user has not seen.
+const counting = (n: number, unread = 0): Model => ({ ...loaded(), state: { ...loaded().state!, archivable: n, unread_resolved: unread } });
 const archiveButton = (m: Model) => dock(m).actions.find((b) => b.id === "archive");
 
 test("the archive button and the question name the number, singular for one", () => {
@@ -256,6 +257,32 @@ test("the archive button and the question name the number, singular for one", ()
     assert.equal(archiveButton(m)?.off, false);
     assert.equal(confirmRow(steps(m, { _tag: "ArchiveClicked" }).model)?.sentence, sentence);
   }
+});
+
+test("the question names the resolved threads whose agent resolve is unread, and says nothing when there are none", () => {
+  const sentence = (n: number, unread: number) => confirmRow(steps(counting(n, unread), { _tag: "ArchiveClicked" }).model)?.sentence;
+  assert.equal(sentence(1, 1), "Archive 1 resolved thread? 1 more resolved by the agent is unread.");
+  assert.equal(sentence(3, 2), "Archive 3 resolved threads? 2 more resolved by the agent are unread.");
+  assert.equal(sentence(3, 0), "Archive 3 resolved threads?");
+});
+
+test("a reload that changes the unread count changes the sentence the question shows", () => {
+  const asked = steps(counting(2, 1), { _tag: "ArchiveClicked" }).model;
+  const after = reload(asked, { ...state, archivable: 2, unread_resolved: 0 }).model;
+  assert.equal(confirmRow(after)?.sentence, "Archive 2 resolved threads?");
+});
+
+test("nothing archivable but some unread: Archive is off and a dim note gives the reason, otherwise there is no note", () => {
+  const m = counting(0, 2);
+  assert.deepEqual([archiveButton(m)?.label, archiveButton(m)?.off], ["Archive", true]);
+  assert.deepEqual(dock(m).note, { text: "Nothing to archive yet: 2 resolved by the agent are unread (marked new)", color: "dim" });
+  assert.equal(dock(counting(0, 1)).note?.text, "Nothing to archive yet: 1 resolved by the agent is unread (marked new)");
+  assert.deepEqual(steps(m, { _tag: "ArchiveClicked" }).cmds, []);
+  assert.equal(steps(m, { _tag: "ArchiveClicked" }).model.confirmArchive, false);
+  assert.equal(dock(counting(0, 0)).note, null);
+  // With something to archive the question carries the unread ones, so the bar says nothing.
+  assert.equal(dock(counting(1, 2)).note, null);
+  assert.equal(dock(initModel()).note, null);
 });
 
 test("the archive question is plain text with an accent button and no red, the delete question stays red", () => {
@@ -277,7 +304,7 @@ test("with nothing to archive the button is off, says only Archive, and a click 
 
 test("a reload that leaves nothing to archive drops the question, and one that leaves some keeps it with the new number", () => {
   const asked = steps(counting(3), { _tag: "ArchiveClicked" }).model;
-  const after = (n: number) => reload(asked, { ...state, archivable: n }).model;
+  const after = (n: number) => reload(asked, { ...state, archivable: n, unread_resolved: 0 }).model;
   assert.equal(after(0).confirmArchive, false);
   assert.equal(confirmRow(after(0)), null);
   assert.equal(confirmRow(after(2))?.sentence, "Archive 2 resolved threads?");

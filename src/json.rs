@@ -42,6 +42,9 @@ pub struct StateJson {
     pub warnings: Vec<String>,
     /// What `archive` would move now, orphans included. See `Thread::archivable`.
     pub archivable: usize,
+    /// Resolved threads `archive` leaves only because the agent's resolve is unseen. See
+    /// `Thread::unread_resolved`.
+    pub unread_resolved: usize,
     pub files: Vec<FileSummary>,
     pub orphans: Vec<ThreadJson>,
 }

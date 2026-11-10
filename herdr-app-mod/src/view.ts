@@ -248,7 +248,7 @@ function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(bar.label))
         .children(bar.buttons.map(btn)),
     )
-    .child(h_flex().gap(8).items_center().flex_wrap().children(bar.actions.map(btn)));
+    .child(h_flex().gap(8).items_center().flex_wrap().children(bar.actions.map(btn)).when(bar.note !== null, (x) => x.child(div().text_color(pick(bar.note?.color ?? "dim", t)).child(bar.note?.text ?? ""))));
 }
 
 function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {

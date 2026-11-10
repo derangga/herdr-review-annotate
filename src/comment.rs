@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn text_shows_place_status_body_and_replies() {
         let text = render_text(&fixture());
-        let expected = "u1 resolved by agent:claude, new, unsent src/a b.rs:42 (R) by user\n  first\n  second\n  > a1 agent:claude: done\n";
+        let expected = "u1 resolved by agent:claude, new src/a b.rs:42 (R) by user\n  first\n  second\n  > a1 agent:claude: done\n";
         assert!(text.starts_with(expected), "{text}");
         assert!(text.contains("a2 open src/a b.rs:42 (R) by agent:claude\n  my own\n"));
         assert!(text.contains("u2 open, unsent src/a b.rs:42 (R) by user\n  open one\n"));

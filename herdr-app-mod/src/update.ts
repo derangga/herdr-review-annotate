@@ -28,6 +28,9 @@ export function initModel(): Model {
     hover: null,
     drag: null,
     grip: null,
+    fresh: [],
+    glance: [],
+    seenSent: new Set(),
     folds: new Map(),
     dirty: new Set(),
     skipped: new Set(),
@@ -195,7 +198,7 @@ function threadAction(m: Model, id: string, action: ThreadActionKind): Step {
       else expanded.add(thread.id);
       const next = { ...base, focus: thread.id, expanded };
       // Opening a resolved thread an agent closed is looking at it: it is not new any more.
-      return !open && thread.is_new ? write(next, { kind: "seen", id: thread.id }) : [next, []];
+      return !open && thread.is_new ? write({ ...next, seenSent: new Set(m.seenSent).add(thread.id) }, { kind: "seen", id: thread.id }) : [next, []];
     }
     case "reply":
       return [{ ...base, editor: { kind: "reply", anchor: null, thread: thread.id, comment: null, initial: "" } }, []];
@@ -265,6 +268,16 @@ function archiveClicked(m: Model): Step {
 function archiveConfirmed(m: Model): Step {
   if (m.root === null || m.inFlight || !m.confirmArchive) return [m, []];
   return [{ ...m, confirmArchive: false, status: "archiving...", sticky: true }, [{ _tag: "Archive", root: m.root }]];
+}
+
+// Looking is seeing, as the TUI counts a cursor landing on a card. A tick that finds a card still on screen from the tick
+// before sends its seen. One a tick, so a screen of them is a short queue and not a burst of writes, and a card that was
+// scrolled past between two ticks sends nothing. The write is the one opening the card sends.
+function glanced(m: Model): Step {
+  const id = m.fresh.find((x) => m.glance.includes(x) && !m.seenSent.has(x));
+  const same = m.glance.length === m.fresh.length && m.glance.every((x, i) => x === m.fresh[i]);
+  if (m.root === null || m.stopped || id === undefined) return same ? [m, []] : [{ ...m, glance: m.fresh }, []];
+  return write({ ...m, glance: m.fresh, seenSent: new Set(m.seenSent).add(id) }, { kind: "seen", id });
 }
 
 function deleteConfirmed(m: Model, id: string): Step {
@@ -383,8 +396,10 @@ export function update(m: Model, msg: Msg): Step {
       // putting its header at the top. Otherwise the topmost file on screen is the selected one.
       const goal = msg.revealed && m.reveal !== null ? keyPath(m.reveal.key) : null;
       const selected = goal !== null && msg.visible.includes(goal) ? goal : (msg.visible[0] ?? m.selected);
-      return flush({ ...m, offset: msg.offset, total: msg.total, top: msg.top, visible: msg.visible, reveal: msg.revealed ? null : m.reveal, selected });
+      return flush({ ...m, offset: msg.offset, total: msg.total, top: msg.top, visible: msg.visible, fresh: msg.fresh, reveal: msg.revealed ? null : m.reveal, selected });
     }
+    case "Glanced":
+      return glanced(m);
     case "Wheeled":
       return scrollTo(m, m.offset + msg.dy);
     case "ThumbGrabbed":

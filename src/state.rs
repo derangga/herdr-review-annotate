@@ -407,6 +407,12 @@ pub fn state(
             .iter()
             .filter(|thread| thread.archivable())
             .count(),
+        unread_resolved: loaded
+            .review
+            .threads
+            .iter()
+            .filter(|thread| thread.unread_resolved())
+            .count(),
         files,
         orphans,
     }))
@@ -894,8 +900,8 @@ rename to src/b.rs
         world.log(&lines(&events));
         let state = state_of(&world.state("").unwrap());
         let a = state.files.iter().find(|f| f.path == "src/a.rs").unwrap();
-        // Open: u1 and u3. New: u2. Unsent: u2, u3, u4 (u1 was sent).
-        assert_eq!((a.open, a.new, a.unsent), (2, 1, 3));
+        // Open: u1 and u3. New: u2. Unsent: u3 only (u1 was sent, u2 and u4 are resolved).
+        assert_eq!((a.open, a.new, a.unsent), (2, 1, 1));
         // Every thread counts, the two closed ones too.
         assert_eq!(a.threads, 4);
         assert!(state.orphans.is_empty());
@@ -932,10 +938,10 @@ rename to src/b.rs
         ]));
         let state = state_of(&world.state("").unwrap());
         assert_eq!(state.archivable, 3);
-        assert_eq!(
-            state_of(&World::new("archivable-none").state("").unwrap()).archivable,
-            0
-        );
+        // Only u3: open threads and archivable ones are not unread, and the two numbers never share a thread.
+        assert_eq!(state.unread_resolved, 1);
+        let none = state_of(&World::new("archivable-none").state("").unwrap());
+        assert_eq!((none.archivable, none.unread_resolved), (0, 0));
     }
 
     #[test]

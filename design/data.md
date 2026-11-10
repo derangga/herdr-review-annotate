@@ -38,8 +38,10 @@ Fold rules:
 
 - Events apply in file order. An event that names an unknown id, or breaks the rights rule (ADR 0004),
   is skipped.
-- A thread is unsent when its root (if the user wrote it) or any reply by the user has no `sent` event,
-  or when a `reopen` by the user comes after its last `sent`. A `sent` event's `ids` are comment ids.
+- A thread is unsent when it is open and its root (if the user wrote it) or any reply by the user has no
+  `sent` event, or when a `reopen` by the user comes after its last `sent`. A resolved thread is never
+  unsent, so send and the counts skip it, and a `reopen` makes it unsent again if it still qualifies.
+  The fold keeps no flag for "has a comment no send carried"; archive reads it from the comments. A `sent` event's `ids` are comment ids.
   Naming a root id also clears that thread's reopen.
 - An `edit` never makes a comment unsent. A user comment with an `edit` after its last `sent` is
   "edited since sent". The card shows that mark, and the agent sees the new text only on a resend.
@@ -61,7 +63,8 @@ plus one. The graph is in `graphs/store.md`.
 
 `store::archive(dir, now)` is the one operation that rewrites `review.jsonl`. It takes the same lock, so it
 cannot run beside an append. Under the lock it reads the log line by line, folds it, and takes every thread
-that is resolved and not `new`. An unsent one goes too. Then:
+that is resolved and not `new`. One with a user comment that no send carried goes too, and the archive
+report counts it. Then:
 
 - The events of those threads are appended to `archive.jsonl` with one `write_all`, and the file is synced.
   These are every event that names the root or one of its replies, a deleted reply included. A `sent` event

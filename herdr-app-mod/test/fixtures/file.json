@@ -172,7 +172,7 @@
       "status": "resolved",
       "resolved_by": "user",
       "is_new": false,
-      "unsent": true,
+      "unsent": false,
       "placement": {
         "kind": "matched",
         "row": 2,

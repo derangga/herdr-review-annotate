@@ -171,7 +171,7 @@ test("E: a file that arrives above the top of the screen puts the item that was 
 test("the files on screen start the fetch of the files below them", () => {
   const m = shown();
   const idle = { ...m, inFlight: false, dirty: new Set(["src/b.rs"]) };
-  const out = steps(idle, scrolled(idle, streamLayout(idle, NOW)) ?? { _tag: "Scrolled", offset: 0, total: m.total, top: "x|file", visible: ["src/b.rs"], revealed: false });
+  const out = steps(idle, scrolled(idle, streamLayout(idle, NOW)) ?? { _tag: "Scrolled", offset: 0, total: m.total, top: "x|file", visible: ["src/b.rs"], fresh: [], revealed: false });
   assert.ok(out.cmds.some((c) => c._tag === "LoadFiles"));
 });
 

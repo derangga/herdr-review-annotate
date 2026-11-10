@@ -8,6 +8,7 @@
   "notices": [],
   "warnings": [],
   "archivable": 1,
+  "unread_resolved": 1,
   "files": [
     {
       "path": "img.png",
@@ -55,7 +56,7 @@
       "threads": 5,
       "open": 3,
       "new": 1,
-      "unsent": 4
+      "unsent": 3
     },
     {
       "path": "src/b.rs",

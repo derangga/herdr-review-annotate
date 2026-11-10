@@ -117,7 +117,7 @@ does not. The herdr backend is the one the TUI plugin uses in plain Herdr, and i
   that resolves reads the working tree, and `apply` prints the notice on stderr.
 - `send --thread <id>` sends the named open threads, whether or not they were sent, and nothing else. A
   named id that is not an open thread exits 2 and lists the open ids. Without `--thread`, `send` sends the
-  unsent threads, as before. `--all-open` stays for the TUI.
+  unsent threads (open ones), as before. `--all-open` stays for the TUI.
 - `send --json` prints one JSON object on stdout in every outcome, and exits 0 when a send happened or there
   was nothing to send, and 1 when it failed: `ambiguous` (with the candidates), `no_agent`, `blocked`,
   `not_ready`, `agent_gone`, `busy`, `backend`. A usage error still exits 2 with a line on stderr.

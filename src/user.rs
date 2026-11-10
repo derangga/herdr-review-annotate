@@ -249,12 +249,15 @@ index 1111111..2222222 100644
         assert_eq!(world.state().files[0].new, 1);
         // The count is what the archive then moves.
         assert_eq!(world.state().archivable, 2);
+        assert_eq!(world.state().unread_resolved, 1);
         let json = world.archive(true).unwrap();
         // The thread an agent resolved is new and stays.
         assert_eq!(json.stdout, "{\"schema\":1,\"archived\":2,\"unsent\":2}\n");
         let state = world.state();
         assert_eq!((state.files[0].open, state.files[0].new), (0, 1));
         assert_eq!(state.archivable, 0);
+        // Archive left the thread an agent resolved, and the state still names it.
+        assert_eq!(state.unread_resolved, 1);
         assert!(world.dir.join("archive.jsonl").exists());
         assert_eq!(world.archive(false).unwrap().stdout, "nothing to archive\n");
         world.resolved("u4", &Author::User);

@@ -113,7 +113,7 @@ Part of the [herdr-review design](../DESIGN.md).
 - Several matching agents open a picker (`up`, `down` or `k`, `j`, then `enter`, `esc` cancels). The choice is
   saved in `meta.json`, so the next send does not ask, and the send that asked runs at once.
 - A refusal is on the status line and in a notification, and nothing is marked sent.
-- `quit` with unsent comments asks: `s` sends and then quits (a refusal keeps the pane open), `k` quits and
+- `quit` with unsent comments (open threads only) asks: `s` sends and then quits (a refusal keeps the pane open), `k` quits and
   keeps them unsent, `esc` stays. These keys are not remappable.
 - The status line names the target as `→ claude w1:p2`, or `→ no agent`. The target is resolved when the
   pane starts and after each send, and what is found is saved for the `send` action.

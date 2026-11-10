@@ -409,7 +409,8 @@ pub struct Thread {
     pub is_new: bool,
     /// The user reopened it after its last send.
     pub reopened: bool,
-    /// A user comment in it has no send, or the user reopened it after its last send.
+    /// It is open, and a user comment in it has no send or the user reopened it after its last
+    /// send. A resolved thread is never unsent (see `never_sent` for archive's report).
     pub unsent: bool,
 }
 
@@ -427,9 +428,20 @@ impl Thread {
         matches!(self.status, Status::Open)
     }
 
+    /// A user comment in it has no send, whatever the status.
+    pub fn never_sent(&self) -> bool {
+        self.comments()
+            .any(|c| c.author.is_user() && c.sent_batch.is_none())
+    }
+
     /// `archive` takes it: it is resolved, and the user has seen an agent's resolve.
     pub const fn archivable(&self) -> bool {
         !self.is_open() && !self.is_new
+    }
+
+    /// Resolved, and `archive` leaves it: an agent resolved it and the user has not seen that yet.
+    pub const fn unread_resolved(&self) -> bool {
+        !self.is_open() && !self.archivable()
     }
 }
 
@@ -636,10 +648,7 @@ pub fn fold<'a>(events: impl IntoIterator<Item = &'a Event>) -> Review {
     }
     let mut review = fold.review;
     for thread in &mut review.threads {
-        let unsent_user = thread
-            .comments()
-            .any(|c| c.author.is_user() && c.sent_batch.is_none());
-        thread.unsent = unsent_user || thread.reopened;
+        thread.unsent = thread.is_open() && (thread.never_sent() || thread.reopened);
     }
     review
 }
@@ -954,7 +963,7 @@ pub fn archive(dir: &Path, now: &str) -> Result<Archived, StoreError> {
     }
     let done = Archived {
         threads: taken.len(),
-        unsent: taken.iter().filter(|thread| thread.unsent).count(),
+        unsent: taken.iter().filter(|thread| thread.never_sent()).count(),
     };
     // The roots, then every reply to one of them, deleted replies included.
     let mut gone = taken
@@ -1343,6 +1352,25 @@ mod tests {
             reply(&Author::User, "u2", "u1"),
         ]);
         assert!(thread(&review, "u1").unsent);
+    }
+
+    #[test]
+    fn a_resolved_thread_is_not_unsent_and_reopening_makes_it_unsent_again() {
+        let user = Author::User;
+        let review = fold(&[root(&user, "u1"), resolve(&user, "u1")]);
+        let resolved = thread(&review, "u1");
+        assert!(!resolved.unsent && resolved.never_sent());
+        let review = fold(&[root(&user, "u1"), resolve(&user, "u1"), reopen(&user, "u1")]);
+        assert!(thread(&review, "u1").unsent);
+        // A sent thread the user reopened and resolved again is not unsent either.
+        let review = fold(&[
+            root(&user, "u1"),
+            sent(&["u1"], "b1"),
+            resolve(&user, "u1"),
+            reopen(&user, "u1"),
+            resolve(&user, "u1"),
+        ]);
+        assert!(!thread(&review, "u1").unsent);
     }
 
     #[test]

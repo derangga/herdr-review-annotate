@@ -22,7 +22,8 @@ written below.
        delete  -> sets Model.confirm = id and nothing else   only on a comment whose author is "user"
                   the bar under the diff becomes the question: "Delete this comment? Its replies go too." when
                   the comment is a root with replies, else "Delete this comment?", then a red Delete and a Cancel
-       toggle  -> a resolved thread opens or closes. Opening one that is_new -> Cmd.Write { seen, id }
+       toggle  -> a resolved thread opens or closes. Opening one that is_new -> Cmd.Write { seen, id }, and seenSent
+                  gains the id. A card that stays on screen sends the same write by itself (gui-stream.md, seen by looking)
   -> EditorSaved for reply and edit                    text empty after trim -> ignored, as in gui-comment.md
 -> DeleteConfirmed { id }                              the Delete button of the question
   -> update(model, DeleteConfirmed)                    (pure)
