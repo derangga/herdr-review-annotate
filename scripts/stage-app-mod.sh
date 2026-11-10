@@ -18,7 +18,7 @@ mkdir -p "$dest/bin"
 cp target/release/herdr-review "$dest/bin/herdr-review.new"
 mv "$dest/bin/herdr-review.new" "$dest/bin/herdr-review"
 mkdir -p "$dest/icons"
-cp "$src"/icons/*.svg "$dest/icons/"
+cp "$src"/icons/*.svg "$src"/icons/LICENSE-* "$dest/icons/"
 cp "$src/mod.json" "$src/VERSION" "$src/fetch-binary.sh" "$dest/"
 cp "$src/main.js" "$dest/main.js"
 # The layout with the Review button in the tab bar: Herdr's main with one more block. Ours, so it is replaced.

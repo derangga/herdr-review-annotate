@@ -395,3 +395,5 @@ cargo clippy --all-targets
 ## License
 
 MIT. See `LICENSE`.
+
+The file-type and folder icons in the herdr-app panel are from [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme), also MIT. Its notice is `herdr-app-mod/icons/LICENSE-material-icon-theme`.

@@ -1,9 +1,10 @@
 // GPUI drawing. It holds no logic and calls no Host method: everything it shows is in the model, the
 // theme and the layout, and every click is a Msg handed to dispatch.
-import { div, svg } from "gpui-kit";
+import { div, image, list, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
+import { FOLDER } from "./icons.ts";
 import {
   badgeColor,
   CARD_W,
@@ -54,6 +55,8 @@ export type Ui = { handle: FocusHandle; nav: FocusHandle; textarea: TextareaStat
 
 // The sidebar keeps this width and the diff takes the rest.
 const SIDEBAR_W = 280;
+// How far a file row sits in from its folder heading: the heading's icon (14) and gap (6).
+const INDENT = 20;
 const tint = (color: `#${string}`, alpha: string): `#${string}` => `${color}${alpha}`;
 const drawing = (name: string): string => `mods/herdr-review/icons/${name}.svg`;
 
@@ -661,9 +664,19 @@ export function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element
   );
 }
 
-function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
+// One row of the sidebar's list. A list's row renderer may not register a handler, so a click is the list's `on_item_click`.
+function sideRow(r: SideRow, m: Model, t: Theme): Element {
   if (r.kind === "dir") {
-    return div().w_full().flex_none().px(8).pt(8).pb(2).truncate().text_ellipsis_start().text_size(11).text_color(t.dim).child(r.text);
+    return h_flex()
+      .w_full()
+      .flex_none()
+      .px(8)
+      .pt(8)
+      .pb(2)
+      .gap(6)
+      .items_center()
+      .child(image(drawing(FOLDER)).size(14).flex_none())
+      .child(div().flex_1().min_w(0).truncate().text_ellipsis_start().text_size(11).text_color(t.dim).child(r.text));
   }
   const letter = pick(letterColor(r.letter), t);
   return v_flex()
@@ -676,14 +689,21 @@ function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
     .cursor_pointer()
     .when(m.selected === r.path, (e) => e.bg(t.selected))
     .hover((s) => s.bg(t.hover))
-    .on_click(() => dispatch({ _tag: "FileChosen", path: r.path }))
     .child(
       h_flex()
         .w_full()
+        // A file sits one step in from its folder heading, whose name starts 20px in; the highlight still spans the row.
+        .pl(INDENT)
         .gap(6)
         .items_center()
         .child(div().w(12).flex_none().text_size(11).text_color(letter).child(r.letter))
-        .child(svg(`mods/herdr-review/icons/${r.icon}.svg`).size(14).flex_none().text_color(t.dim))
+        // The drawing keeps its own colours; a viewed file's is dimmed like its name.
+        .child(
+          image(drawing(r.icon))
+            .size(14)
+            .flex_none()
+            .when(r.viewed, (e) => e.opacity(0.5)),
+        )
         .child(
           div()
             .flex_1()
@@ -699,7 +719,7 @@ function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
       e.child(
         h_flex()
           .w_full()
-          .pl(38)
+          .pl(38 + INDENT)
           .gap(8)
           .children(
             r.badges.map((b) =>
@@ -756,15 +776,35 @@ function sidebar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui, empty: string):
         .flex_1()
         .min_h(0)
         .relative()
+        // Only the rows on screen are built: with a thousand changed files the whole column as children made every frame slow.
         .child(
-          v_flex()
-            .id("review-files")
-            .absolute()
-            .inset_0()
-            .overflow_y_scroll()
-            .p(6)
-            .children(rows.map((r) => sideRow(r, m, t, dispatch)))
-            .when(rows.length === 0 && !info.none, (e) => e.child(div().p(8).text_color(t.dim).child(empty))),
+          rows.length === 0
+            ? div()
+                .p(14)
+                .text_color(t.dim)
+                .child(info.none ? "" : empty)
+            : list(
+                "review-files",
+                rows.length,
+                (i) => rows[i]?.key ?? `row:${i}`,
+                (i) => {
+                  const r = rows[i];
+                  return div()
+                    .w_full()
+                    .px(6)
+                    .when(i === 0, (e) => e.pt(6))
+                    .when(i === rows.length - 1, (e) => e.pb(6))
+                    .child(r === undefined ? div() : sideRow(r, m, t));
+                },
+              )
+                .absolute()
+                .inset_0()
+                .on_item_click((key) => {
+                  const r = rows.find((x) => x.key === key);
+                  if (r?.kind === "file") {
+                    dispatch({ _tag: "FileChosen", path: r.path });
+                  }
+                }),
         )
         .child(Scrollbar.vertical("review-files").absolute().inset_0()),
     );

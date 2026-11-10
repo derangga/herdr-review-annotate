@@ -19,7 +19,7 @@ mod="$out/mods/herdr-review"
 rm -rf "$mod"
 mkdir -p "$mod/icons"
 cp herdr-app-mod/out/main.js herdr-app-mod/mod.json "$mod/"
-cp herdr-app-mod/icons/*.svg "$mod/icons/"
+cp herdr-app-mod/icons/*.svg herdr-app-mod/icons/LICENSE-* "$mod/icons/"
 cp scripts/fetch-herdr-review.sh "$mod/fetch-binary.sh"
 sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > "$mod/VERSION"
 [ -s "$mod/VERSION" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
