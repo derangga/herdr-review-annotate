@@ -63,6 +63,9 @@ typo in `review.open` shows up only when you press the key.
 
 ## Run a review
 
+Run it in a folder inside a git repository. Anywhere else the pane and the panel show
+`not a git repository` and open no review. Only the review of the agent's last message works outside git.
+
 1. Focus the pane where your agent runs and press `prefix+i`. The review opens in a split to its right.
    Pressing it again focuses the open review pane.
 2. Move to a line with `j` and `k`, press `c`, write the comment, and save it. `v` starts visual mode first:
