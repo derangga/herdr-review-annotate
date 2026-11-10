@@ -538,7 +538,8 @@ the diff pane, so it spans the diff and not the sidebar. A fixed width was chose
 a name needs the same room in a wide panel as in a narrow one.
 
 The header holds, right of `Review` and the counts and in one group that wraps as a unit: a segmented control for what is diffed
-(`Working tree`, `Branch`, with the base in the tooltip, and off with `No base branch found` when there is none), the `Agent message`
+(`Uncommitted`, and `vs <base>` (`Branch` when there is no base) for the branch spec; each tooltip says what it compares, and the branch one is
+off with `No base branch found` when there is none), the `Agent message`
 text button, a 1 px rule, and four icon buttons from `rows.sidebarButtons`, `rows.layoutButton` and the refresh: the files toggle
 (`panel-left` or `panel-right` for the side the sidebar is on, lit while it shows; `SidebarToggled`), the move (`swap`, drawn only while the
 sidebar shows, since moving a hidden column changes nothing on screen; `SidebarFlipped`), the layout (`columns`, lit while side by side is drawn;

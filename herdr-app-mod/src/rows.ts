@@ -1162,7 +1162,7 @@ export type HeaderButton = { id: string; label: string; icon: string; on: boolea
 // The two buttons for the sidebar. Moving it is offered only while it shows, since nothing would change on screen.
 export function sidebarButtons(m: Model): HeaderButton[] {
   const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", icon: m.panel.side === "left" ? "panel-left" : "panel-right", on: m.panel.open, msg: { _tag: "SidebarToggled" } }];
-  if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move right" : "Move left", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
+  if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move file list to the right side" : "Move file list to the left side", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
   return buttons;
 }
 

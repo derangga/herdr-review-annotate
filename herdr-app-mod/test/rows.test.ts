@@ -169,8 +169,8 @@ test("totals add the counts of every file", () => {
 
 test("the sidebar buttons name what a click does, and moving is offered only while the sidebar shows", () => {
   const at = (side: "left" | "right", open: boolean) => sidebarButtons({ ...model, panel: { side, open } }).map((b) => [b.label, b.msg._tag]);
-  assert.deepEqual(at("left", true), [["Hide files", "SidebarToggled"], ["Move right", "SidebarFlipped"]]);
-  assert.deepEqual(at("right", true), [["Hide files", "SidebarToggled"], ["Move left", "SidebarFlipped"]]);
+  assert.deepEqual(at("left", true), [["Hide files", "SidebarToggled"], ["Move file list to the right side", "SidebarFlipped"]]);
+  assert.deepEqual(at("right", true), [["Hide files", "SidebarToggled"], ["Move file list to the left side", "SidebarFlipped"]]);
   assert.deepEqual(at("right", false), [["Show files", "SidebarToggled"]]);
 });
 

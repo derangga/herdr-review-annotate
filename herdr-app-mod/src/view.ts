@@ -678,11 +678,11 @@ export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui:
               segmented(
                 "spec",
                 [
-                  { id: "spec-worktree", label: "Working tree", tip: "Working tree", on: m.spec !== null && m.spec.kind === "worktree", click: () => dispatch({ _tag: "SpecChosen", spec: { kind: "worktree" } }) },
+                  { id: "spec-worktree", label: "Uncommitted", tip: "Working tree: changes not yet committed (staged, unstaged and untracked)", on: m.spec !== null && m.spec.kind === "worktree", click: () => dispatch({ _tag: "SpecChosen", spec: { kind: "worktree" } }) },
                   {
                     id: "spec-branch",
-                    label: "Branch",
-                    tip: base === null ? "No base branch found" : `Branch ${base}`,
+                    label: base === null ? "Branch" : `vs ${base}`,
+                    tip: base === null ? "No base branch found" : `Branch: everything this branch changed since it left ${base}, committed or not`,
                     on: m.spec !== null && m.spec.kind === "branch",
                     click: base === null ? null : () => dispatch({ _tag: "SpecChosen", spec: { kind: "branch", base } }),
                   },
