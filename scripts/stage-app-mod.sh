@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the herdr-app mod and the release binary, and copies both to the mod's own folder:
-# ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review (the binary under bin/, the file-type and button drawings under icons/). Nothing else under
+# ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review (the binary under bin/, the file-type and button drawings under icons/), and the
+# herdr-review layout to layouts/. Nothing else under
 # the app folder is touched. Saving any file in the mod folder reloads the mod, so main.js goes last.
 set -euo pipefail
 
@@ -22,9 +23,12 @@ mkdir -p "$dest/icons"
 cp herdr-app-mod/icons/*.svg "$dest/icons/"
 cp herdr-app-mod/mod.json "$dest/mod.json"
 cp herdr-app-mod/out/main.js "$dest/main.js"
+# The layout with the Review button in the tab bar: Herdr's main with one more block. Ours, so it is replaced.
+cp herdr-app-mod/layouts/herdr-review.json "$dest/../../layouts/herdr-review.json"
 
 echo "staged in $dest"
 echo "check it:  herdr-app check $dest"
+echo "the Review button in the tab bar:  herdr-app do layout.switch '{\"name\":\"herdr-review\"}'"
 echo "to open the panel, add this under \"global\" in ${HERDR_APP_HOME:-~/.config/herdr-app}/keys.json (this script never edits it):"
 echo '    "cmd-shift-r": {"command": "pane.split", "args": {"direction": "right", "mod": "herdr-review"}}'
 echo "the panel runs bin/herdr-review from this folder, then herdr-review on PATH. If the app cannot exec the"
