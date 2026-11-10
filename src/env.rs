@@ -5,12 +5,14 @@ use std::path::PathBuf;
 
 use crate::store::state_base;
 
-/// The `HERDR_*` and `REVIEW_*` variables, the two that locate the state directory, the one that
-/// locates Claude Code's config, and the working directory.
+/// The `HERDR_*` and `REVIEW_*` variables, `HC_TERMINAL_ID`, the two that locate the state directory,
+/// the one that locates Claude Code's config, the working directory and the running binary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
     vars: BTreeMap<String, String>,
     pub cwd: PathBuf,
+    /// The running binary, `std::env::current_exe()`. Empty when the system cannot say.
+    pub exe: PathBuf,
 }
 
 impl Env {
@@ -22,11 +24,22 @@ impl Env {
                     || name.starts_with("REVIEW_")
                     || matches!(
                         name.as_str(),
-                        "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR"
+                        "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HC_TERMINAL_ID"
                     )
             })
             .collect();
-        Self { vars, cwd }
+        Self {
+            vars,
+            cwd,
+            exe: PathBuf::new(),
+        }
+    }
+
+    /// The same environment with the running binary's path.
+    #[must_use]
+    pub fn with_exe(mut self, exe: PathBuf) -> Self {
+        self.exe = exe;
+        self
     }
 
     /// A variable's value. An empty value is the same as a missing one.
@@ -35,6 +48,14 @@ impl Env {
             .get(name)
             .map(String::as_str)
             .filter(|value| !value.is_empty())
+    }
+
+    /// The hc terminal that owns this shell, when hc is the nearest host. A Herdr pane started inside
+    /// an hc terminal inherits `HC_TERMINAL_ID`, and hc terminals carry no `HERDR_*` variable, so
+    /// `HERDR_PANE_ID` means Herdr is nearer and wins.
+    pub fn hc_terminal(&self) -> Option<&str> {
+        self.get("HC_TERMINAL_ID")
+            .filter(|_| self.get("HERDR_PANE_ID").is_none())
     }
 
     /// The `HERDR_*` and `REVIEW_*` variables in name order.
@@ -71,11 +92,13 @@ mod tests {
             ("HERDR_PANE_ID", "w1:p1"),
             ("REVIEW_X", ""),
             ("CLAUDE_CONFIG_DIR", "/c"),
+            ("HC_TERMINAL_ID", "t7"),
         ]);
         assert_eq!(env.get("PATH"), None);
         assert_eq!(env.get("HERDR_PANE_ID"), Some("w1:p1"));
         assert_eq!(env.get("REVIEW_X"), None);
         assert_eq!(env.get("CLAUDE_CONFIG_DIR"), Some("/c"));
+        assert_eq!(env.get("HC_TERMINAL_ID"), Some("t7"));
         assert_eq!(env.herdr_and_review().count(), 2);
     }
 

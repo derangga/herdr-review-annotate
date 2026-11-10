@@ -1,0 +1,1487 @@
+// Pure helpers for drawing: the diff rows in order, the text cleaned for the screen, the file list lines.
+import { fileIcon } from "./icons.ts";
+import type { Candidate, Change, Comment, Cursor, Editor, FileSummary, FileView, Mark, Model, Msg, NewAnchor, Reveal, Row, Selection, State, Thread, Token, TokenKind } from "./types.ts";
+
+// Control characters become nothing and a tab becomes spaces, as in the TUI. The text is the agent's or
+// the file's, so it is never trusted to be printable.
+export function cleanText(text: string): string {
+  // oxlint-disable-next-line no-control-regex
+  return text.replace(/\t/g, "    ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
+// Comment bodies keep their newlines, which cleanText would drop with the other control characters.
+export function bodyLines(text: string): string[] {
+  return text.replace(/\r\n?/g, "\n").split("\n").map(cleanText);
+}
+
+// A stretch of a code row drawn in one colour, named as `theme()` names it.
+// `marked` is set, to true, only on a piece of a changed word: the view gives it a stronger background.
+export type Run = { text: string; color: string; marked?: true };
+
+// The theme colour each kind is drawn in, by the name `theme()` gives it. The TUI's choices, as near as the
+// terminal palette goes: green strings, blue functions, pink keywords, yellow numbers, teal types, a comment as dim
+// text. An operator is the palette's pale ansi7, which sits close to the plain text. The reds are left to the
+// removed lines, and `blocked` was tried for numbers and is red.
+const TOKEN_COLORS: Record<TokenKind, string> = {
+  comment: "dim",
+  string: "ansi2",
+  number: "ansi3",
+  keyword: "ansi5",
+  operator: "ansi7",
+  function: "ansi4",
+  type: "ansi6",
+};
+export const tokenColor = (kind: TokenKind): string => TOKEN_COLORS[kind];
+const PLAIN = "foreground";
+
+// The row's text cut where its tokens begin and end, each piece cleaned for the screen. Cleaning cuts piece by
+// piece and gives what cleaning the whole would, since it works one character at a time. Offsets are UTF-16 code
+// units, as `slice` counts them. Text between tokens is the plain foreground, and a row with no tokens is one run. Each
+// piece is cut again at the edges of the marks, so a run is wholly marked or not, and keeps its syntax colour.
+export function runs(text: string, tokens: Token[], marks: Mark[] = []): Run[] {
+  const out: Run[] = [];
+  const emit = (from: number, to: number, color: string, marked: boolean): void => {
+    const piece = cleanText(text.slice(from, to));
+    if (piece !== "") {
+      out.push(marked ? { text: piece, color, marked: true } : { text: piece, color });
+    }
+  };
+  const push = (from: number, to: number, color: string): void => {
+    let at = from;
+    for (const k of marks) {
+      if (k.to <= at) {
+        continue;
+      }
+      if (k.from >= to) {
+        break;
+      }
+      const start = Math.max(at, k.from);
+      const stop = Math.min(to, k.to);
+      emit(at, start, color, false);
+      emit(start, stop, color, true);
+      at = stop;
+    }
+    emit(at, to, color, false);
+  };
+  let at = 0;
+  for (const t of tokens) {
+    push(at, t.from, PLAIN);
+    push(t.from, t.to, tokenColor(t.kind));
+    at = t.to;
+  }
+  push(at, text.length, PLAIN);
+  return out;
+}
+
+export type Tone = "user" | "agent" | "resolved";
+
+// The theme colour each thing is drawn in, by the name `theme()` gives it, as the syntax colours are. The user's
+// cards take the accent, the agent's their own pink, a warning is yellow, and red (ansi1) is left to removed lines
+// and Delete. `blocked` is the agent-status colour, red in some themes, so nothing here returns it.
+export const WARN = "ansi3";
+export const toneColor = (tone: Tone): string => (tone === "user" ? "accent" : tone === "agent" ? "ansi5" : "ansi2");
+export const tagColor = (tag: string): string => (tag === "unsent" || tag === "new" ? WARN : "dim");
+export const letterColor = (letter: string): string => (letter === "A" || letter === "?" ? "ansi2" : letter === "D" ? "ansi1" : WARN);
+export type RowItem = { kind: "hunk" | "ctx" | "add" | "del"; key: string; index: number; old: string; new: string; text: string; runs: Run[] };
+// A thread card is a head, then one body per comment while it is open. The last item of a card closes the box. `half` is the half
+// of a side-by-side stream the card sits in (the side its comment is on), null for the whole width: in the unified layout, for
+// a file comment and for the threads not in the diff.
+export type HeadItem = { kind: "head"; key: string; id: string; tone: Tone; title: string; badges: string[]; quote: string | null; collapsible: boolean; open: boolean; focused: boolean; last: boolean; half: Side };
+// `buttons` are the card's own, at the bottom of the comment (`cardButtons`).
+export type BodyItem = { kind: "body"; key: string; id: string; tone: Tone; meta: string | null; lines: string[]; buttons: DockButton[]; focused: boolean; last: boolean; half: Side };
+// The comment editor of the diff, drawn in the stream where its comment will hang: a fixed height (EDITOR_H) that holds the title, the
+// text box, a line for the status and the buttons. The text itself is the view's (`Ui.textarea`), so the item holds only the title.
+export type EditorItem = { kind: "editor"; key: string; title: string; half: Side };
+export type LabelItem = { kind: "label"; key: string; text: string };
+// The row that starts a file in the stream. A folded file is this row alone. `hides` says what a fold covers.
+export type FileItem = { kind: "file"; key: string; path: string; title: string; letter: string; add: number; del: number; viewed: boolean; folded: boolean; hides: string };
+// What stands for a file whose diff has not arrived: a stretch as tall as the diff is guessed to be.
+export type WaitItem = { kind: "wait"; key: string; text: string; height: number };
+export type NoteItem = { kind: "note"; key: string; text: string };
+// A row of the side-by-side layout: the old half and the new half. A context row is on both halves (the same item), a
+// removed row faces the added row paired with it, and a half with no partner is null. A hunk header is not one of these.
+export type SplitItem = { kind: "split"; key: string; left: RowItem | null; right: RowItem | null };
+export type StreamItem = RowItem | HeadItem | BodyItem | LabelItem | FileItem | WaitItem | NoteItem | SplitItem | EditorItem;
+
+// The side a code row's half is on, null in the unified layout.
+export type Side = "old" | "new" | null;
+
+// The stream is this wide, in pixels, or wider: side by side, unless the user forced a layout.
+export const SPLIT_W = 900;
+export const isSplit = (m: Model): boolean => m.split ?? m.width >= SPLIT_W;
+
+export const sideOf = (row: Row): "old" | "new" => (row.kind === "del" ? "old" : "new");
+const lineOn = (row: Row, side: "old" | "new"): number | null => (side === "old" ? row.old : row.new);
+
+// One row picked: a one-row selection on `side` (the half clicked), else on the side the row lives on. Nothing for a hunk
+// header, or for a row with no line on that side.
+export function pick(file: FileView, row: number, side: Side = null): Selection | null {
+  const r = file.rows[row];
+  if (r === undefined) {
+    throw new Error(`row ${row} is out of range`);
+  }
+  const on = side ?? sideOf(r);
+  return r.kind === "hunk" || lineOn(r, on) === null ? null : { path: file.path, side: on, from: row, to: row, anchor: row };
+}
+
+// What a [+] on a row comments on: the selection when the row is one of its lines, else the row alone. null for a
+// hunk header. A [+] on a half of the other side than the selection's is the row alone.
+export function plusTarget(file: FileView, sel: Selection | null, row: number, side: Side = null): Selection | null {
+  const r = file.rows[row];
+  if (r === undefined) {
+    throw new Error(`row ${row} is out of range`);
+  }
+  return sel !== null && (side === null || side === sel.side) && sel.path === file.path && row >= sel.from && row <= sel.to && lineOn(r, sel.side) !== null ? sel : pick(file, row, side);
+}
+
+// The range a drag makes between the row it began on (`first`) and the row the pointer is on. It takes the first row's
+// side (or `side`, the half it began on), and its ends are the first and last row in between that have a line on that side.
+export function span(file: FileView, first: number, second: number, side: Side = null): Selection | null {
+  const a = file.rows[first];
+  if (a === undefined || file.rows[second] === undefined) {
+    throw new Error(`row ${first} or ${second} is out of range`);
+  }
+  if (a.kind === "hunk") {
+    return null;
+  }
+  const on: number[] = [];
+  side ??= sideOf(a);
+  if (lineOn(a, side) === null) {
+    return null;
+  }
+  for (let i = Math.min(first, second); i <= Math.max(first, second); i++) {
+    const r = file.rows[i];
+    if (r !== undefined && lineOn(r, side) !== null) {
+      on.push(i);
+    }
+  }
+  const from = on[0];
+  const to = on[on.length - 1];
+  return from === undefined || to === undefined ? null : { path: file.path, side, from, to, anchor: first };
+}
+
+// The row that faces `row` in the side-by-side layout, by the pairing fileStream makes: a removed row faces the added row at
+// its place in the run of added rows right after its run, and the other way round; a context row faces itself. null when no
+// row does, and for a hunk header.
+export function partner(file: FileView, row: number): number | null {
+  const kind = (i: number): string | undefined => file.rows[i]?.kind;
+  const k = kind(row);
+  if (k === "ctx") {
+    return row;
+  }
+  if (k !== "del" && k !== "add") {
+    return null;
+  }
+  const edge = (from: number, step: number, of: string): number => {
+    let i = from;
+    while (kind(i + step) === of) {
+      i += step;
+    }
+    return i;
+  };
+  if (k === "del") {
+    const start = edge(row, 1, "del") + 1;
+    const at = start + row - edge(row, -1, "del");
+    return kind(start) === "add" && at <= edge(start, 1, "add") ? at : null;
+  }
+  const start = edge(row, -1, "add");
+  const end = start - 1;
+  const at = edge(end, -1, "del") + row - start;
+  return kind(end) === "del" && at <= end ? at : null;
+}
+
+export function anchorOf(file: FileView, sel: Selection): NewAnchor {
+  const from = file.rows[sel.from];
+  const to = file.rows[sel.to];
+  if (from === undefined || to === undefined) {
+    throw new Error("selection is out of range");
+  }
+  const line = lineOn(from, sel.side);
+  const end = lineOn(to, sel.side);
+  return { path: file.path, old_path: sel.side === "old" ? file.old_path : null, side: sel.side, line, end_line: sel.from === sel.to ? null : end };
+}
+
+// The one-entry batch `comment apply --file` reads.
+export function batchOf(anchor: NewAnchor, text: string): string {
+  const entry: Record<string, unknown> = { path: anchor.path };
+  if (anchor.old_path !== null) {
+    entry.old_path = anchor.old_path;
+  }
+  if (anchor.side !== null) {
+    entry.side = anchor.side;
+  }
+  if (anchor.line !== null) {
+    entry.line = anchor.line;
+  }
+  if (anchor.end_line !== null) {
+    entry.end_line = anchor.end_line;
+  }
+  entry.body = text;
+  return JSON.stringify({ comments: [entry] });
+}
+
+const lines = (from: number | null, to: number | null): string => (from === null ? "" : to === null || to === from ? String(from) : `${from}-${to}`);
+
+// Where a comment points, as the TUI writes it: `src/a.rs R12-18`, `L` for the old side, the bare path for a file.
+export function anchorLabel(a: { path: string; side: "old" | "new" | null; line: number | null; end_line: number | null }): string {
+  return a.side === null || a.line === null ? cleanText(a.path) : `${cleanText(a.path)} ${a.side === "old" ? "L" : "R"}${lines(a.line, a.end_line)}`;
+}
+
+export function selectionLabel(file: FileView, sel: Selection): string {
+  const a = anchorOf(file, sel);
+  const count = a.line === null ? 1 : (a.end_line ?? a.line) - a.line + 1;
+  return `${anchorLabel(a)} (${count} ${count === 1 ? "line" : "lines"})`;
+}
+
+// A selection survives a reload when the rows it covers are the same.
+export function sameRows(before: FileView | null, after: FileView, sel: Selection): boolean {
+  if (before === null || before.path !== sel.path || after.path !== sel.path) {
+    return false;
+  }
+  for (let i = sel.from; i <= sel.to; i++) {
+    const a = before.rows[i];
+    const b = after.rows[i];
+    if (a === undefined || b === undefined || a.kind !== b.kind || a.old !== b.old || a.new !== b.new || a.text !== b.text) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function findComment(files: ReadonlyMap<string, FileView>, state: State | null, id: string | null): { thread: Thread; comment: Comment } | null {
+  if (id === null) {
+    return null;
+  }
+  for (const thread of [...[...files.values()].flatMap((f) => f.threads), ...(state === null ? [] : state.orphans)]) {
+    const comment = thread.comments.find((c) => c.id === id);
+    if (comment !== undefined) {
+      return { thread, comment };
+    }
+  }
+  return null;
+}
+
+// The root ids of a file's threads in the order its cards are drawn: the ones with no row first, then by row.
+// The reply lists them in the order the review wrote them, which is not the order on screen.
+export function cardOrder(file: FileView): string[] {
+  const row = (t: Thread): number => t.placement.row ?? -1;
+  return [...file.threads].sort((a, b) => row(a) - row(b)).map((t) => t.id);
+}
+
+// A place a jump can land: a thread, or a file whose threads are not on screen (not loaded, or folded).
+export type Stop = { id: string } | { path: string };
+
+const summaryOf = (m: Model, path: string): FileSummary | undefined => m.state?.files.find((f) => f.path === path);
+
+// A file the user folded, or one marked viewed that they have not opened. A fold is not saved.
+export const isFolded = (m: Model, f: FileSummary): boolean => m.folds.get(f.path) ?? f.viewed;
+
+// Every thread in the order the TUI walks them: the ones not in the diff, then the files in the sidebar's order
+// with each file's threads in card order. A file whose threads are not drawn (not loaded yet, or folded) that
+// holds some is one stop. `top` is where the selected file's stops begin.
+export function stops(m: Model): { all: Stop[]; top: number } {
+  const all: Stop[] = (m.state === null ? [] : m.state.orphans).map((t) => ({ id: t.id }));
+  let top = 0;
+  for (const f of m.state === null ? [] : m.state.files) {
+    if (m.selected === f.path) {
+      top = all.length;
+    }
+    const view = m.files.get(f.path);
+    if (view !== undefined && !isFolded(m, f)) {
+      all.push(...cardOrder(view).map((id) => ({ id })));
+    } else if (f.threads > 0) {
+      all.push({ path: f.path });
+    }
+  }
+  return { all, top };
+}
+
+// `stops(m).all.length === 0` without building the list or sorting a file's threads: a file the stream draws holds one stop per
+// thread, any other file one stop when the summary counts a thread. Kept per `files` while the state and the folds are the same
+// objects, so a hover or a wheel tick does not walk the review again.
+const noStopsMemo = new WeakMap<ReadonlyMap<string, FileView>, { state: State | null; folds: Model["folds"]; none: boolean }>();
+export function noStops(m: Model): boolean {
+  const kept = noStopsMemo.get(m.files);
+  if (kept !== undefined && kept.state === m.state && kept.folds === m.folds) {
+    return kept.none;
+  }
+  const files = m.state === null ? [] : m.state.files;
+  const none =
+    (m.state === null || m.state.orphans.length === 0) &&
+    files.every((f) => {
+      const view = m.files.get(f.path);
+      return view !== undefined && !isFolded(m, f) ? view.threads.length === 0 : f.threads === 0;
+    });
+  noStopsMemo.set(m.files, { state: m.state, folds: m.folds, none });
+  return none;
+}
+
+// Where next or previous comment lands, wrapping round at the ends. From the focused thread it is the one
+// after or before it. With nothing focused it counts from the top of the selected file: next is that file's first
+// thread, previous is the last one before the file. null when the review has no thread.
+export function jumpStop(m: Model, forward: boolean): Stop | null {
+  const { all, top } = stops(m);
+  if (all.length === 0) {
+    return null;
+  }
+  const hit = findComment(m.files, m.state, m.focus);
+  const at = hit === null ? -1 : all.findIndex((s) => "id" in s && s.id === hit.thread.id);
+  const from = at >= 0 ? (forward ? at + 1 : at - 1) : forward ? top : top - 1;
+  return all[(from + all.length) % all.length] ?? null;
+}
+
+// What a key pressed on the panel means: n is the next comment and shift+n the previous, / goes to the filter
+// box and Esc clears the selection, else the filter, and the cursor's keys come after (`cursorKey`). Not while the editor holds the keyboard, so a note can say "n", and not while
+// a question or the picker is up.
+export function panelKey(m: Model, keystroke: string): Msg | null {
+  if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) {
+    return null;
+  }
+  // The diff's keys act on the diff: in the agent-message view they would move a hidden cursor or open a diff editor.
+  if (m.view === "message") {
+    return null;
+  }
+  // In the box a key types: only Esc is a command (Enter reaches the model as the box's own submit).
+  if (m.filtering) {
+    return keystroke === "escape" ? { _tag: "FilterCleared" } : null;
+  }
+  if (keystroke === "/") {
+    return { _tag: "FilterOpened" };
+  }
+  if (keystroke === "escape") {
+    return m.selection !== null ? { _tag: "SelectionCleared" } : m.filter === "" ? null : { _tag: "FilterCleared" };
+  }
+  if (keystroke === "n") {
+    return { _tag: "ThreadJumped", forward: true };
+  }
+  if (keystroke === "shift-n" || keystroke === "N") {
+    return { _tag: "ThreadJumped", forward: false };
+  }
+  return cursorKey(m, keystroke);
+}
+
+// --- the keyboard cursor ---
+
+// A place the cursor can stand: a code row of a loaded, unfolded file, in the order the stream draws them. In the side-by-side
+// layout a pair gives a spot for each half that has a row (a context row has both), left then right. `first` marks the first
+// spot of each side after a hunk header, which is where [ and ] land.
+export type Spot = { path: string; row: number; side: Side; first: boolean };
+
+export function spots(m: Model): Spot[] {
+  const out: Spot[] = [];
+  const split = isSplit(m);
+  for (const f of m.state === null ? [] : m.state.files) {
+    const file = m.files.get(f.path);
+    if (file === undefined || isFolded(m, f)) {
+      continue;
+    }
+    let seen = new Set<Side>();
+    const put = (row: number, side: Side): void => {
+      out.push({ path: f.path, row, side, first: !seen.has(side) });
+      seen.add(side);
+    };
+    const kind = (i: number): string | undefined => file.rows[i]?.kind;
+    // The pairing of fileStream: a run of removed rows faces the run of added rows right after it.
+    for (let i = 0; i < file.rows.length;) {
+      if (kind(i) === "hunk") {
+        seen = new Set();
+        i++;
+      } else if (!split) {
+        put(i++, null);
+      } else if (kind(i) === "ctx") {
+        put(i, "old");
+        put(i++, "new");
+      } else {
+        let mid = i;
+        while (kind(mid) === "del") {
+          mid++;
+        }
+        let end = mid;
+        while (kind(end) === "add") {
+          end++;
+        }
+        for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
+          if (i + p < mid) {
+            put(i + p, "old");
+          }
+          if (mid + p < end) {
+            put(mid + p, "new");
+          }
+        }
+        i = end;
+      }
+    }
+  }
+  return out;
+}
+
+export const sameSpot = (s: Spot, c: Cursor): boolean => s.path === c.path && s.row === c.row && s.side === c.side;
+
+// Whether the keyboard's cursor is on this row, on this half of it (null in unified): the row the view tints.
+export const cursorOn = (m: Model, item: RowItem, side: Side = null): boolean => m.cursor !== null && item.kind !== "hunk" && m.cursor.path === keyPath(item.key) && m.cursor.row === item.index && m.cursor.side === side;
+
+// The cursor's spot, or null when it has none or it no longer stands on a drawn code row (its file folded, replaced or gone).
+export function cursorSpot(m: Model): Spot | null {
+  const c = m.cursor;
+  return c === null ? null : (spots(m).find((s) => sameSpot(s, c)) ?? null);
+}
+
+// v's range is open and the cursor is on its file, so a motion grows it.
+export const visualOn = (m: Model): boolean => m.visual && m.selection !== null && m.cursor !== null && m.selection.path === m.cursor.path;
+
+// The spots a motion walks: the cursor's half of the side-by-side layout (all of them in unified), and while a range is open
+// only its own file, since a range never crosses files.
+export function lane(m: Model, all: Spot[]): Spot[] {
+  const c = m.cursor;
+  const own = visualOn(m);
+  return c === null ? all : all.filter((s) => s.side === c.side && (!own || s.path === c.path));
+}
+
+// Where the first motion key puts the cursor: the first code row at or below the item on top of the screen (a card on top
+// counts as its file's header), else the first one of a file on screen, else the first of all. A context row is on its
+// new half.
+export function topSpot(m: Model, all: Spot[]): Spot | null {
+  const home = all.filter((s) => s.side !== "old" || m.files.get(s.path)?.rows[s.row]?.kind === "del");
+  const path = m.top === null ? "" : keyPath(m.top);
+  const at = m.top === null ? null : /^[rp](\d+)$/.exec(keyLocal(m.top));
+  const row = at === null ? 0 : Number(at[1]);
+  return home.find((s) => s.path === path && s.row >= row) ?? home.find((s) => m.visible.includes(s.path)) ?? home[0] ?? null;
+}
+
+const THREAD_KEYS: Record<string, string[]> = { r: ["reply"], e: ["edit"], d: ["delete"], x: ["resolve", "reopen"] };
+
+// The keys of the cursor and of the focused thread, as the TUI's keymap has them: j k and the arrows move a row, ctrl+d and
+// ctrl+u half a screen, [ and ] a hunk, h and l the half of a side-by-side pair, v a range, c a comment. r e d x are the
+// buttons of the focused comment's card, so they do what those do and nothing where the card offers none.
+function cursorKey(m: Model, key: string): Msg | null {
+  const half = Math.max(1, Math.floor(m.height / ROW / 2));
+  switch (key) {
+    case "j":
+    case "down":
+      return { _tag: "CursorMoved", by: 1 };
+    case "k":
+    case "up":
+      return { _tag: "CursorMoved", by: -1 };
+    case "ctrl-d":
+    case "pagedown":
+      return { _tag: "CursorMoved", by: half };
+    case "ctrl-u":
+    case "pageup":
+      return { _tag: "CursorMoved", by: -half };
+    case "]":
+      return { _tag: "CursorHunk", forward: true };
+    case "[":
+      return { _tag: "CursorHunk", forward: false };
+    case "h":
+    case "left":
+      return isSplit(m) ? { _tag: "CursorSide", side: "old" } : null;
+    case "l":
+    case "right":
+      return isSplit(m) ? { _tag: "CursorSide", side: "new" } : null;
+    case "v":
+      return { _tag: "VisualToggled" };
+    case "c": {
+      // What a [+] on the cursor's row does. With no cursor yet the key only shows it.
+      const at = cursorSpot(m);
+      return at === null ? { _tag: "CursorMoved", by: 0 } : { _tag: "PlusClicked", path: at.path, row: at.row, side: at.side };
+    }
+    case "r":
+    case "e":
+    case "d":
+    case "x": {
+      // The buttons the focused comment's card offers, taken as the thread's last comment so x resolves from any of its
+      // comments. Not while a range is selected: the keys then belong to the range, as the bar's did.
+      const hit = m.selection === null ? findComment(m.files, m.state, m.focus) : null;
+      return hit === null ? null : (cardButtons(hit.thread, hit.comment, true).find((b) => (THREAD_KEYS[key] ?? []).includes(b.id))?.msg ?? null);
+    }
+    default:
+      return null;
+  }
+}
+
+// `now` under a minute, then 2m, 3h, 2d. A time that does not parse has no age.
+export function ageText(at: string, now: number): string | null {
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) {
+    return null;
+  }
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
+}
+
+const who = (author: string, you: string): string => (author === "user" ? you : author.startsWith("agent:") ? cleanText(author.slice(6)) : "agent");
+
+// The buttons at the bottom of a comment. Reply is on every one. Resolve or Reopen and Resend act on the thread, so only the
+// last comment has them; Edit and Delete only the user's own comment.
+function cardButtons(thread: Thread, comment: Comment, last: boolean): DockButton[] {
+  const out: DockButton[] = [];
+  // Every card button is an icon: the label and the key are its tooltip.
+  const add = (id: string, label: string, icon: string, msg: Msg, key?: string, danger = false): void => void out.push({ id, label, msg, danger, off: false, icon, iconOnly: true, key });
+  add("reply", "Reply", "reply", { _tag: "ThreadAction", id: comment.id, action: "reply" }, "r");
+  if (last) {
+    if (thread.status === "open") {
+      add("resolve", "Resolve", "check", { _tag: "ThreadAction", id: comment.id, action: "resolve" }, "x");
+    } else {
+      add("reopen", "Reopen", "undo", { _tag: "ThreadAction", id: comment.id, action: "reopen" }, "x");
+    }
+    if (thread.status === "open" && !thread.unsent) {
+      add("resend", "Resend", "send", { _tag: "SendClicked", threads: [thread.id] });
+    }
+  }
+  if (comment.author === "user") {
+    add("edit", "Edit", "pencil", { _tag: "ThreadAction", id: comment.id, action: "edit" }, "e");
+    add("delete", "Delete", "trash", { _tag: "ThreadAction", id: comment.id, action: "delete" }, "d", true);
+  }
+  return out;
+}
+
+// The editor item of a reply or an edit of this thread, which hangs under its card, in the card's half. A new comment is not
+// here: fileStream puts it under its row, or at the top of its file. Not while the draft is being saved: its card shows it.
+function threadEditor(out: StreamItem[], path: string, thread: Thread, m: Model, half: Side): void {
+  const e = m.editor;
+  if (m.view !== "message" && m.draft === null && e !== null && e.kind !== "comment" && e.thread === thread.id) {
+    out.push(editorItem(path, e, half));
+  }
+}
+
+// A draft being saved is drawn as the card it will be, built by cardItems from the same fields, so the real card that replaces
+// it is the same height and nothing moves. Its id is "draft", which no click finds.
+const DRAFT = "draft";
+const draftComment = (m: Model, now: number, parent: string | null): Comment => ({ id: DRAFT, parent, author: "user", at: new Date(now).toISOString(), body: m.draft ?? "", sent: false, edited_since_sent: false });
+
+// A new comment's thread as the store will write it: open, unsent, on the anchor's rows.
+function draftThread(m: Model, a: NewAnchor, row: number | null, now: number): Thread {
+  const kind = a.line === null ? "file" : a.end_line !== null ? "range" : "line";
+  return {
+    id: DRAFT,
+    status: "open",
+    resolved_by: null,
+    is_new: false,
+    unsent: true,
+    placement: { kind: "matched", row, start_row: null },
+    anchor: { path: a.path, old_path: a.old_path, kind, side: a.side, line: a.line, end_line: a.end_line, text: null, spec: m.spec ?? { kind: "worktree" } },
+    comments: [draftComment(m, now, null)],
+  } as Thread;
+}
+
+// The thread with a reply or an edit being saved already in it: a reply is a last comment of the user's, which makes the thread
+// unsent; an edit is the comment's new text.
+function withDraft(thread: Thread, m: Model, now: number): Thread {
+  const e = m.editor;
+  if (m.draft === null || m.view === "message" || e === null || e.thread !== thread.id) {
+    return thread;
+  }
+  if (e.kind === "reply") {
+    return { ...thread, unsent: true, comments: [...thread.comments, draftComment(m, now, thread.id)] };
+  }
+  if (e.kind === "edit") {
+    return { ...thread, comments: thread.comments.map((c) => (c.id === e.comment ? { ...c, body: m.draft ?? c.body, edited_since_sent: c.sent || c.edited_since_sent } : c)) };
+  }
+  return thread;
+}
+
+const editorItem = (path: string, e: Editor, half: Side): EditorItem => ({ kind: "editor", key: itemKey(path, "editor"), title: editorTitle(e), half });
+
+function cardItems(out: StreamItem[], path: string, given: Thread, m: Model, now: number, half: Side = null): void {
+  const thread = withDraft(given, m, now);
+  const root = thread.comments[0];
+  if (root === undefined) {
+    throw new Error(`thread ${thread.id} has no comments`);
+  }
+  const resolved = thread.status === "resolved";
+  const open = !resolved || m.expanded.has(thread.id);
+  const tone: Tone = resolved ? "resolved" : root.author === "user" ? "user" : "agent";
+  const age = ageText(root.at, now);
+  const badges: string[] = [];
+  if (!resolved && thread.placement.kind === "outdated") {
+    badges.push("outdated");
+  }
+  if (resolved) {
+    badges.push(`resolved by ${thread.resolved_by === null ? "?" : who(thread.resolved_by, "you")}`);
+  }
+  if (thread.is_new) {
+    badges.push("new");
+  }
+  if (thread.comments.some((c) => c.edited_since_sent)) {
+    badges.push("edited since sent");
+  }
+  if (thread.unsent) {
+    badges.push("unsent");
+  }
+  const outdated = !resolved && thread.placement.kind !== "matched" && thread.anchor.text !== null;
+  out.push({
+    kind: "head",
+    key: itemKey(path, `h:${thread.id}`),
+    id: thread.id,
+    tone,
+    title: `${resolved ? "\u2713" : "\u25cf"} ${who(root.author, "Your note")}${age === null ? "" : ` \u00b7 ${age}`} \u00b7 ${anchorLabel(thread.anchor)}`,
+    badges,
+    quote: outdated ? cleanText(thread.anchor.text ?? "") : null,
+    collapsible: resolved,
+    open,
+    focused: m.focus === thread.id,
+    last: !open,
+    half,
+  });
+  if (open) {
+    thread.comments.forEach((c, i) => {
+      const when = ageText(c.at, now);
+      out.push({
+        kind: "body",
+        key: itemKey(path, `c:${c.id}`),
+        id: c.id,
+        tone,
+        meta: c.parent === null ? null : `${who(c.author, "You")}${when === null ? "" : ` \u00b7 ${when}`}`,
+        lines: bodyLines(c.body),
+        buttons: cardButtons(thread, c, i === thread.comments.length - 1),
+        focused: m.focus === c.id,
+        last: i === thread.comments.length - 1,
+        half,
+      });
+    });
+  }
+  threadEditor(out, path, thread, m, half);
+}
+
+// An item's key is its file's path and what it is in the file, so a click names the file it belongs to. The path of
+// the threads not in the diff is empty. Nothing after the last `|` holds one, so the path may.
+export const itemKey = (path: string, local: string): string => `${path}|${local}`;
+export const keyPath = (key: string): string => key.slice(0, key.lastIndexOf("|"));
+const keyLocal = (key: string): string => key.slice(key.lastIndexOf("|") + 1);
+
+// Sizes, in pixels, that the stream places its items by: the prefix sums, the scrollbar and a scroll to an item all use
+// them, and nothing is measured. A code row is a line of fixed height. A card is as tall as its text wraps, which only the
+// renderer knows, so it is estimated from the text's length and the width, a little over so that text never reaches the
+// next item. The view draws every item in a box of exactly its size, so what is drawn and what is counted agree.
+export const ROW = 20;
+export const CARD_W = 560;
+const FILE_H = 30;
+const LABEL_H = 30;
+const NOTE_H = 24;
+const CHAR_W = 7.5;
+const TEXT_H = 18;
+// A card button is BTN_H tall and 8 px of padding and a border wide each side, with BTN_GAP between, in a row that wraps, 4 px under the text.
+const BTN_H = 24;
+const BTN_GAP = 6;
+// The diff's editor: the title, the text box and a status line, each 4 px under the last, and the button row, in a box
+// with 6 px of padding top and bottom, 6 px of margin each side of it. The text box is EDITOR_TEXT tall and scrolls inside.
+export const EDITOR_TEXT = 108;
+export const EDITOR_H = 12 + 12 + 16 + 4 + EDITOR_TEXT + 4 + 16 + 4 + 24;
+
+// The height of a comment's button row when the card's text is `avail` wide: the buttons' estimated widths, wrapped.
+export function buttonsHeight(buttons: DockButton[], avail: number): number {
+  if (buttons.length === 0) {
+    return 0;
+  }
+  // The rows a wrapping flex row makes: a button goes on the next row when it does not fit after the ones before it.
+  let rows = 1;
+  let used = 0;
+  for (const b of buttons) {
+    const w = b.iconOnly === true ? BTN_H : b.label.length * CHAR_W + 18;
+    if (used > 0 && used + BTN_GAP + w > avail) {
+      rows++;
+      used = w;
+    } else {
+      used += (used > 0 ? BTN_GAP : 0) + w;
+    }
+  }
+  return 4 + rows * BTN_H + (rows - 1) * BTN_GAP;
+}
+
+// The card's width in a stream this wide: the view gives it 48 px on the left and 12 on the right, up to CARD_W.
+export const cardWidth = (width: number): number => Math.max(160, Math.min(CARD_W, width - 60));
+// A card in one half of a side-by-side stream (half of the width less the 1 px rule): 28 px in from the half's left edge, 12 on the right.
+export const halfCardWidth = (width: number): number => Math.max(160, Math.min(CARD_W, (width - 1) / 2 - 40));
+
+export function heightOf(i: StreamItem, width: number): number {
+  switch (i.kind) {
+    case "hunk":
+    case "ctx":
+    case "add":
+    case "del":
+    case "split":
+      return ROW;
+    case "label":
+      return LABEL_H;
+    case "file":
+      return FILE_H;
+    case "note":
+      return NOTE_H;
+    case "wait":
+      return i.height;
+    case "editor":
+      return EDITOR_H;
+    case "head":
+      return 34 + (i.quote === null ? 0 : 18);
+    case "body": {
+      const avail = (i.half === null ? cardWidth(width) : halfCardWidth(width)) - (i.meta === null ? 22 : 34);
+      const cols = Math.max(8, Math.floor(avail / CHAR_W));
+      const wrapped = i.lines.reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0);
+      return 6 + (i.meta === null ? 0 : 16) + wrapped * TEXT_H + buttonsHeight(i.buttons, avail) + (i.last ? 6 : 0);
+    }
+    default: {
+      const unhandled: never = i;
+      throw new Error(`unhandled item ${JSON.stringify(unhandled)}`);
+    }
+  }
+}
+
+// How many lines a file's diff is guessed to have before it arrives: its changed lines and a hunk's header and
+// context. A file with no text to show (binary, a submodule) is one line.
+export function estimateRows(f: FileSummary): number {
+  if (f.change === "binary" || f.change === "submodule" || f.change === "too_large" || f.change === "unparsed") {
+    return 1;
+  }
+  return f.add + f.del + (f.change === "added" || f.change === "untracked" || f.change === "deleted" ? 2 : 8);
+}
+
+// `sizes` holds one height for each item and `starts` the pixel each one begins at, a prefix sum one longer than `items`
+// (`starts[items.length]` is `total`, the stream's height). `wide` is the width the longest code line needs.
+export type Stream = { items: StreamItem[]; sizes: number[]; starts: number[]; total: number; wide: number };
+type FileItems = { items: StreamItem[]; sizes: number[] };
+
+// The rows and cards of a loaded file, with the height of each. It is the costly part of a frame (a row is cut into
+// runs), and a scroll, a hover or a drag leaves it as it was, so it is kept per file reply and rebuilt only when
+// what it shows changes: an opened thread, the focus, the minute (the ages) or the width. The map is
+// keyed by the reply's own object, so no copy of the mod sees another's and a reply that is gone takes its entry.
+const memo = new WeakMap<FileView, { dep: string; stream: FileItems }>();
+
+// A file's code rows: the text cut into runs, the costly part. Kept for as long as the reply object lives, so a new
+// minute or a width does not cut every row of every file again inside one frame.
+const rowMemo = new WeakMap<FileView, RowItem[]>();
+
+function rowsOf(file: FileView): RowItem[] {
+  const kept = rowMemo.get(file);
+  if (kept !== undefined) {
+    return kept;
+  }
+  const rows = file.rows.map((row, index): RowItem => ({ kind: row.kind, key: itemKey(file.path, `r${index}`), index, old: row.old === null ? "" : String(row.old), new: row.new === null ? "" : String(row.new), text: cleanText(row.text), runs: runs(row.text, row.tokens, row.marks) }));
+  rowMemo.set(file, rows);
+  return rows;
+}
+
+// The row a new comment hangs under: the last one of its range, found by its line on the comment's side (a line number is
+// one row of a file). null when the file has no such row, and for a file comment.
+function editorRow(file: FileView, a: NewAnchor): number | null {
+  const line = a.end_line ?? a.line;
+  if (a.side === null || line === null) {
+    return null;
+  }
+  for (let i = 0; i < file.rows.length; i++) {
+    if (lineOn(file.rows[i] as Row, a.side) === line) {
+      return i;
+    }
+  }
+  return null;
+}
+
+function fileStream(m: Model, file: FileView, now: number): FileItems {
+  const ids = new Set(file.threads.flatMap((t) => [t.id, ...t.comments.map((c) => c.id)]));
+  // A new comment's editor on this file, which the message view's editor is not. A reply or an edit is drawn by its card.
+  const ed = m.view !== "message" && m.editor !== null && m.editor.kind === "comment" && m.editor.anchor?.path === file.path ? m.editor : null;
+  const at = ed?.anchor == null ? null : editorRow(file, ed.anchor);
+  const split = isSplit(m);
+  const dep = [
+    file.threads
+      .filter((t) => m.expanded.has(t.id))
+      .map((t) => t.id)
+      .join(","),
+    m.focus !== null && ids.has(m.focus) ? m.focus : "",
+    Math.floor(now / 60000),
+    m.width,
+    split,
+    ed === null ? "" : `${editorTitle(ed)}|${at}`,
+    m.view !== "message" && m.editor?.thread != null && ids.has(m.editor.thread) ? `${m.editor.kind}|${m.editor.thread}` : "",
+    (ed !== null || (m.editor?.thread != null && ids.has(m.editor.thread))) && m.draft !== null ? m.draft : "",
+  ].join("|");
+  const kept = memo.get(file);
+  if (kept !== undefined && kept.dep === dep) {
+    return kept.stream;
+  }
+  const items: StreamItem[] = [];
+  const under = new Map<number, Thread[]>();
+  const top: Thread[] = [];
+  for (const t of file.threads) {
+    const row = t.placement.row;
+    if (row === null) {
+      top.push(t);
+    } else if (file.rows[row] === undefined) {
+      throw new Error(`thread ${t.id} is placed at row ${row}, past the end`);
+    } else {
+      under.set(row, [...(under.get(row) ?? []), t]);
+    }
+  }
+  if (file.note !== null) {
+    items.push({ kind: "note", key: itemKey(file.path, "note"), text: cleanText(file.note) });
+  }
+  // A file comment, or one whose row is gone, has its editor at the top of the file.
+  if (ed !== null && at === null && m.draft === null) {
+    items.push(editorItem(file.path, ed, null));
+  }
+  for (const t of top) {
+    cardItems(items, file.path, t, m, now);
+  }
+  // Saving a file comment: its card is where the store's will be, after the file's other comments with no row.
+  if (ed !== null && at === null && m.draft !== null && ed.anchor !== null) {
+    cardItems(items, file.path, draftThread(m, ed.anchor, null, now), m, now);
+  }
+  const base = rowsOf(file);
+  // The cards of the rows, each in the half its comment is on in the split layout; then the editor of a new comment when one of
+  // the rows is the last of its range, in the half the [+] was clicked on.
+  const cards = (...rows: (RowItem | null)[]): void => {
+    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) {
+      for (const t of under.get(index) ?? []) {
+        cardItems(items, file.path, t, m, now, split ? t.anchor.side : null);
+      }
+    }
+    if (ed !== null && at !== null && rows.some((r) => r?.index === at)) {
+      const half = split ? (ed.anchor?.side ?? null) : null;
+      if (m.draft === null || ed.anchor === null) {
+        items.push(editorItem(file.path, ed, half));
+      } else {
+        cardItems(items, file.path, draftThread(m, ed.anchor, at, now), m, now, half);
+      }
+    }
+  };
+  if (!split) {
+    base.forEach((row) => {
+      items.push(row);
+      cards(row);
+    });
+  } else {
+    // A run of removed rows pairs with the run of added rows right after it; the cards of a pair are its left row's, then its right's.
+    const kindAt = (i: number): string | undefined => base[i]?.kind;
+    for (let i = 0; i < base.length;) {
+      const row = base[i] as RowItem;
+      if (row.kind === "hunk" || row.kind === "ctx") {
+        items.push(row.kind === "hunk" ? row : { kind: "split", key: itemKey(file.path, `p${i}`), left: row, right: row });
+        cards(row);
+        i++;
+        continue;
+      }
+      let mid = i;
+      while (kindAt(mid) === "del") {
+        mid++;
+      }
+      let end = mid;
+      while (kindAt(end) === "add") {
+        end++;
+      }
+      for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
+        const left = i + p < mid ? (base[i + p] as RowItem) : null;
+        const right = mid + p < end ? (base[mid + p] as RowItem) : null;
+        items.push({ kind: "split", key: itemKey(file.path, `p${(left ?? (right as RowItem)).index}`), left, right });
+        cards(left, right);
+      }
+      i = end;
+    }
+  }
+  const stream = { items, sizes: items.map((i) => heightOf(i, m.width)) };
+  memo.set(file, { dep, stream });
+  return stream;
+}
+
+// What the Viewed checkbox on a file's header sends: the opposite of what the file is now.
+export const viewedClick = (f: FileItem): Msg => ({ _tag: "ViewedClicked", path: f.path, viewed: !f.viewed });
+
+function fileHead(m: Model, f: FileSummary, folded: boolean): FileItem {
+  const hides = folded && f.threads > 0 ? plural(f.threads, "thread", "threads") : "";
+  return { kind: "file", key: itemKey(f.path, "file"), path: f.path, title: cleanText(f.path), letter: LETTERS[f.change], add: f.add, del: f.del, viewed: f.viewed, folded, hides };
+}
+
+// Every file's diff in one stream, in the diff's order: first the threads not in the diff, then for each file a header
+// row and under it its rows and cards. A folded file is its header. A file that has not arrived is its header and a
+// stretch as tall as its diff is guessed to be.
+export function streamLayout(m: Model, now: number): Stream {
+  const items: StreamItem[] = [];
+  const sizes: number[] = [];
+  const add = (more: StreamItem[], heights = more.map((i) => heightOf(i, m.width))): void => {
+    items.push(...more);
+    sizes.push(...heights);
+  };
+  const orphans = m.state === null ? [] : m.state.orphans;
+  if (orphans.length > 0) {
+    const out: StreamItem[] = [{ kind: "label", key: itemKey("", "l:orphans"), text: "Comments not in this diff" }];
+    for (const t of orphans) {
+      cardItems(out, "", t, m, now);
+    }
+    add(out);
+  }
+  for (const f of m.state === null ? [] : m.state.files) {
+    const folded = isFolded(m, f);
+    add([fileHead(m, f, folded)]);
+    if (folded) {
+      continue;
+    }
+    const view = m.files.get(f.path);
+    if (view !== undefined) {
+      const s = fileStream(m, view, now);
+      add(s.items, s.sizes);
+    } else {
+      const rows = estimateRows(f);
+      add([{ kind: "wait", key: itemKey(f.path, "wait"), text: m.skipped.has(f.path) ? "Could not load this file. Refresh to try again" : "Loading...", height: rows * ROW }]);
+    }
+  }
+  const starts = [0];
+  for (const size of sizes) {
+    starts.push((starts[starts.length - 1] as number) + size);
+  }
+  // Side by side fits the pane: each half shifts its code sideways itself, so a long line does not widen the stream.
+  return { items, sizes, starts, total: starts[starts.length - 1] as number, wide: isSplit(m) ? 0 : diffWidth(items) };
+}
+
+// streamLayout, kept while nothing it reads changes. A wheel tick, a hover, a drag or a selection changes none of these,
+// so none of them cuts the items and the prefix sums again: only the files, the folds, the open threads, the focus, the
+// width, the files that failed, and the minute (the ages on the cards) do.
+export function layoutCache(onRebuild: () => void = () => {}): (m: Model, now: number) => Stream {
+  let deps: unknown[] = [];
+  let kept: Stream | null = null;
+  return (m, now) => {
+    const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, m.editor, m.draft, m.view, Math.floor(now / 60000)];
+    if (kept !== null && next.every((d, i) => d === deps[i])) {
+      return kept;
+    }
+    deps = next;
+    onRebuild();
+    kept = streamLayout(m, now);
+    return kept;
+  };
+}
+
+// --- scrolling: the mod keeps the offset itself, in pixels, and draws only the items that overlap the screen ---
+
+// The most the stream can be scrolled: its end at the bottom of the screen. A stream shorter than the screen does not scroll.
+export const maxOffset = (total: number, height: number): number => Math.max(0, total - height);
+export const clampOffset = (offset: number, total: number, height: number): number => Math.min(maxOffset(total, height), Math.max(0, offset));
+
+// The item that holds pixel `y`: the last one that begins at or above it. 0 for an empty stream. This is the hit test of
+// a pixel against the items.
+export function itemAt(starts: number[], y: number): number {
+  let lo = 0;
+  let hi = Math.max(0, starts.length - 2);
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if ((starts[mid] as number) <= y) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+// The items that overlap the screen: `first` to `end` (exclusive), and how far the first one is above the top, which the
+// view shifts it up by. The offset is clamped, so a view drawn before the model caught up with a resize still draws.
+export function visibleRange(stream: Stream, offset: number, height: number): { first: number; end: number; shift: number } {
+  const n = stream.items.length;
+  if (n === 0) {
+    return { first: 0, end: 0, shift: 0 };
+  }
+  const at = clampOffset(offset, stream.total, height);
+  const first = itemAt(stream.starts, at);
+  let end = first + 1;
+  while (end < n && (stream.starts[end] as number) < at + height) {
+    end++;
+  }
+  return { first, end, shift: at - (stream.starts[first] as number) };
+}
+
+// The pixel an item begins at, as an offset the stream can be scrolled to (the end of the stream stops it short).
+export const offsetOfKey = (stream: Stream, key: string, height: number): number | null => {
+  const at = indexOfKey(stream.items, key);
+  return at < 0 ? null : clampOffset(stream.starts[at] as number, stream.total, height);
+};
+
+// Where a pending reveal scrolls to: its item's start, or with `near` the offset nearest the current one that has the whole
+// item on screen (the current offset when it already is). null when the item is not in the stream.
+export function revealOffset(stream: Stream, reveal: Reveal, offset: number, height: number): number | null {
+  const at = indexOfKey(stream.items, reveal.key);
+  if (at < 0) {
+    return null;
+  }
+  const top = stream.starts[at] as number;
+  const bottom = stream.starts[at + 1] as number;
+  const want = reveal.near !== true ? top : top < offset ? top : bottom > offset + height ? bottom - height : offset;
+  return clampOffset(want, stream.total, height);
+}
+
+// What the model must learn from the stream after any change: the offset (moved to a pending reveal, then clamped), the
+// stream's height, the key of the first item on screen and the files on screen. null when the model knows it all. This is
+// the one place `Scrolled` comes from, so the sidebar and the fetches follow every kind of scroll the same way.
+export function scrolled(m: Model, stream: Stream): Msg | null {
+  const target = m.reveal === null ? null : revealOffset(stream, m.reveal, m.offset, m.height);
+  const offset = clampOffset(target ?? m.offset, stream.total, m.height);
+  const { first, end } = visibleRange(stream, offset, m.height);
+  const top = stream.items[first]?.key ?? null;
+  const visible = pathsOf(stream.items, first, end);
+  const fresh = freshOn(stream.items, first, end);
+  const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((p, i) => p === b[i]);
+  if (target === null && offset === m.offset && stream.total === m.total && top === m.top && same(visible, m.visible) && same(fresh, m.fresh)) {
+    return null;
+  }
+  return { _tag: "Scrolled", offset, total: stream.total, top, visible, fresh, revealed: target !== null };
+}
+
+// A wheel or trackpad event as the pixels to scroll down by, or null when it is mostly sideways, which the code box's own
+// sideways scroll takes. A device that reports lines is taken at a row a line.
+// The pixels a mostly sideways wheel or trackpad event shifts the halves' code right by, null for a mostly vertical one. A
+// device that reports lines is taken at four characters a line.
+export function wheelShift(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
+  if (Math.abs(e.delta.x) <= Math.abs(e.delta.y)) {
+    return null;
+  }
+  return -(e.delta_lines !== undefined ? e.delta_lines.x * 4 * CODE_CHAR : e.delta.x);
+}
+
+// How far the halves' code can shift: the longest line past the room a half leaves for code (the [+] gutter, the number,
+// the sign and the gaps take 88 px).
+export const maxShift = (code: number, width: number): number => Math.max(0, code - ((width - 1) / 2 - 88));
+
+export function wheelDelta(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
+  if (Math.abs(e.delta.x) > Math.abs(e.delta.y)) {
+    return null;
+  }
+  const dy = e.delta_lines !== undefined ? e.delta_lines.y * ROW : e.delta.y;
+  return dy === 0 ? 0 : -dy;
+}
+
+// The scrollbar's thumb: its top and height in the track, or null when the stream fits and there is nothing to scroll.
+export const THUMB_MIN = 24;
+export function thumbOf(total: number, height: number, offset: number): { top: number; size: number } | null {
+  if (total <= height || height <= 0) {
+    return null;
+  }
+  const size = Math.max(THUMB_MIN, (height * height) / total);
+  const room = Math.max(1, height - size);
+  return { top: (clampOffset(offset, total, height) / maxOffset(total, height)) * room, size };
+}
+
+// The offset a thumb's top at `top` stands for.
+export function offsetOfThumb(total: number, height: number, top: number): number {
+  const thumb = thumbOf(total, height, 0);
+  if (thumb === null) {
+    return 0;
+  }
+  return clampOffset((top / Math.max(1, height - thumb.size)) * maxOffset(total, height), total, height);
+}
+
+// The threads an agent resolved that the user has not seen, whose card is among the items from `start` to `end`. The head
+// carries the "new" badge exactly for those, so this reads the card and not a second copy of the rule.
+export function freshOn(items: StreamItem[], start: number, end: number): string[] {
+  return items.slice(Math.max(0, start), Math.max(0, end)).flatMap((i) => (i.kind === "head" && i.tone === "resolved" && i.badges.includes("new") ? [i.id] : []));
+}
+
+// The distinct files of the items from `start` to `end`, topmost first. The threads not in the diff have none.
+export function pathsOf(items: StreamItem[], start: number, end: number): string[] {
+  const out: string[] = [];
+  for (const i of items.slice(Math.max(0, start), Math.max(0, end))) {
+    const path = keyPath(i.key);
+    if (path !== "" && !out.includes(path)) {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+// How many files past the last one on screen are fetched at once with it, and how many a fetch holds. A fetch
+// is run one file at a time, so a file that scrolls into view waits for the rest of the fetch, not for all the files.
+export const AHEAD = 3;
+export const BATCH = 3;
+
+// The files to fetch, in the order to fetch them: the ones on screen (or the one a scroll is going to) and the next
+// few, then every other file below them and then the ones above. A file is wanted when it has no diff yet or its diff
+// is stale, and not when it is folded (nothing draws it) or its last fetch failed.
+export function wanted(m: Model): string[] {
+  const files = m.state === null ? [] : m.state.files;
+  const on = m.reveal !== null ? [keyPath(m.reveal.key)] : m.visible.length > 0 ? m.visible : m.selected === null ? [] : [m.selected];
+  const idx = on.map((p) => files.findIndex((f) => f.path === p)).filter((i) => i >= 0);
+  const lo = idx.length === 0 ? 0 : Math.min(...idx);
+  const hi = idx.length === 0 ? 0 : Math.max(...idx);
+  const order: number[] = [];
+  const range = (from: number, to: number): void => {
+    for (let i = from; i <= to; i++) {
+      order.push(i);
+    }
+  };
+  range(lo, Math.min(files.length - 1, hi + AHEAD));
+  range(hi + AHEAD + 1, files.length - 1);
+  range(0, lo - 1);
+  return order.flatMap((i) => {
+    const f = files[i];
+    return f !== undefined && !isFolded(m, f) && !m.skipped.has(f.path) && (!m.files.has(f.path) || m.dirty.has(f.path)) ? [f.path] : [];
+  });
+}
+
+// The key a scroll to a thread's card aims at, or null when the thread is in no file that is loaded.
+export function cardKey(m: Model, id: string): string | null {
+  if ((m.state === null ? [] : m.state.orphans).some((t) => t.id === id)) {
+    return itemKey("", `h:${id}`);
+  }
+  for (const [path, file] of m.files) {
+    if (file.threads.some((t) => t.id === id)) {
+      return itemKey(path, `h:${id}`);
+    }
+  }
+  return null;
+}
+
+// The index in the stream of the item with this key, which a scroll to it names.
+// A key of a code row (`r5`, or `p5` in the side-by-side layout) that the other layout has no item for stands for the item of
+// the same file that holds row 5, so a place in the stream survives a flip of the layout.
+const holds = (i: StreamItem, n: number): boolean => (i.kind === "split" ? i.left?.index === n || i.right?.index === n : (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") && i.index === n);
+export function indexOfKey(items: StreamItem[], key: string): number {
+  const at = items.findIndex((i) => i.key === key);
+  const row = /^[rp](\d+)$/.exec(keyLocal(key));
+  if (at >= 0 || row === null) {
+    return at;
+  }
+  const path = keyPath(key);
+  return items.findIndex((i) => keyPath(i.key) === path && holds(i, Number(row[1])));
+}
+
+// A code row has a gutter GUTTER_W pixels wide at its left edge, where the [+] is drawn on the hovered line. The [+] is
+// icons/plus.svg, a filled rounded square with the + cut out, drawn in this theme colour.
+export const GUTTER_W = 24;
+export const PLUS = "accent";
+
+// How a code row is drawn: tinted when it is in the selection (the rows of its file between `from` and `to` that have a line
+// on the selection's side), and with a [+] when it is the row under the pointer. A hunk header has no line, so no [+]. A half
+// of a side-by-side row (`side`) is tinted only when the selection is on its side, and has the [+] only when the pointer is on it.
+export function rowState(m: Model, item: RowItem, side: Side = null): { selected: boolean; hovered: boolean } {
+  const path = keyPath(item.key);
+  const sel = m.selection;
+  const onSide = sel === null ? false : (sel.side === "old" ? item.old : item.new) !== "";
+  return {
+    selected: sel !== null && sel.path === path && item.index >= sel.from && item.index <= sel.to && onSide && (side === null || sel.side === side),
+    hovered: item.kind !== "hunk" && m.hover !== null && m.hover.path === path && m.hover.row === item.index && m.hover.side === side,
+  };
+}
+
+// The message a click on an item of the stream stands for. A code row is not here: its press, hover and [+] have messages of
+// their own. A header folds, a card toggles or focuses its thread, and the rest take no click.
+export function itemClick(key: string): Msg | null {
+  const path = keyPath(key);
+  const local = keyLocal(key);
+  if (local === "file") {
+    return { _tag: "FoldToggled", path };
+  }
+  if (local.startsWith("h:")) {
+    return { _tag: "ThreadAction", id: local.slice(2), action: "toggle" };
+  }
+  if (local.startsWith("c:")) {
+    return { _tag: "ThreadAction", id: local.slice(2), action: "focus" };
+  }
+  return null;
+}
+
+// What a key pressed in the editor means: Ctrl+S or Cmd+S saves the text, Esc cancels.
+export function editorKey(keystroke: string, text: string): Msg | null {
+  if (keystroke === "ctrl-s" || keystroke === "cmd-s") {
+    return { _tag: "EditorSaved", text };
+  }
+  if (keystroke === "escape") {
+    return { _tag: "EditorCancelled" };
+  }
+  return null;
+}
+
+export function editorTitle(e: Editor): string {
+  if (e.title !== undefined) {
+    return e.title;
+  }
+  if (e.kind === "reply") {
+    return `Reply to ${e.thread ?? ""}`;
+  }
+  if (e.kind === "edit") {
+    return `Edit ${e.comment ?? ""}`;
+  }
+  return `Draft note - ${e.anchor === null ? "" : anchorLabel(e.anchor)}`;
+}
+
+// danger is a red button that destroys something; accent is the lit one: the main, harmless button of a question, the send, or a
+// toggle that is on. `icon` names a drawing in `icons/` (the picker's and the question's buttons keep their words and have none).
+// `iconOnly` draws the icon alone, with `label` as its tooltip; `tip` replaces the label there, and `key` is the key that does the same.
+export type DockButton = { id: string; label: string; msg: Msg; danger: boolean; off: boolean; accent?: boolean; icon?: string; iconOnly?: boolean; tip?: string; key?: string };
+
+// Threads with a user comment that no send carried: the ones in the files, and the ones not in the diff.
+export const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+// What archive would move now, as the last state said. Nothing known is nothing to archive.
+export const archivableCount = (state: State | null): number => (state === null ? 0 : state.archivable);
+
+// What archive leaves only because the agent's resolve is unseen, as the last state said.
+export const unreadCount = (state: State | null): number => (state === null ? 0 : state.unread_resolved);
+
+const unsentMemo = new WeakMap<State, number>();
+export function unsentCount(state: State | null): number {
+  if (state === null) {
+    return 0;
+  }
+  let n = unsentMemo.get(state);
+  if (n === undefined) {
+    n = state.files.reduce((sum, f) => sum + f.unsent, 0) + state.orphans.filter((t) => t.unsent).length;
+    unsentMemo.set(state, n);
+  }
+  return n;
+}
+
+// The agents a send found for this folder, one button each, and a way out.
+export function pickerOptions(candidates: Candidate[]): DockButton[] {
+  const option = (c: Candidate): DockButton => ({
+    id: `pick-${c.address}`,
+    label: cleanText(`${c.address}  ${c.agent}  ${c.status}  ${c.cwd}`),
+    msg: { _tag: "PickerChosen", target: c.address },
+    danger: false,
+    off: false,
+  });
+  return [...candidates.map(option), { id: "pick-cancel", label: "Cancel", msg: { _tag: "PickerCancelled" }, danger: false, off: false }];
+}
+
+// color is the theme name of the sentence: red for a delete, plain text for an archive, which moves threads to the
+// archive file and loses none.
+export type ConfirmRow = { sentence: string; color: string; buttons: DockButton[] };
+
+// The question a click on Delete or Archive asked, with the button that does it and the way out. It replaces
+// the bar under the diff until answered. A root's replies go with it, so only then does the sentence say so.
+export function confirmRow(m: Model): ConfirmRow | null {
+  const cancel: DockButton = { id: "confirm-cancel", label: "Cancel", msg: { _tag: "ConfirmCancelled" }, danger: false, off: false };
+  if (m.confirm !== null) {
+    const hit = findComment(m.files, m.state, m.confirm);
+    if (hit === null) {
+      return null;
+    }
+    const replies = hit.comment.parent === null && hit.thread.comments.length > 1;
+    const ok: DockButton = { id: "confirm-delete", label: "Delete", msg: { _tag: "DeleteConfirmed", id: m.confirm }, danger: true, off: false };
+    return { sentence: replies ? "Delete this comment? Its replies go too." : "Delete this comment?", color: "ansi1", buttons: [ok, cancel] };
+  }
+  if (!m.confirmArchive) {
+    return null;
+  }
+  const ok: DockButton = { id: "confirm-archive", label: "Archive", msg: { _tag: "ArchiveConfirmed" }, danger: false, off: m.inFlight, accent: true };
+  const unread = unreadCount(m.state);
+  const more = unread === 0 ? "" : ` ${unread} more resolved by the agent ${unread === 1 ? "is" : "are"} unread.`;
+  return { sentence: `Archive ${plural(archivableCount(m.state), "resolved thread", "resolved threads")}?${more}`, color: "foreground", buttons: [ok, cancel] };
+}
+
+// What a key pressed while the question is up means: Esc cancels.
+export function confirmKey(keystroke: string): Msg | null {
+  return keystroke === "escape" ? { _tag: "ConfirmCancelled" } : null;
+}
+
+// The bar under the diff when no editor is open: what is selected or focused, and what can be done with it.
+export type DockNote = { text: string; color: string };
+
+export function dock(m: Model): { label: string; buttons: DockButton[]; actions: DockButton[]; note: DockNote | null } {
+  const buttons: DockButton[] = [];
+  const add = (id: string, label: string, icon: string, msg: Msg): void => void buttons.push({ id, label, msg, danger: false, off: false, icon });
+  const hit = findComment(m.files, m.state, m.focus);
+  const picked = m.selection === null ? null : (m.files.get(m.selection.path) ?? null);
+  let label = "Drag over lines to select them, [+] to comment";
+  if (picked !== null && m.selection !== null) {
+    label = `${selectionLabel(picked, m.selection)}. [+] to comment, Esc to clear`;
+  } else if (hit !== null) {
+    const { thread, comment } = hit;
+    label = `${thread.id}${comment.id === thread.id ? "" : ` / ${comment.id}`}`;
+  }
+  const shown = m.selected === null ? undefined : summaryOf(m, m.selected);
+  if (shown !== undefined) {
+    add("file", "Comment on file", "comment-plus", { _tag: "FileCommentClicked" });
+  }
+  // What acts on the whole review, or on the file shown.
+  const unsent = unsentCount(m.state);
+  const none = noStops(m);
+  const archivable = archivableCount(m.state);
+  // Why Archive is off when threads are resolved: the agent's resolve is unread, and archive waits for the user to see it.
+  const unread = unreadCount(m.state);
+  const note = archivable === 0 && unread > 0 ? { text: `Nothing to archive yet: ${unread} resolved by the agent ${unread === 1 ? "is" : "are"} unread (marked new)`, color: "dim" } : null;
+  const actions: DockButton[] = [
+    { id: "prev-thread", label: "Previous comment", icon: "arrow-up", iconOnly: true, key: "shift+n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: false }, danger: false, off: none },
+    { id: "next-thread", label: "Next comment", icon: "arrow-down", iconOnly: true, key: "n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: true }, danger: false, off: none },
+    { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", icon: "send", accent: unsent > 0, tip: m.sending ? "Sending..." : unsent > 0 ? `Send ${plural(unsent, "unsent comment", "unsent comments")}` : "No unsent comments", msg: { _tag: "SendClicked" }, danger: false, off: m.sending || unsent === 0 },
+    {
+      id: "archive",
+      label: archivable > 0 ? `Archive ${archivable}` : "Archive",
+      icon: "archive",
+      tip: archivable > 0 ? `Archive ${plural(archivable, "resolved thread", "resolved threads")}` : (note?.text ?? "No resolved threads to archive"),
+      msg: { _tag: "ArchiveClicked" },
+      danger: false,
+      off: m.inFlight || archivable === 0,
+    },
+  ];
+  return { label, buttons, actions, note };
+}
+
+// The width of a code character, which diffWidth and codeWidth count lines in.
+const CODE_CHAR = 7;
+
+// The width the longest text of a side-by-side half among `items` needs: the view passes the items on screen, so the code
+// shifts until the end of the longest line in view reaches the edge, and no further.
+export function codeWidth(items: StreamItem[]): number {
+  let wide = 0;
+  for (const i of items) {
+    if (i.kind === "split") {
+      wide = Math.max(wide, (i.left?.text.length ?? 0) * CODE_CHAR, (i.right?.text.length ?? 0) * CODE_CHAR);
+    }
+  }
+  return wide;
+}
+
+// A width that fits the longest line, for the horizontal scroll of the diff.
+export function diffWidth(items: StreamItem[]): number {
+  let wide = 300;
+  for (const i of items) {
+    if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") {
+      wide = Math.max(wide, i.text.length * CODE_CHAR + 150);
+    }
+  }
+  return wide;
+}
+
+const LETTERS: Record<Change, string> = {
+  modified: "M",
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  untracked: "?",
+  binary: "B",
+  submodule: "S",
+  too_large: "L",
+  unparsed: "U",
+};
+
+export type Badge = { text: string; tone: "unsent" | "open" | "new" | "viewed" };
+export const badgeColor = (b: Badge): string => (b.tone === "unsent" ? WARN : b.tone === "open" ? "accent" : b.tone === "new" ? "done" : "dim");
+
+// One row of the sidebar: a folder heading, or a file under it. A heading takes no click.
+export type SideRow = { kind: "dir"; key: string; text: string } | { kind: "file"; key: string; path: string; name: string; icon: string; letter: string; add: number; del: number; viewed: boolean; badges: Badge[] };
+
+function fileRow(f: FileSummary): SideRow {
+  const badges: Badge[] = [];
+  if (f.unsent > 0) {
+    badges.push({ text: `${f.unsent} unsent`, tone: "unsent" });
+  }
+  if (f.open > 0) {
+    badges.push({ text: `${f.open} open`, tone: "open" });
+  }
+  if (f.new > 0) {
+    badges.push({ text: `${f.new} new`, tone: "new" });
+  }
+  if (f.viewed) {
+    badges.push({ text: "viewed", tone: "viewed" });
+  }
+  const name = f.path.slice(f.path.lastIndexOf("/") + 1);
+  return { kind: "file", key: `f:${f.path}`, path: f.path, name: cleanText(name), icon: fileIcon(name), letter: LETTERS[f.change], add: f.add, del: f.del, viewed: f.viewed, badges };
+}
+
+// The query's characters appear in the path in order, as the TUI's `matches` in view.rs says it: a query with no
+// upper case letter ignores case, one upper case letter makes it exact, a space is a character, and an empty
+// query matches everything. There is no score. Walks code points, as Rust walks chars.
+export function fileMatches(query: string, path: string): boolean {
+  const fold = !/\p{Uppercase}/u.test(query);
+  const chars = [...path].map((c) => (fold ? ([...c.toLowerCase()][0] ?? c) : c));
+  let at = 0;
+  for (const wanted of query) {
+    const found = chars.indexOf(wanted, at);
+    if (found < 0) {
+      return false;
+    }
+    at = found + 1;
+  }
+  return true;
+}
+
+// How many of the diff's files the query matches, and how many there are: the `2/4` in the box.
+export function filterCount(files: FileSummary[], query: string): { shown: number; total: number } {
+  return sidebarOf(files, query).count;
+}
+
+// Where Enter in the box sends the file shown: the first match, unless the file shown matches already or
+// nothing does.
+export function filterPick(m: Model): string | null {
+  const hits = sidebarOf(m.state === null ? NO_FILES : m.state.files, m.filter).hits;
+  return hits.length === 0 || hits.some((f) => f.path === m.selected) ? null : (hits[0]?.path ?? null);
+}
+
+// The files grouped by folder, in the diff's order as the TUI does: a heading (`src/`, or `./` for the top
+// folder) where the folder changes, then the files. A folder that comes again later, as untracked files do,
+// gets a second heading. A file the query does not match is left out, and so is the heading of a folder with no
+// match. Cutting a name that is too long is left to the drawing.
+export function sidebarRows(files: FileSummary[], query = ""): SideRow[] {
+  return sidebarOf(files, query).rows;
+}
+
+export const NO_FILES: FileSummary[] = [];
+
+// What the files and the query give, found once: the matches (fileMatches runs once per path), the sidebar's rows, the `2/4` count
+// and the box's info. The sidebar, the box and Enter in it all ask for it on every render, and the answer changes only with the
+// files array or the query, so it is kept for the latest query of each files array. Callers must not change what they get.
+type Sidebar = { query: string; hits: FileSummary[]; rows: SideRow[]; count: { shown: number; total: number }; info: { count: string; none: boolean } };
+const sidebarMemo = new WeakMap<FileSummary[], Sidebar>();
+
+function sidebarOf(files: FileSummary[], query: string): Sidebar {
+  const kept = sidebarMemo.get(files);
+  if (kept !== undefined && kept.query === query) {
+    return kept;
+  }
+  const hits = files.filter((f) => fileMatches(query, f.path));
+  const rows: SideRow[] = [];
+  let last: string | null = null;
+  for (const f of hits) {
+    const at = f.path.lastIndexOf("/");
+    const dir = at < 0 ? "./" : f.path.slice(0, at + 1);
+    if (dir !== last) {
+      rows.push({ kind: "dir", key: `d:${rows.length}`, text: cleanText(dir) });
+      last = dir;
+    }
+    rows.push(fileRow(f));
+  }
+  const count = { shown: hits.length, total: files.length };
+  const made = { query, hits, rows, count, info: { count: `${count.shown}/${count.total}`, none: count.total > 0 && count.shown === 0 } };
+  sidebarMemo.set(files, made);
+  return made;
+}
+
+// A header button is always an icon; `label` is its tooltip and says what a click does, `on` is a toggle that is lit.
+export type HeaderButton = { id: string; label: string; icon: string; on: boolean; msg: Msg };
+
+// The two buttons for the sidebar. Moving it is offered only while it shows, since nothing would change on screen.
+export function sidebarButtons(m: Model): HeaderButton[] {
+  const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", icon: m.panel.side === "left" ? "panel-left" : "panel-right", on: m.panel.open, msg: { _tag: "SidebarToggled" } }];
+  if (m.panel.open) {
+    buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move file list to the right side" : "Move file list to the left side", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
+  }
+  return buttons;
+}
+
+// The button that forces the other layout than the one drawn, until pressed again.
+export function layoutButton(m: Model): HeaderButton {
+  return { id: "layout-toggle", label: isSplit(m) ? "Unified" : "Side by side", icon: "columns", on: isSplit(m), msg: { _tag: "LayoutToggled" } };
+}
+
+// What sits under the header, left to right: the sidebar on its side, or left out when hidden, and the diff.
+export function paneOrder(m: Model): ("sidebar" | "diff")[] {
+  if (!m.panel.open) {
+    return ["diff"];
+  }
+  return m.panel.side === "left" ? ["sidebar", "diff"] : ["diff", "sidebar"];
+}
+
+// What the sidebar's box shows besides the text: the `n/m` count, and whether the query leaves no file.
+export function filterInfo(m: Model): { count: string; none: boolean } {
+  return sidebarOf(m.state === null ? NO_FILES : m.state.files, m.filter).info;
+}
+
+type Totals = { files: number; add: number; del: number };
+const NO_TOTALS: Totals = { files: 0, add: 0, del: 0 };
+const totalsMemo = new WeakMap<State, Totals>();
+export function totals(state: State | null): Totals {
+  if (state === null) {
+    return NO_TOTALS;
+  }
+  let sum = totalsMemo.get(state);
+  if (sum === undefined) {
+    sum = { files: state.files.length, add: state.files.reduce((n, f) => n + f.add, 0), del: state.files.reduce((n, f) => n + f.del, 0) };
+    totalsMemo.set(state, sum);
+  }
+  return sum;
+}

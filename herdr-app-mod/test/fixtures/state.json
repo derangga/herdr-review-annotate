@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "root": "/repo",
+  "store_dir": "/state",
+  "spec": "worktree",
+  "base": "main",
+  "rev": "HEAD",
+  "notices": [],
+  "warnings": [],
+  "archivable": 1,
+  "unread_resolved": 1,
+  "files": [
+    {
+      "path": "img.png",
+      "old_path": null,
+      "change": "binary",
+      "add": 0,
+      "del": 0,
+      "hash": "325abba099677c5f",
+      "viewed": true,
+      "threads": 0,
+      "open": 0,
+      "new": 0,
+      "unsent": 0
+    },
+    {
+      "path": "mod",
+      "old_path": null,
+      "change": "submodule",
+      "add": 1,
+      "del": 0,
+      "hash": "7bbf0c8ae4499f26",
+      "viewed": false,
+      "threads": 0,
+      "open": 0,
+      "new": 0,
+      "unsent": 0
+    },
+    {
+      "path": "notes.txt",
+      "old_path": null,
+      "change": "untracked",
+      "add": 2,
+      "del": 0,
+      "hash": "997ad5f7fb027213",
+      "viewed": false,
+      "threads": 0,
+      "open": 0,
+      "new": 0,
+      "unsent": 0
+    },
+    {
+      "path": "src/a.rs",
+      "old_path": null,
+      "change": "modified",
+      "add": 2,
+      "del": 1,
+      "hash": "2c2ea324d4b61b3e",
+      "viewed": false,
+      "threads": 5,
+      "open": 3,
+      "new": 1,
+      "unsent": 3
+    },
+    {
+      "path": "src/b.rs",
+      "old_path": "src/old_b.rs",
+      "change": "renamed",
+      "add": 0,
+      "del": 0,
+      "hash": "d1aaede490bbbaa8",
+      "viewed": false,
+      "threads": 0,
+      "open": 0,
+      "new": 0,
+      "unsent": 0
+    }
+  ],
+  "orphans": [
+    {
+      "id": "u6",
+      "status": "open",
+      "resolved_by": null,
+      "is_new": false,
+      "unsent": true,
+      "placement": {
+        "kind": "not_in_diff",
+        "row": null,
+        "start_row": null
+      },
+      "anchor": {
+        "path": "src/gone.rs",
+        "old_path": null,
+        "kind": "file",
+        "side": null,
+        "line": null,
+        "end_line": null,
+        "text": null,
+        "spec": "worktree"
+      },
+      "comments": [
+        {
+          "id": "u6",
+          "parent": null,
+          "author": "user",
+          "at": "2026-11-09T10:00:00Z",
+          "body": "This file is no longer in the diff.",
+          "sent": false,
+          "edited_since_sent": false
+        }
+      ]
+    }
+  ]
+}

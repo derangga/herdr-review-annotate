@@ -1,13 +1,15 @@
-//! The pane's colours: one `Theme` of named roles, filled from a Catppuccin flavor, and the
-//! `[theme]` table of `config.toml` that chooses the flavor.
+//! The pane's colours: one `Theme` of named roles, filled from a Catppuccin flavor with the user's
+//! `[theme.palette]` over it, and the `[theme]` table of `config.toml` that chooses both.
 //!
-//! No other module names a colour. Drawing code asks the theme for a role, so a flavor changes
-//! every colour at once. The colours are 24-bit, and a terminal without truecolor is not handled.
+//! No other module names a colour. Drawing code asks the theme for a role, so a flavor or a palette
+//! changes every colour at once. The colours are 24-bit, and a terminal without truecolor is not handled.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Style};
+use serde::{Deserialize, Serialize};
 
 use crate::store::Warning;
 
@@ -15,6 +17,7 @@ use crate::store::Warning;
 pub const DEFAULT: &str = "catppuccin-mocha";
 
 /// The colours of one Catppuccin flavor that the roles are made from, each as `0xRRGGBB`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Palette {
     base: u32,
     mantle: u32,
@@ -99,6 +102,58 @@ const LATTE: Palette = Palette {
     peach: 0xfe_640b,
     sky: 0x04_a5e5,
 };
+
+impl Palette {
+    /// The colour a `[theme.palette]` key sets, or none when the key is not one of the 14.
+    fn slot(&mut self, key: &str) -> Option<&mut u32> {
+        Some(match key {
+            "base" => &mut self.base,
+            "mantle" => &mut self.mantle,
+            "surface0" => &mut self.surface0,
+            "surface1" => &mut self.surface1,
+            "surface2" => &mut self.surface2,
+            "overlay1" => &mut self.overlay1,
+            "text" => &mut self.text,
+            "red" => &mut self.red,
+            "green" => &mut self.green,
+            "yellow" => &mut self.yellow,
+            "blue" => &mut self.blue,
+            "mauve" => &mut self.mauve,
+            "peach" => &mut self.peach,
+            "sky" => &mut self.sky,
+            _ => return None,
+        })
+    }
+
+    /// `self` with the keys of a `[theme.palette]` table laid over it. Each key that cannot be
+    /// applied is one warning and keeps `self`'s colour.
+    fn merged(mut self, table: &toml::Table, warnings: &mut Vec<Warning>) -> Self {
+        for (key, value) in table {
+            let hex = value.as_str().and_then(hex_of);
+            let message = match (self.slot(key), hex) {
+                (Some(slot), Some(hex)) => {
+                    *slot = hex;
+                    continue;
+                }
+                (Some(_), None) => format!(
+                    "[theme.palette] {key} is not a \"#rrggbb\" string, keeping the flavor's colour"
+                ),
+                (None, _) => format!("[theme.palette] {key} is not a palette colour, ignored"),
+            };
+            warnings.push(Warning::Config(message));
+        }
+        self
+    }
+}
+
+/// `#rrggbb`, six hex digits of either case, and nothing else.
+fn hex_of(text: &str) -> Option<u32> {
+    let digits = text.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
 
 /// The names `[theme] name` accepts.
 const FLAVORS: [(&str, &Palette); 4] = [
@@ -189,9 +244,23 @@ pub fn token_of(scope: &str) -> Option<Token> {
         .map(|(_, token)| *token)
 }
 
+/// Where the herdr-app panel takes its colours: from herdr-app (`App`) or from this palette
+/// (`Plugin`). The pane draws the same for both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Gui {
+    #[default]
+    App,
+    Plugin,
+}
+
 /// What each part of the pane is drawn in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
+    /// Where the panel takes its colours. The pane does not read it.
+    pub gui: Gui,
+    /// The merged palette the roles below were made from, kept for `theme --json`.
+    palette: Palette,
     /// The background of the pane.
     pub base: Color,
     pub text: Color,
@@ -242,6 +311,8 @@ impl Default for Theme {
 impl Theme {
     const fn of(palette: &Palette) -> Self {
         Self {
+            gui: Gui::App,
+            palette: *palette,
             base: rgb(palette.base),
             text: rgb(palette.text),
             subtle: rgb(palette.overlay1),
@@ -290,28 +361,92 @@ impl Theme {
             )
     }
 
-    /// The theme for the text of a `config.toml`, and what was wrong with its `[theme]` table.
+    /// The theme for the text of a `config.toml`, and what was wrong with its `[theme]` table. A
+    /// bad `name` keeps a good `palette`, which then goes over mocha.
     pub fn from_toml(text: &str) -> (Self, Vec<Warning>) {
-        let fallback = |what: String| {
-            let message = format!("{what}, using {DEFAULT}");
-            (Self::default(), vec![Warning::Config(message)])
-        };
         let Ok(table) = text.parse::<toml::Table>() else {
             return (Self::default(), Vec::new());
         };
-        let name = match table.get("theme") {
+        let section = match table.get("theme") {
             None => return (Self::default(), Vec::new()),
-            Some(toml::Value::Table(theme)) => theme.get("name"),
-            Some(_) => return fallback("[theme] is not a table".to_owned()),
+            Some(toml::Value::Table(section)) => section,
+            Some(_) => {
+                let message = format!("[theme] is not a table, using {DEFAULT}");
+                return (Self::default(), vec![Warning::Config(message)]);
+            }
         };
-        match name {
-            None => (Self::default(), Vec::new()),
-            Some(toml::Value::String(name)) => Self::named(name).map_or_else(
-                || fallback(format!("unknown theme '{name}'")),
-                |theme| (theme, Vec::new()),
-            ),
-            Some(_) => fallback("[theme] name is not a string".to_owned()),
+        let mut warnings = Vec::new();
+        let mut flavor = &MOCHA;
+        match section.get("name") {
+            None => {}
+            Some(toml::Value::String(name)) => {
+                match FLAVORS.iter().find(|(flavor, _)| flavor == name) {
+                    Some((_, found)) => flavor = found,
+                    None => warnings.push(Warning::Config(format!(
+                        "unknown theme '{name}', using {DEFAULT}"
+                    ))),
+                }
+            }
+            Some(_) => warnings.push(Warning::Config(format!(
+                "[theme] name is not a string, using {DEFAULT}"
+            ))),
         }
+        let palette = match section.get("palette") {
+            None => *flavor,
+            Some(toml::Value::Table(overrides)) => flavor.merged(overrides, &mut warnings),
+            Some(_) => {
+                warnings.push(Warning::Config(
+                    "[theme.palette] is not a table, no overrides".to_owned(),
+                ));
+                *flavor
+            }
+        };
+        let gui = match section.get("gui") {
+            None => Gui::App,
+            Some(toml::Value::String(gui)) if gui == "app" => Gui::App,
+            Some(toml::Value::String(gui)) if gui == "plugin" => Gui::Plugin,
+            Some(_) => {
+                warnings.push(Warning::Config(
+                    "[theme] gui is not \"app\" or \"plugin\", using app".to_owned(),
+                ));
+                Gui::App
+            }
+        };
+        (
+            Self {
+                gui,
+                ..Self::of(&palette)
+            },
+            warnings,
+        )
+    }
+
+    /// The palette as the herdr-app theme names the panel reads, each `#rrggbb` in lower case.
+    pub fn panel_colors(&self) -> BTreeMap<String, String> {
+        let p = &self.palette;
+        let names: [(&str, u32); 17] = [
+            ("background", p.base),
+            ("foreground", p.text),
+            ("dim", p.overlay1),
+            ("muted", p.overlay1),
+            ("border", p.surface2),
+            ("hover", p.surface0),
+            ("raised", p.surface0),
+            ("selected", p.surface1),
+            ("chrome", p.mantle),
+            ("accent", p.blue),
+            ("ansi1", p.red),
+            ("ansi2", p.green),
+            ("ansi3", p.yellow),
+            ("ansi4", p.blue),
+            ("ansi5", p.mauve),
+            ("ansi6", p.peach),
+            ("ansi7", p.sky),
+        ];
+        names
+            .into_iter()
+            .map(|(name, hex)| (name.to_owned(), format!("#{hex:06x}")))
+            .collect()
     }
 
     /// The colour of a piece of code.
@@ -420,6 +555,115 @@ mod tests {
         let latte = Theme::named("catppuccin-latte").unwrap();
         assert_ne!(latte.added_bg, Theme::default().added_bg);
         assert_ne!(latte.removed_bg, latte.added_bg);
+    }
+
+    #[test]
+    fn a_palette_key_changes_its_role_and_the_tints_mixed_from_it_over_each_flavor() {
+        for (name, _) in FLAVORS {
+            let flavor = Theme::named(name).unwrap();
+            let text = format!(
+                "[theme]\nname = \"{name}\"\n[theme.palette]\nbase = \"#102030\"\ngreen = \"#00FF80\"\n"
+            );
+            let (theme, warnings) = config(&text);
+            assert_eq!(warnings, Vec::<String>::new(), "{name}");
+            assert_eq!(theme.base, Color::Rgb(0x10, 0x20, 0x30), "{name}");
+            assert_eq!(theme.added, Color::Rgb(0, 0xff, 0x80), "{name}");
+            assert_eq!(theme.success, theme.added, "{name}");
+            assert_eq!(theme.string, theme.added, "{name}");
+            // 15 and 35 parts of 00ff80 and the rest of 102030, each channel rounded down.
+            assert_eq!(theme.added_bg, Color::Rgb(13, 65, 60), "{name}");
+            assert_eq!(theme.added_word, Color::Rgb(10, 110, 76), "{name}");
+            // The red tint is the flavor's red mixed into the new base.
+            assert_ne!(theme.removed_bg, flavor.removed_bg, "{name}");
+            assert_eq!(theme.removed, flavor.removed, "{name}");
+            assert_eq!(theme.text, flavor.text, "{name}");
+        }
+        let (theme, _) = config("[theme.palette]\nblue = \"#7aa2f7\"\n");
+        assert_eq!(theme.base, Theme::default().base);
+        assert_ne!(theme.selection, Theme::default().selection);
+    }
+
+    #[test]
+    fn a_light_base_leaves_the_other_keys_the_flavor_s() {
+        let latte = Theme::named("catppuccin-latte").unwrap();
+        let (theme, warnings) =
+            config("[theme]\nname = \"catppuccin-latte\"\n[theme.palette]\nbase = \"#fdf6e3\"\n");
+        assert_eq!(warnings, Vec::<String>::new());
+        assert_eq!(theme.base, Color::Rgb(0xfd, 0xf6, 0xe3));
+        assert_eq!((theme.text, theme.added), (latte.text, latte.added));
+    }
+
+    #[test]
+    fn each_bad_palette_key_warns_once_and_keeps_the_flavor_s_colour() {
+        let mocha = Theme::default();
+        let (theme, warnings) = config(
+            "[theme.palette]\nblue = 3\nred = \"#12345\"\ngreen = \"112233\"\nmauve = \"#gggggg\"\n\
+             peach = \"#1234567\"\npink = \"#ffffff\"\ntext = \"#abcdef\"\n",
+        );
+        assert_eq!(
+            warnings,
+            [
+                "[theme.palette] blue is not a \"#rrggbb\" string, keeping the flavor's colour",
+                "[theme.palette] green is not a \"#rrggbb\" string, keeping the flavor's colour",
+                "[theme.palette] mauve is not a \"#rrggbb\" string, keeping the flavor's colour",
+                "[theme.palette] peach is not a \"#rrggbb\" string, keeping the flavor's colour",
+                "[theme.palette] pink is not a palette colour, ignored",
+                "[theme.palette] red is not a \"#rrggbb\" string, keeping the flavor's colour",
+            ]
+        );
+        assert_eq!(theme.accent, mocha.accent);
+        assert_eq!(theme.removed, mocha.removed);
+        assert_eq!(theme.agent, mocha.agent);
+        assert_eq!(theme.text, Color::Rgb(0xab, 0xcd, 0xef));
+    }
+
+    #[test]
+    fn a_palette_that_is_not_a_table_warns_and_overrides_nothing() {
+        let (theme, warnings) = config("[theme]\npalette = \"#ffffff\"\n");
+        assert_eq!(theme, Theme::default());
+        assert_eq!(warnings, ["[theme.palette] is not a table, no overrides"]);
+    }
+
+    #[test]
+    fn a_bad_name_keeps_a_good_palette_over_mocha() {
+        let (theme, warnings) =
+            config("[theme]\nname = \"solarized\"\n[theme.palette]\nbase = \"#102030\"\n");
+        assert_eq!(theme.base, Color::Rgb(0x10, 0x20, 0x30));
+        assert_eq!(theme.text, Theme::default().text);
+        assert_eq!(
+            warnings,
+            ["unknown theme 'solarized', using catppuccin-mocha"]
+        );
+        let (theme, warnings) = config("[theme]\nname = 3\n[theme.palette]\nbase = \"#102030\"\n");
+        assert_eq!(theme.base, Color::Rgb(0x10, 0x20, 0x30));
+        assert_eq!(
+            warnings,
+            ["[theme] name is not a string, using catppuccin-mocha"]
+        );
+    }
+
+    #[test]
+    fn gui_is_app_when_missing_or_bad_and_plugin_only_when_asked() {
+        for (text, gui, warned) in [
+            ("[theme]\n", Gui::App, false),
+            ("[theme]\ngui = \"app\"\n", Gui::App, false),
+            ("[theme]\ngui = \"plugin\"\n", Gui::Plugin, false),
+            ("[theme]\ngui = \"pane\"\n", Gui::App, true),
+            ("[theme]\ngui = true\n", Gui::App, true),
+        ] {
+            let (theme, warnings) = config(text);
+            assert_eq!(theme.gui, gui, "{text}");
+            assert_eq!(
+                warnings,
+                if warned {
+                    vec!["[theme] gui is not \"app\" or \"plugin\", using app"]
+                } else {
+                    vec![]
+                },
+                "{text}"
+            );
+            assert_eq!(theme.base, Theme::default().base, "{text}");
+        }
     }
 
     #[test]

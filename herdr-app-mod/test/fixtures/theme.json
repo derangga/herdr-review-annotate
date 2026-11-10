@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gui": "plugin",
+  "colors": {
+    "accent": "#7aa2f7",
+    "ansi1": "#d20f39",
+    "ansi2": "#40a02b",
+    "ansi3": "#df8e1d",
+    "ansi4": "#7aa2f7",
+    "ansi5": "#8839ef",
+    "ansi6": "#fe640b",
+    "ansi7": "#04a5e5",
+    "background": "#1a1b26",
+    "border": "#acb0be",
+    "chrome": "#e6e9ef",
+    "dim": "#8c8fa1",
+    "foreground": "#4c4f69",
+    "hover": "#ccd0da",
+    "muted": "#8c8fa1",
+    "raised": "#ccd0da",
+    "selected": "#bcc0cc"
+  },
+  "warnings": []
+}

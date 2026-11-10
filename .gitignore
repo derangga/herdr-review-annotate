@@ -9,3 +9,10 @@
 # Build output and the staged binary
 /target/
 /bin/
+
+# The mod: dependencies, the bundle, and the files herdr-app and the setup step write beside it
+/herdr-app-mod/node_modules/
+/herdr-app-mod/out/
+/herdr-app-mod/gpui-kit.d.ts
+/herdr-app-mod/herdr.d.ts
+/herdr-app-mod/jsconfig.json

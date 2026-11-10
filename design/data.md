@@ -12,7 +12,7 @@ avoids a SHA dependency. The directory is created with mode `0700` and files wit
 |---|---|
 | `review.jsonl` | Events, one JSON object per line |
 | `archive.jsonl` | The events of archived threads, in the same form. Only `archive` writes it, and nothing reads it |
-| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id }`, `review_pane_id`, `viewed` |
+| `meta.json` | `root`, `spec`, `base`, `target { pane_id, terminal_id, agent }`, `hc_target { address, agent }`, `review_pane_id`, `viewed` |
 | `lock` | Empty. Target of the exclusive lock |
 
 `DefaultHasher` output is not guaranteed stable across Rust releases. `meta.json` stores `root`, so on
@@ -38,8 +38,10 @@ Fold rules:
 
 - Events apply in file order. An event that names an unknown id, or breaks the rights rule (ADR 0004),
   is skipped.
-- A thread is unsent when its root (if the user wrote it) or any reply by the user has no `sent` event,
-  or when a `reopen` by the user comes after its last `sent`. A `sent` event's `ids` are comment ids.
+- A thread is unsent when it is open and its root (if the user wrote it) or any reply by the user has no
+  `sent` event, or when a `reopen` by the user comes after its last `sent`. A resolved thread is never
+  unsent, so send and the counts skip it, and a `reopen` makes it unsent again if it still qualifies.
+  The fold keeps no flag for "has a comment no send carried"; archive reads it from the comments. A `sent` event's `ids` are comment ids.
   Naming a root id also clears that thread's reopen.
 - An `edit` never makes a comment unsent. A user comment with an `edit` after its last `sent` is
   "edited since sent". The card shows that mark, and the agent sees the new text only on a resend.
@@ -61,7 +63,8 @@ plus one. The graph is in `graphs/store.md`.
 
 `store::archive(dir, now)` is the one operation that rewrites `review.jsonl`. It takes the same lock, so it
 cannot run beside an append. Under the lock it reads the log line by line, folds it, and takes every thread
-that is resolved and not `new`. An unsent one goes too. Then:
+that is resolved and not `new`. One with a user comment that no send carried goes too, and the archive
+report counts it. Then:
 
 - The events of those threads are appended to `archive.jsonl` with one `write_all`, and the file is synced.
   These are every event that names the root or one of its replies, a deleted reply included. A `sent` event
@@ -87,13 +90,20 @@ Every writer opens `review.jsonl` after it has the lock, so an append cannot lan
 ## Reading
 
 Read the whole file and fold. Ignore a final line with no newline. Skip a line that does not parse and
-count it, so the TUI can show "1 unreadable event". The TUI keeps the file length it last saw and
+count it, so the TUI can show "1 unreadable event". `state` reports the same count in `warnings`, and does not
+count a last line with no newline, since another process is writing it. The TUI
+keeps the file length it last saw and
 checks it every 250 ms on its input poll timeout. When the length differs, in either direction, it reads
 and folds the whole file again. A review log is small, and this keeps a rewrite and an append the same case.
 An archive by another pane is seen this way, because the rewritten log is always shorter: it loses at least
 one thread's `add` and `resolve` lines and gains at most one `archived` line, which is shorter than the two.
 
 ## Meta file
+
+`hc_target` is the target under the hc backend. `target` stays what it was, so a v0.5.0 binary reads and
+saves the file as before and ignores the new key ([shapes](shapes.md), Target). A v0.5.0 save drops
+`hc_target`, and the next hc send finds the agent by folder again. `state` and `file` only read `meta.json`.
+`view` and `send` save it, with the same locked rewrite.
 
 `meta.json` is rewritten on every save, and three processes write it (`open`, the TUI, the
 `send` action). A save takes the same lock as the store, reads the current file, changes its own

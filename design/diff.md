@@ -5,7 +5,9 @@ Part of the [herdr-review design](../DESIGN.md).
 ## Commands
 
 Every `git` call runs with `GIT_OPTIONAL_LOCKS=0` in its environment, so the pane never takes
-`index.lock` while the agent runs its own `git` commands.
+`index.lock` while the agent runs its own `git` commands. It also runs with `-c core.fsmonitor=false` and `-c
+diff.autoRefreshIndex=false`, which `git diff` would otherwise use to refresh `.git/index`. `state` and `file`
+rely on this: the panel watches the repo root, and a write by the read would make it reload without end.
 
 Common flags, written as `GIT` below:
 `git -C <root> -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3`

@@ -20,6 +20,7 @@ ADR 0010 says why the comments are not threads.
 | Agent still working | The pane opens on the newest message and the status line says the agent is working |
 | After send | The pane closes. A refused send keeps the pane open with the reason |
 | Started by the agent | No. The skill is unchanged |
+| The herdr-app panel | Shows the same message and sends line comments through `message --json` and `message send` ([cli](cli.md), [gui](gui.md)), which use the finding code and the prompt of this file. There the agent is an hc terminal, which names no session, so its folder's newest transcript is read |
 | Herdr key | The README suggests `prefix+o`. The user's config binds it to herdr-annotate today and will drop that plugin once this ships |
 
 ## Finding the message

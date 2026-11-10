@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "strictNullChecks": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "skipLibCheck": true,
+    "paths": {
+      "herdr": [
+        "./herdr.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "gpui-kit.d.ts"
+  ],
+  "include": [
+    "src",
+    "test"
+  ]
+}

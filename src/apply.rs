@@ -19,6 +19,8 @@ pub const MAX_BATCH: usize = 200;
 #[serde(deny_unknown_fields)]
 struct Entry {
     path: Option<String>,
+    /// The path the file had at the base, for an old-side line of a renamed file.
+    old_path: Option<String>,
     side: Option<Side>,
     line: Option<u32>,
     end_line: Option<u32>,
@@ -44,6 +46,7 @@ pub enum NewComment {
     },
     Root {
         path: RelPath,
+        old_path: Option<RelPath>,
         lines: Option<Lines>,
         body: String,
     },
@@ -58,6 +61,7 @@ pub enum Ready {
     },
     Root {
         path: RelPath,
+        old_path: Option<RelPath>,
         line: Option<(Lines, String)>,
         body: String,
     },
@@ -92,6 +96,7 @@ fn check_entry(index: usize, value: Value) -> Result<NewComment, CommandError> {
     check_body(&entry.body).map_err(|error| bad(&error.to_string()))?;
     if let Some(reply_to) = entry.reply_to {
         let anchored = entry.path.is_some()
+            || entry.old_path.is_some()
             || entry.side.is_some()
             || entry.line.is_some()
             || entry.end_line.is_some();
@@ -106,6 +111,13 @@ fn check_entry(index: usize, value: Value) -> Result<NewComment, CommandError> {
     let path = entry.path.ok_or_else(|| bad("path is missing"))?;
     let path = RelPath::parse(&path)
         .ok_or_else(|| bad("path must be relative to the repository and hold no .."))?;
+    let old_path = entry
+        .old_path
+        .map(|old| {
+            RelPath::parse(&old)
+                .ok_or_else(|| bad("old_path must be relative to the repository and hold no .."))
+        })
+        .transpose()?;
     let lines = match (entry.line, entry.side, entry.end_line) {
         (None, None, None) => None,
         (None, ..) => return Err(bad("side and end_line need a line")),
@@ -121,6 +133,7 @@ fn check_entry(index: usize, value: Value) -> Result<NewComment, CommandError> {
     };
     Ok(NewComment::Root {
         path,
+        old_path,
         lines,
         body: entry.body,
     })
@@ -237,20 +250,28 @@ pub fn read_lines(
             NewComment::Reply { reply_to, body } => Ready::Reply { reply_to, body },
             NewComment::Root {
                 path,
+                old_path,
                 lines: None,
                 body,
             } => Ready::Root {
                 path,
+                old_path,
                 line: None,
                 body,
             },
             NewComment::Root {
                 path,
+                old_path,
                 lines: Some(lines),
                 body,
             } => {
+                // The old side of a renamed file is read under the name it had at the base.
+                let read_as = old_path
+                    .as_ref()
+                    .filter(|_| lines.side == Side::Old)
+                    .unwrap_or(&path);
                 let text = files
-                    .text(lines.side, &path)
+                    .text(lines.side, read_as)
                     .map_err(ApplyError::Git)?
                     .map_err(|why| invalid(Some(index), why))?;
                 let count = text.lines().count();
@@ -258,7 +279,7 @@ pub fn read_lines(
                 if last as usize > count {
                     return Err(invalid(
                         Some(index),
-                        format!("line {last} is past the end of {path} ({count} lines)"),
+                        format!("line {last} is past the end of {read_as} ({count} lines)"),
                     )
                     .into());
                 }
@@ -269,6 +290,7 @@ pub fn read_lines(
                     .to_owned();
                 Ready::Root {
                     path,
+                    old_path,
                     line: Some((lines, first)),
                     body,
                 }
@@ -324,7 +346,12 @@ pub fn append(
                         body,
                     }
                 }
-                Ready::Root { path, line, body } => {
+                Ready::Root {
+                    path,
+                    old_path,
+                    line,
+                    body,
+                } => {
                     let (side, line, end_line, line_text) = match line {
                         Some((lines, text)) => (
                             Some(lines.side),
@@ -338,7 +365,7 @@ pub fn append(
                         id: id.clone(),
                         parent: None,
                         path: Some(path),
-                        old_path: None,
+                        old_path,
                         side,
                         line,
                         end_line,

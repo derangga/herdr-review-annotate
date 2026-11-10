@@ -18,8 +18,33 @@ jobs:
           test "v$version" = "${GITHUB_REF_NAME}"
           test "$version" = "$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml | head -1)"
 
+  # The same checks as ci.yml's test job, on the tagged commit. verify, test, build and publish are separate jobs
+  # so a failed one can be re-run alone from the Actions page.
+  test:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The pin in ci.yml. Moving it is a change of its own.
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: herdr-app-mod/package-lock.json
+      - run: bash scripts/ci.sh test
+
   build:
-    needs: verify
+    needs: [verify, test]
     strategy:
       fail-fast: false
       matrix:

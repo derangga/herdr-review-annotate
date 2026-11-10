@@ -12,8 +12,9 @@ concurrency:
 permissions:
   contents: read
 
+# test, then build. Each is its own job so a failed one can be re-run alone from the Actions page.
 jobs:
-  check:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -22,9 +23,34 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      # Keep in step with the cargo you run scripts/ci.sh with. Moving it is a change of its own.
+      # Keep in step with the cargo you run scripts/ci.sh with, and with the build job and release.yml's test
+      # job. Moving it is a change of its own.
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: bash scripts/ci.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: herdr-app-mod/package-lock.json
+      - run: bash scripts/ci.sh test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: herdr-app-mod/package-lock.json
+      - run: bash scripts/ci.sh build

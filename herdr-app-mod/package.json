@@ -1,0 +1,20 @@
+{
+  "name": "herdr-review-mod",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --external:gpui-kit --external:gpui-base --external:herdr --outfile=out/main.js",
+    "test": "node --experimental-strip-types --test 'test/*.test.ts'",
+    "typecheck": "tsc -p .",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test && oxfmt --check src test '!test/fixtures/**'",
+    "format": "for pass in 1 2 3 4 5; do oxlint -c .oxlintrc.json --fix src test > /dev/null && break; done; oxfmt src test '!test/fixtures/**'",
+    "setup-types": "cp \"${HERDR_APP_HOME:-$HOME/.config/herdr-app}/gpui-kit.d.ts\" \"${HERDR_APP_HOME:-$HOME/.config/herdr-app}/herdr.d.ts\" ."
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
+    "typescript": "7.0.2"
+  }
+}

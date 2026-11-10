@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{PaneId, Spec, StoreError, TerminalId, Warning, ensure_dir, lock, state_dir};
+use crate::store::{
+    PaneId, Spec, StoreError, TerminalAddress, TerminalId, Warning, ensure_dir, lock, state_dir,
+};
 
 const META_FILE: &str = "meta.json";
 
@@ -22,6 +24,14 @@ pub struct Target {
     pub pane: PaneId,
     #[serde(rename = "terminal_id")]
     pub terminal: TerminalId,
+    pub agent: String,
+}
+
+/// The agent that receives a send under the hc backend. It has its own key in `meta.json`, so a binary
+/// that does not know hc reads and saves the file as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HcTarget {
+    pub address: TerminalAddress,
     pub agent: String,
 }
 
@@ -37,6 +47,8 @@ pub struct Meta {
     pub base: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_target: Option<HcTarget>,
     #[serde(
         default,
         rename = "review_pane_id",
@@ -311,5 +323,73 @@ mod tests {
         assert_eq!(locate(&base, Path::new(ROOT)), expected);
         fs::create_dir_all(&base).unwrap();
         assert_eq!(locate(&base, Path::new(ROOT)), expected);
+    }
+
+    /// `Meta` as v0.5.0 had it: no `hc_target`, and no `deny_unknown_fields`.
+    #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    struct MetaV050 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spec: Option<Spec>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<Target>,
+        #[serde(
+            default,
+            rename = "review_pane_id",
+            skip_serializing_if = "Option::is_none"
+        )]
+        review_pane: Option<PaneId>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        viewed: BTreeMap<String, String>,
+    }
+
+    fn hc_target() -> HcTarget {
+        HcTarget {
+            address: TerminalAddress::parse("t7").unwrap(),
+            agent: "claude-code".into(),
+        }
+    }
+
+    #[test]
+    fn a_file_with_both_targets_loads_with_the_v050_shape_and_keeps_target() {
+        let dir = temp_dir("two-binaries-read");
+        save(&dir, Path::new(ROOT), |meta| {
+            meta.target = Some(target());
+            meta.hc_target = Some(hc_target());
+        })
+        .unwrap();
+        let old =
+            serde_json::from_slice::<MetaV050>(&fs::read(dir.join(META_FILE)).unwrap()).unwrap();
+        assert_eq!(old.target, Some(target()));
+        let json =
+            serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join(META_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(json["hc_target"]["address"], "t7");
+        assert_eq!(json["hc_target"]["agent"], "claude-code");
+    }
+
+    #[test]
+    fn saving_hc_target_leaves_target_viewed_and_spec_as_they_were() {
+        let dir = temp_dir("two-binaries-save");
+        save(&dir, Path::new(ROOT), |meta| {
+            meta.target = Some(target());
+            meta.spec = Some(Spec::WorkTree);
+            meta.viewed.insert("a.rs".into(), "abc".into());
+        })
+        .unwrap();
+        let before = load(&dir).0;
+        save(&dir, Path::new(ROOT), |meta| {
+            meta.hc_target = Some(hc_target());
+        })
+        .unwrap();
+        let after = load(&dir).0;
+        assert_eq!(
+            (&after.target, &after.viewed, &after.spec),
+            (&before.target, &before.viewed, &before.spec)
+        );
+        assert_eq!(after.hc_target, Some(hc_target()));
     }
 }
