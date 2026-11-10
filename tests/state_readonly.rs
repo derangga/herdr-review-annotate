@@ -65,6 +65,10 @@ impl World {
     fn repo(&self) {
         self.git(&["init", "-q", "-b", "main"]);
         self.git(&["config", "commit.gpgsign", "false"]);
+        // The commit would otherwise start `git maintenance run --auto` in the background, which holds
+        // .git/objects/maintenance.lock while the snapshots walk the repository.
+        self.git(&["config", "maintenance.auto", "false"]);
+        self.git(&["config", "gc.auto", "0"]);
         self.write("a.txt", "one\ntwo\nthree\n");
         self.write("b.txt", "same\n");
         self.git(&["add", "-A"]);
