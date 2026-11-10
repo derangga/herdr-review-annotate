@@ -48,7 +48,10 @@ test("unread_resolved is required and must be an integer", () => {
 test("files decode in the order asked, and a different count, order or path is a contract mismatch", () => {
   const a = file();
   const b = { ...file(), path: "notes.txt" };
-  assert.deepEqual(decodeFiles({ schema: 1, files: [a, b] }, ["src/a.rs", "notes.txt"]).map((f) => f.path), ["src/a.rs", "notes.txt"]);
+  assert.deepEqual(
+    decodeFiles({ schema: 1, files: [a, b] }, ["src/a.rs", "notes.txt"]).map((f) => f.path),
+    ["src/a.rs", "notes.txt"],
+  );
   assert.equal(mismatch(() => decodeFiles({ schema: 1, files: [b, a] }, ["src/a.rs", "notes.txt"])).path, "$.files[0].path");
   assert.equal(mismatch(() => decodeFiles({ schema: 1, files: [a] }, ["src/a.rs", "notes.txt"])).path, "$.files");
   assert.equal(mismatch(() => decodeFiles({ schema: 2, files: [a] }, ["src/a.rs"])).path, "schema");

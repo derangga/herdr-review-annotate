@@ -5,6 +5,7 @@ import type { Candidate, Change, Comment, Cursor, Editor, FileSummary, FileView,
 // Control characters become nothing and a tab becomes spaces, as in the TUI. The text is the agent's or
 // the file's, so it is never trusted to be printable.
 export function cleanText(text: string): string {
+  // oxlint-disable-next-line no-control-regex
   return text.replace(/\t/g, "    ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
 
@@ -41,13 +42,19 @@ export function runs(text: string, tokens: Token[], marks: Mark[] = []): Run[] {
   const out: Run[] = [];
   const emit = (from: number, to: number, color: string, marked: boolean): void => {
     const piece = cleanText(text.slice(from, to));
-    if (piece !== "") out.push(marked ? { text: piece, color, marked: true } : { text: piece, color });
+    if (piece !== "") {
+      out.push(marked ? { text: piece, color, marked: true } : { text: piece, color });
+    }
   };
   const push = (from: number, to: number, color: string): void => {
     let at = from;
     for (const k of marks) {
-      if (k.to <= at) continue;
-      if (k.from >= to) break;
+      if (k.to <= at) {
+        continue;
+      }
+      if (k.from >= to) {
+        break;
+      }
       const start = Math.max(at, k.from);
       const stop = Math.min(to, k.to);
       emit(at, start, color, false);
@@ -110,7 +117,9 @@ const lineOn = (row: Row, side: "old" | "new"): number | null => (side === "old"
 // header, or for a row with no line on that side.
 export function pick(file: FileView, row: number, side: Side = null): Selection | null {
   const r = file.rows[row];
-  if (r === undefined) throw new Error(`row ${row} is out of range`);
+  if (r === undefined) {
+    throw new Error(`row ${row} is out of range`);
+  }
   const on = side ?? sideOf(r);
   return r.kind === "hunk" || lineOn(r, on) === null ? null : { path: file.path, side: on, from: row, to: row, anchor: row };
 }
@@ -119,7 +128,9 @@ export function pick(file: FileView, row: number, side: Side = null): Selection 
 // hunk header. A [+] on a half of the other side than the selection's is the row alone.
 export function plusTarget(file: FileView, sel: Selection | null, row: number, side: Side = null): Selection | null {
   const r = file.rows[row];
-  if (r === undefined) throw new Error(`row ${row} is out of range`);
+  if (r === undefined) {
+    throw new Error(`row ${row} is out of range`);
+  }
   return sel !== null && (side === null || side === sel.side) && sel.path === file.path && row >= sel.from && row <= sel.to && lineOn(r, sel.side) !== null ? sel : pick(file, row, side);
 }
 
@@ -127,14 +138,22 @@ export function plusTarget(file: FileView, sel: Selection | null, row: number, s
 // side (or `side`, the half it began on), and its ends are the first and last row in between that have a line on that side.
 export function span(file: FileView, first: number, second: number, side: Side = null): Selection | null {
   const a = file.rows[first];
-  if (a === undefined || file.rows[second] === undefined) throw new Error(`row ${first} or ${second} is out of range`);
-  if (a.kind === "hunk") return null;
+  if (a === undefined || file.rows[second] === undefined) {
+    throw new Error(`row ${first} or ${second} is out of range`);
+  }
+  if (a.kind === "hunk") {
+    return null;
+  }
   const on: number[] = [];
   side ??= sideOf(a);
-  if (lineOn(a, side) === null) return null;
+  if (lineOn(a, side) === null) {
+    return null;
+  }
   for (let i = Math.min(first, second); i <= Math.max(first, second); i++) {
     const r = file.rows[i];
-    if (r !== undefined && lineOn(r, side) !== null) on.push(i);
+    if (r !== undefined && lineOn(r, side) !== null) {
+      on.push(i);
+    }
   }
   const from = on[0];
   const to = on[on.length - 1];
@@ -147,11 +166,17 @@ export function span(file: FileView, first: number, second: number, side: Side =
 export function partner(file: FileView, row: number): number | null {
   const kind = (i: number): string | undefined => file.rows[i]?.kind;
   const k = kind(row);
-  if (k === "ctx") return row;
-  if (k !== "del" && k !== "add") return null;
+  if (k === "ctx") {
+    return row;
+  }
+  if (k !== "del" && k !== "add") {
+    return null;
+  }
   const edge = (from: number, step: number, of: string): number => {
     let i = from;
-    while (kind(i + step) === of) i += step;
+    while (kind(i + step) === of) {
+      i += step;
+    }
     return i;
   };
   if (k === "del") {
@@ -168,7 +193,9 @@ export function partner(file: FileView, row: number): number | null {
 export function anchorOf(file: FileView, sel: Selection): NewAnchor {
   const from = file.rows[sel.from];
   const to = file.rows[sel.to];
-  if (from === undefined || to === undefined) throw new Error("selection is out of range");
+  if (from === undefined || to === undefined) {
+    throw new Error("selection is out of range");
+  }
   const line = lineOn(from, sel.side);
   const end = lineOn(to, sel.side);
   return { path: file.path, old_path: sel.side === "old" ? file.old_path : null, side: sel.side, line, end_line: sel.from === sel.to ? null : end };
@@ -177,10 +204,18 @@ export function anchorOf(file: FileView, sel: Selection): NewAnchor {
 // The one-entry batch `comment apply --file` reads.
 export function batchOf(anchor: NewAnchor, text: string): string {
   const entry: Record<string, unknown> = { path: anchor.path };
-  if (anchor.old_path !== null) entry.old_path = anchor.old_path;
-  if (anchor.side !== null) entry.side = anchor.side;
-  if (anchor.line !== null) entry.line = anchor.line;
-  if (anchor.end_line !== null) entry.end_line = anchor.end_line;
+  if (anchor.old_path !== null) {
+    entry.old_path = anchor.old_path;
+  }
+  if (anchor.side !== null) {
+    entry.side = anchor.side;
+  }
+  if (anchor.line !== null) {
+    entry.line = anchor.line;
+  }
+  if (anchor.end_line !== null) {
+    entry.end_line = anchor.end_line;
+  }
   entry.body = text;
   return JSON.stringify({ comments: [entry] });
 }
@@ -200,20 +235,28 @@ export function selectionLabel(file: FileView, sel: Selection): string {
 
 // A selection survives a reload when the rows it covers are the same.
 export function sameRows(before: FileView | null, after: FileView, sel: Selection): boolean {
-  if (before === null || before.path !== sel.path || after.path !== sel.path) return false;
+  if (before === null || before.path !== sel.path || after.path !== sel.path) {
+    return false;
+  }
   for (let i = sel.from; i <= sel.to; i++) {
     const a = before.rows[i];
     const b = after.rows[i];
-    if (a === undefined || b === undefined || a.kind !== b.kind || a.old !== b.old || a.new !== b.new || a.text !== b.text) return false;
+    if (a === undefined || b === undefined || a.kind !== b.kind || a.old !== b.old || a.new !== b.new || a.text !== b.text) {
+      return false;
+    }
   }
   return true;
 }
 
 export function findComment(files: ReadonlyMap<string, FileView>, state: State | null, id: string | null): { thread: Thread; comment: Comment } | null {
-  if (id === null) return null;
+  if (id === null) {
+    return null;
+  }
   for (const thread of [...[...files.values()].flatMap((f) => f.threads), ...(state === null ? [] : state.orphans)]) {
     const comment = thread.comments.find((c) => c.id === id);
-    if (comment !== undefined) return { thread, comment };
+    if (comment !== undefined) {
+      return { thread, comment };
+    }
   }
   return null;
 }
@@ -240,10 +283,15 @@ export function stops(m: Model): { all: Stop[]; top: number } {
   const all: Stop[] = (m.state === null ? [] : m.state.orphans).map((t) => ({ id: t.id }));
   let top = 0;
   for (const f of m.state === null ? [] : m.state.files) {
-    if (m.selected === f.path) top = all.length;
+    if (m.selected === f.path) {
+      top = all.length;
+    }
     const view = m.files.get(f.path);
-    if (view !== undefined && !isFolded(m, f)) all.push(...cardOrder(view).map((id) => ({ id })));
-    else if (f.threads > 0) all.push({ path: f.path });
+    if (view !== undefined && !isFolded(m, f)) {
+      all.push(...cardOrder(view).map((id) => ({ id })));
+    } else if (f.threads > 0) {
+      all.push({ path: f.path });
+    }
   }
   return { all, top };
 }
@@ -254,12 +302,16 @@ export function stops(m: Model): { all: Stop[]; top: number } {
 const noStopsMemo = new WeakMap<ReadonlyMap<string, FileView>, { state: State | null; folds: Model["folds"]; none: boolean }>();
 export function noStops(m: Model): boolean {
   const kept = noStopsMemo.get(m.files);
-  if (kept !== undefined && kept.state === m.state && kept.folds === m.folds) return kept.none;
+  if (kept !== undefined && kept.state === m.state && kept.folds === m.folds) {
+    return kept.none;
+  }
   const files = m.state === null ? [] : m.state.files;
-  const none = (m.state === null || m.state.orphans.length === 0) && files.every((f) => {
-    const view = m.files.get(f.path);
-    return view !== undefined && !isFolded(m, f) ? view.threads.length === 0 : f.threads === 0;
-  });
+  const none =
+    (m.state === null || m.state.orphans.length === 0) &&
+    files.every((f) => {
+      const view = m.files.get(f.path);
+      return view !== undefined && !isFolded(m, f) ? view.threads.length === 0 : f.threads === 0;
+    });
   noStopsMemo.set(m.files, { state: m.state, folds: m.folds, none });
   return none;
 }
@@ -269,7 +321,9 @@ export function noStops(m: Model): boolean {
 // thread, previous is the last one before the file. null when the review has no thread.
 export function jumpStop(m: Model, forward: boolean): Stop | null {
   const { all, top } = stops(m);
-  if (all.length === 0) return null;
+  if (all.length === 0) {
+    return null;
+  }
   const hit = findComment(m.files, m.state, m.focus);
   const at = hit === null ? -1 : all.findIndex((s) => "id" in s && s.id === hit.thread.id);
   const from = at >= 0 ? (forward ? at + 1 : at - 1) : forward ? top : top - 1;
@@ -280,15 +334,29 @@ export function jumpStop(m: Model, forward: boolean): Stop | null {
 // box and Esc clears the selection, else the filter, and the cursor's keys come after (`cursorKey`). Not while the editor holds the keyboard, so a note can say "n", and not while
 // a question or the picker is up.
 export function panelKey(m: Model, keystroke: string): Msg | null {
-  if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) return null;
+  if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) {
+    return null;
+  }
   // The diff's keys act on the diff: in the agent-message view they would move a hidden cursor or open a diff editor.
-  if (m.view === "message") return null;
+  if (m.view === "message") {
+    return null;
+  }
   // In the box a key types: only Esc is a command (Enter reaches the model as the box's own submit).
-  if (m.filtering) return keystroke === "escape" ? { _tag: "FilterCleared" } : null;
-  if (keystroke === "/") return { _tag: "FilterOpened" };
-  if (keystroke === "escape") return m.selection !== null ? { _tag: "SelectionCleared" } : m.filter === "" ? null : { _tag: "FilterCleared" };
-  if (keystroke === "n") return { _tag: "ThreadJumped", forward: true };
-  if (keystroke === "shift-n" || keystroke === "N") return { _tag: "ThreadJumped", forward: false };
+  if (m.filtering) {
+    return keystroke === "escape" ? { _tag: "FilterCleared" } : null;
+  }
+  if (keystroke === "/") {
+    return { _tag: "FilterOpened" };
+  }
+  if (keystroke === "escape") {
+    return m.selection !== null ? { _tag: "SelectionCleared" } : m.filter === "" ? null : { _tag: "FilterCleared" };
+  }
+  if (keystroke === "n") {
+    return { _tag: "ThreadJumped", forward: true };
+  }
+  if (keystroke === "shift-n" || keystroke === "N") {
+    return { _tag: "ThreadJumped", forward: false };
+  }
   return cursorKey(m, keystroke);
 }
 
@@ -304,7 +372,9 @@ export function spots(m: Model): Spot[] {
   const split = isSplit(m);
   for (const f of m.state === null ? [] : m.state.files) {
     const file = m.files.get(f.path);
-    if (file === undefined || isFolded(m, f)) continue;
+    if (file === undefined || isFolded(m, f)) {
+      continue;
+    }
     let seen = new Set<Side>();
     const put = (row: number, side: Side): void => {
       out.push({ path: f.path, row, side, first: !seen.has(side) });
@@ -312,7 +382,7 @@ export function spots(m: Model): Spot[] {
     };
     const kind = (i: number): string | undefined => file.rows[i]?.kind;
     // The pairing of fileStream: a run of removed rows faces the run of added rows right after it.
-    for (let i = 0; i < file.rows.length; ) {
+    for (let i = 0; i < file.rows.length;) {
       if (kind(i) === "hunk") {
         seen = new Set();
         i++;
@@ -323,12 +393,20 @@ export function spots(m: Model): Spot[] {
         put(i++, "new");
       } else {
         let mid = i;
-        while (kind(mid) === "del") mid++;
+        while (kind(mid) === "del") {
+          mid++;
+        }
         let end = mid;
-        while (kind(end) === "add") end++;
+        while (kind(end) === "add") {
+          end++;
+        }
         for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
-          if (i + p < mid) put(i + p, "old");
-          if (mid + p < end) put(mid + p, "new");
+          if (i + p < mid) {
+            put(i + p, "old");
+          }
+          if (mid + p < end) {
+            put(mid + p, "new");
+          }
         }
         i = end;
       }
@@ -340,8 +418,7 @@ export function spots(m: Model): Spot[] {
 export const sameSpot = (s: Spot, c: Cursor): boolean => s.path === c.path && s.row === c.row && s.side === c.side;
 
 // Whether the keyboard's cursor is on this row, on this half of it (null in unified): the row the view tints.
-export const cursorOn = (m: Model, item: RowItem, side: Side = null): boolean =>
-  m.cursor !== null && item.kind !== "hunk" && m.cursor.path === keyPath(item.key) && m.cursor.row === item.index && m.cursor.side === side;
+export const cursorOn = (m: Model, item: RowItem, side: Side = null): boolean => m.cursor !== null && item.kind !== "hunk" && m.cursor.path === keyPath(item.key) && m.cursor.row === item.index && m.cursor.side === side;
 
 // The cursor's spot, or null when it has none or it no longer stands on a drawn code row (its file folded, replaced or gone).
 export function cursorSpot(m: Model): Spot | null {
@@ -411,8 +488,7 @@ function cursorKey(m: Model, key: string): Msg | null {
     case "r":
     case "e":
     case "d":
-    case "x":
-    {
+    case "x": {
       // The buttons the focused comment's card offers, taken as the thread's last comment so x resolves from any of its
       // comments. Not while a range is selected: the keys then belong to the range, as the bar's did.
       const hit = m.selection === null ? findComment(m.files, m.state, m.focus) : null;
@@ -426,7 +502,9 @@ function cursorKey(m: Model, key: string): Msg | null {
 // `now` under a minute, then 2m, 3h, 2d. A time that does not parse has no age.
 export function ageText(at: string, now: number): string | null {
   const t = Date.parse(at);
-  if (Number.isNaN(t)) return null;
+  if (Number.isNaN(t)) {
+    return null;
+  }
   const s = Math.max(0, Math.floor((now - t) / 1000));
   return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
 }
@@ -441,9 +519,14 @@ function cardButtons(thread: Thread, comment: Comment, last: boolean): DockButto
   const add = (id: string, label: string, icon: string, msg: Msg, key?: string, danger = false): void => void out.push({ id, label, msg, danger, off: false, icon, iconOnly: true, key });
   add("reply", "Reply", "reply", { _tag: "ThreadAction", id: comment.id, action: "reply" }, "r");
   if (last) {
-    if (thread.status === "open") add("resolve", "Resolve", "check", { _tag: "ThreadAction", id: comment.id, action: "resolve" }, "x");
-    else add("reopen", "Reopen", "undo", { _tag: "ThreadAction", id: comment.id, action: "reopen" }, "x");
-    if (thread.status === "open" && !thread.unsent) add("resend", "Resend", "send", { _tag: "SendClicked", threads: [thread.id] });
+    if (thread.status === "open") {
+      add("resolve", "Resolve", "check", { _tag: "ThreadAction", id: comment.id, action: "resolve" }, "x");
+    } else {
+      add("reopen", "Reopen", "undo", { _tag: "ThreadAction", id: comment.id, action: "reopen" }, "x");
+    }
+    if (thread.status === "open" && !thread.unsent) {
+      add("resend", "Resend", "send", { _tag: "SendClicked", threads: [thread.id] });
+    }
   }
   if (comment.author === "user") {
     add("edit", "Edit", "pencil", { _tag: "ThreadAction", id: comment.id, action: "edit" }, "e");
@@ -456,7 +539,9 @@ function cardButtons(thread: Thread, comment: Comment, last: boolean): DockButto
 // here: fileStream puts it under its row, or at the top of its file. Not while the draft is being saved: its card shows it.
 function threadEditor(out: StreamItem[], path: string, thread: Thread, m: Model, half: Side): void {
   const e = m.editor;
-  if (m.view !== "message" && m.draft === null && e !== null && e.kind !== "comment" && e.thread === thread.id) out.push(editorItem(path, e, half));
+  if (m.view !== "message" && m.draft === null && e !== null && e.kind !== "comment" && e.thread === thread.id) {
+    out.push(editorItem(path, e, half));
+  }
 }
 
 // A draft being saved is drawn as the card it will be, built by cardItems from the same fields, so the real card that replaces
@@ -483,9 +568,15 @@ function draftThread(m: Model, a: NewAnchor, row: number | null, now: number): T
 // unsent; an edit is the comment's new text.
 function withDraft(thread: Thread, m: Model, now: number): Thread {
   const e = m.editor;
-  if (m.draft === null || m.view === "message" || e === null || e.thread !== thread.id) return thread;
-  if (e.kind === "reply") return { ...thread, unsent: true, comments: [...thread.comments, draftComment(m, now, thread.id)] };
-  if (e.kind === "edit") return { ...thread, comments: thread.comments.map((c) => (c.id === e.comment ? { ...c, body: m.draft ?? c.body, edited_since_sent: c.sent || c.edited_since_sent } : c)) };
+  if (m.draft === null || m.view === "message" || e === null || e.thread !== thread.id) {
+    return thread;
+  }
+  if (e.kind === "reply") {
+    return { ...thread, unsent: true, comments: [...thread.comments, draftComment(m, now, thread.id)] };
+  }
+  if (e.kind === "edit") {
+    return { ...thread, comments: thread.comments.map((c) => (c.id === e.comment ? { ...c, body: m.draft ?? c.body, edited_since_sent: c.sent || c.edited_since_sent } : c)) };
+  }
   return thread;
 }
 
@@ -494,17 +585,29 @@ const editorItem = (path: string, e: Editor, half: Side): EditorItem => ({ kind:
 function cardItems(out: StreamItem[], path: string, given: Thread, m: Model, now: number, half: Side = null): void {
   const thread = withDraft(given, m, now);
   const root = thread.comments[0];
-  if (root === undefined) throw new Error(`thread ${thread.id} has no comments`);
+  if (root === undefined) {
+    throw new Error(`thread ${thread.id} has no comments`);
+  }
   const resolved = thread.status === "resolved";
   const open = !resolved || m.expanded.has(thread.id);
   const tone: Tone = resolved ? "resolved" : root.author === "user" ? "user" : "agent";
   const age = ageText(root.at, now);
   const badges: string[] = [];
-  if (!resolved && thread.placement.kind === "outdated") badges.push("outdated");
-  if (resolved) badges.push(`resolved by ${thread.resolved_by === null ? "?" : who(thread.resolved_by, "you")}`);
-  if (thread.is_new) badges.push("new");
-  if (thread.comments.some((c) => c.edited_since_sent)) badges.push("edited since sent");
-  if (thread.unsent) badges.push("unsent");
+  if (!resolved && thread.placement.kind === "outdated") {
+    badges.push("outdated");
+  }
+  if (resolved) {
+    badges.push(`resolved by ${thread.resolved_by === null ? "?" : who(thread.resolved_by, "you")}`);
+  }
+  if (thread.is_new) {
+    badges.push("new");
+  }
+  if (thread.comments.some((c) => c.edited_since_sent)) {
+    badges.push("edited since sent");
+  }
+  if (thread.unsent) {
+    badges.push("unsent");
+  }
   const outdated = !resolved && thread.placement.kind !== "matched" && thread.anchor.text !== null;
   out.push({
     kind: "head",
@@ -520,21 +623,23 @@ function cardItems(out: StreamItem[], path: string, given: Thread, m: Model, now
     last: !open,
     half,
   });
-  if (open) thread.comments.forEach((c, i) => {
-    const when = ageText(c.at, now);
-    out.push({
-      kind: "body",
-      key: itemKey(path, `c:${c.id}`),
-      id: c.id,
-      tone,
-      meta: c.parent === null ? null : `${who(c.author, "You")}${when === null ? "" : ` \u00b7 ${when}`}`,
-      lines: bodyLines(c.body),
-      buttons: cardButtons(thread, c, i === thread.comments.length - 1),
-      focused: m.focus === c.id,
-      last: i === thread.comments.length - 1,
-      half,
+  if (open) {
+    thread.comments.forEach((c, i) => {
+      const when = ageText(c.at, now);
+      out.push({
+        kind: "body",
+        key: itemKey(path, `c:${c.id}`),
+        id: c.id,
+        tone,
+        meta: c.parent === null ? null : `${who(c.author, "You")}${when === null ? "" : ` \u00b7 ${when}`}`,
+        lines: bodyLines(c.body),
+        buttons: cardButtons(thread, c, i === thread.comments.length - 1),
+        focused: m.focus === c.id,
+        last: i === thread.comments.length - 1,
+        half,
+      });
     });
-  });
+  }
   threadEditor(out, path, thread, m, half);
 }
 
@@ -565,7 +670,9 @@ export const EDITOR_H = 12 + 12 + 16 + 4 + EDITOR_TEXT + 4 + 16 + 4 + 24;
 
 // The height of a comment's button row when the card's text is `avail` wide: the buttons' estimated widths, wrapped.
 export function buttonsHeight(buttons: DockButton[], avail: number): number {
-  if (buttons.length === 0) return 0;
+  if (buttons.length === 0) {
+    return 0;
+  }
   // The rows a wrapping flex row makes: a button goes on the next row when it does not fit after the ones before it.
   let rows = 1;
   let used = 0;
@@ -574,7 +681,9 @@ export function buttonsHeight(buttons: DockButton[], avail: number): number {
     if (used > 0 && used + BTN_GAP + w > avail) {
       rows++;
       used = w;
-    } else used += (used > 0 ? BTN_GAP : 0) + w;
+    } else {
+      used += (used > 0 ? BTN_GAP : 0) + w;
+    }
   }
   return 4 + rows * BTN_H + (rows - 1) * BTN_GAP;
 }
@@ -620,7 +729,9 @@ export function heightOf(i: StreamItem, width: number): number {
 // How many lines a file's diff is guessed to have before it arrives: its changed lines and a hunk's header and
 // context. A file with no text to show (binary, a submodule) is one line.
 export function estimateRows(f: FileSummary): number {
-  if (f.change === "binary" || f.change === "submodule" || f.change === "too_large" || f.change === "unparsed") return 1;
+  if (f.change === "binary" || f.change === "submodule" || f.change === "too_large" || f.change === "unparsed") {
+    return 1;
+  }
   return f.add + f.del + (f.change === "added" || f.change === "untracked" || f.change === "deleted" ? 2 : 8);
 }
 
@@ -641,7 +752,9 @@ const rowMemo = new WeakMap<FileView, RowItem[]>();
 
 function rowsOf(file: FileView): RowItem[] {
   const kept = rowMemo.get(file);
-  if (kept !== undefined) return kept;
+  if (kept !== undefined) {
+    return kept;
+  }
   const rows = file.rows.map((row, index): RowItem => ({ kind: row.kind, key: itemKey(file.path, `r${index}`), index, old: row.old === null ? "" : String(row.old), new: row.new === null ? "" : String(row.new), text: cleanText(row.text), runs: runs(row.text, row.tokens, row.marks) }));
   rowMemo.set(file, rows);
   return rows;
@@ -651,8 +764,14 @@ function rowsOf(file: FileView): RowItem[] {
 // one row of a file). null when the file has no such row, and for a file comment.
 function editorRow(file: FileView, a: NewAnchor): number | null {
   const line = a.end_line ?? a.line;
-  if (a.side === null || line === null) return null;
-  for (let i = 0; i < file.rows.length; i++) if (lineOn(file.rows[i] as Row, a.side) === line) return i;
+  if (a.side === null || line === null) {
+    return null;
+  }
+  for (let i = 0; i < file.rows.length; i++) {
+    if (lineOn(file.rows[i] as Row, a.side) === line) {
+      return i;
+    }
+  }
   return null;
 }
 
@@ -662,33 +781,66 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
   const ed = m.view !== "message" && m.editor !== null && m.editor.kind === "comment" && m.editor.anchor?.path === file.path ? m.editor : null;
   const at = ed?.anchor == null ? null : editorRow(file, ed.anchor);
   const split = isSplit(m);
-  const dep = [file.threads.filter((t) => m.expanded.has(t.id)).map((t) => t.id).join(","), m.focus !== null && ids.has(m.focus) ? m.focus : "", Math.floor(now / 60000), m.width, split, ed === null ? "" : `${editorTitle(ed)}|${at}`, m.view !== "message" && m.editor?.thread != null && ids.has(m.editor.thread) ? `${m.editor.kind}|${m.editor.thread}` : "", (ed !== null || (m.editor?.thread != null && ids.has(m.editor.thread))) && m.draft !== null ? m.draft : ""].join("|");
+  const dep = [
+    file.threads
+      .filter((t) => m.expanded.has(t.id))
+      .map((t) => t.id)
+      .join(","),
+    m.focus !== null && ids.has(m.focus) ? m.focus : "",
+    Math.floor(now / 60000),
+    m.width,
+    split,
+    ed === null ? "" : `${editorTitle(ed)}|${at}`,
+    m.view !== "message" && m.editor?.thread != null && ids.has(m.editor.thread) ? `${m.editor.kind}|${m.editor.thread}` : "",
+    (ed !== null || (m.editor?.thread != null && ids.has(m.editor.thread))) && m.draft !== null ? m.draft : "",
+  ].join("|");
   const kept = memo.get(file);
-  if (kept !== undefined && kept.dep === dep) return kept.stream;
+  if (kept !== undefined && kept.dep === dep) {
+    return kept.stream;
+  }
   const items: StreamItem[] = [];
   const under = new Map<number, Thread[]>();
   const top: Thread[] = [];
   for (const t of file.threads) {
     const row = t.placement.row;
-    if (row === null) top.push(t);
-    else if (file.rows[row] === undefined) throw new Error(`thread ${t.id} is placed at row ${row}, past the end`);
-    else under.set(row, [...(under.get(row) ?? []), t]);
+    if (row === null) {
+      top.push(t);
+    } else if (file.rows[row] === undefined) {
+      throw new Error(`thread ${t.id} is placed at row ${row}, past the end`);
+    } else {
+      under.set(row, [...(under.get(row) ?? []), t]);
+    }
   }
-  if (file.note !== null) items.push({ kind: "note", key: itemKey(file.path, "note"), text: cleanText(file.note) });
+  if (file.note !== null) {
+    items.push({ kind: "note", key: itemKey(file.path, "note"), text: cleanText(file.note) });
+  }
   // A file comment, or one whose row is gone, has its editor at the top of the file.
-  if (ed !== null && at === null && m.draft === null) items.push(editorItem(file.path, ed, null));
-  for (const t of top) cardItems(items, file.path, t, m, now);
+  if (ed !== null && at === null && m.draft === null) {
+    items.push(editorItem(file.path, ed, null));
+  }
+  for (const t of top) {
+    cardItems(items, file.path, t, m, now);
+  }
   // Saving a file comment: its card is where the store's will be, after the file's other comments with no row.
-  if (ed !== null && at === null && m.draft !== null && ed.anchor !== null) cardItems(items, file.path, draftThread(m, ed.anchor, null, now), m, now);
+  if (ed !== null && at === null && m.draft !== null && ed.anchor !== null) {
+    cardItems(items, file.path, draftThread(m, ed.anchor, null, now), m, now);
+  }
   const base = rowsOf(file);
   // The cards of the rows, each in the half its comment is on in the split layout; then the editor of a new comment when one of
   // the rows is the last of its range, in the half the [+] was clicked on.
   const cards = (...rows: (RowItem | null)[]): void => {
-    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) for (const t of under.get(index) ?? []) cardItems(items, file.path, t, m, now, split ? t.anchor.side : null);
+    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) {
+      for (const t of under.get(index) ?? []) {
+        cardItems(items, file.path, t, m, now, split ? t.anchor.side : null);
+      }
+    }
     if (ed !== null && at !== null && rows.some((r) => r?.index === at)) {
       const half = split ? (ed.anchor?.side ?? null) : null;
-      if (m.draft === null || ed.anchor === null) items.push(editorItem(file.path, ed, half));
-      else cardItems(items, file.path, draftThread(m, ed.anchor, at, now), m, now, half);
+      if (m.draft === null || ed.anchor === null) {
+        items.push(editorItem(file.path, ed, half));
+      } else {
+        cardItems(items, file.path, draftThread(m, ed.anchor, at, now), m, now, half);
+      }
     }
   };
   if (!split) {
@@ -699,7 +851,7 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
   } else {
     // A run of removed rows pairs with the run of added rows right after it; the cards of a pair are its left row's, then its right's.
     const kindAt = (i: number): string | undefined => base[i]?.kind;
-    for (let i = 0; i < base.length; ) {
+    for (let i = 0; i < base.length;) {
       const row = base[i] as RowItem;
       if (row.kind === "hunk" || row.kind === "ctx") {
         items.push(row.kind === "hunk" ? row : { kind: "split", key: itemKey(file.path, `p${i}`), left: row, right: row });
@@ -708,9 +860,13 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
         continue;
       }
       let mid = i;
-      while (kindAt(mid) === "del") mid++;
+      while (kindAt(mid) === "del") {
+        mid++;
+      }
       let end = mid;
-      while (kindAt(end) === "add") end++;
+      while (kindAt(end) === "add") {
+        end++;
+      }
       for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
         const left = i + p < mid ? (base[i + p] as RowItem) : null;
         const right = mid + p < end ? (base[mid + p] as RowItem) : null;
@@ -746,13 +902,17 @@ export function streamLayout(m: Model, now: number): Stream {
   const orphans = m.state === null ? [] : m.state.orphans;
   if (orphans.length > 0) {
     const out: StreamItem[] = [{ kind: "label", key: itemKey("", "l:orphans"), text: "Comments not in this diff" }];
-    for (const t of orphans) cardItems(out, "", t, m, now);
+    for (const t of orphans) {
+      cardItems(out, "", t, m, now);
+    }
     add(out);
   }
   for (const f of m.state === null ? [] : m.state.files) {
     const folded = isFolded(m, f);
     add([fileHead(m, f, folded)]);
-    if (folded) continue;
+    if (folded) {
+      continue;
+    }
     const view = m.files.get(f.path);
     if (view !== undefined) {
       const s = fileStream(m, view, now);
@@ -763,7 +923,9 @@ export function streamLayout(m: Model, now: number): Stream {
     }
   }
   const starts = [0];
-  for (const size of sizes) starts.push((starts[starts.length - 1] as number) + size);
+  for (const size of sizes) {
+    starts.push((starts[starts.length - 1] as number) + size);
+  }
   // Side by side fits the pane: each half shifts its code sideways itself, so a long line does not widen the stream.
   return { items, sizes, starts, total: starts[starts.length - 1] as number, wide: isSplit(m) ? 0 : diffWidth(items) };
 }
@@ -776,7 +938,9 @@ export function layoutCache(onRebuild: () => void = () => {}): (m: Model, now: n
   let kept: Stream | null = null;
   return (m, now) => {
     const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, m.editor, m.draft, m.view, Math.floor(now / 60000)];
-    if (kept !== null && next.every((d, i) => d === deps[i])) return kept;
+    if (kept !== null && next.every((d, i) => d === deps[i])) {
+      return kept;
+    }
     deps = next;
     onRebuild();
     kept = streamLayout(m, now);
@@ -797,8 +961,11 @@ export function itemAt(starts: number[], y: number): number {
   let hi = Math.max(0, starts.length - 2);
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if ((starts[mid] as number) <= y) lo = mid;
-    else hi = mid - 1;
+    if ((starts[mid] as number) <= y) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
   }
   return lo;
 }
@@ -807,11 +974,15 @@ export function itemAt(starts: number[], y: number): number {
 // view shifts it up by. The offset is clamped, so a view drawn before the model caught up with a resize still draws.
 export function visibleRange(stream: Stream, offset: number, height: number): { first: number; end: number; shift: number } {
   const n = stream.items.length;
-  if (n === 0) return { first: 0, end: 0, shift: 0 };
+  if (n === 0) {
+    return { first: 0, end: 0, shift: 0 };
+  }
   const at = clampOffset(offset, stream.total, height);
   const first = itemAt(stream.starts, at);
   let end = first + 1;
-  while (end < n && (stream.starts[end] as number) < at + height) end++;
+  while (end < n && (stream.starts[end] as number) < at + height) {
+    end++;
+  }
   return { first, end, shift: at - (stream.starts[first] as number) };
 }
 
@@ -825,7 +996,9 @@ export const offsetOfKey = (stream: Stream, key: string, height: number): number
 // item on screen (the current offset when it already is). null when the item is not in the stream.
 export function revealOffset(stream: Stream, reveal: Reveal, offset: number, height: number): number | null {
   const at = indexOfKey(stream.items, reveal.key);
-  if (at < 0) return null;
+  if (at < 0) {
+    return null;
+  }
   const top = stream.starts[at] as number;
   const bottom = stream.starts[at + 1] as number;
   const want = reveal.near !== true ? top : top < offset ? top : bottom > offset + height ? bottom - height : offset;
@@ -843,7 +1016,9 @@ export function scrolled(m: Model, stream: Stream): Msg | null {
   const visible = pathsOf(stream.items, first, end);
   const fresh = freshOn(stream.items, first, end);
   const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((p, i) => p === b[i]);
-  if (target === null && offset === m.offset && stream.total === m.total && top === m.top && same(visible, m.visible) && same(fresh, m.fresh)) return null;
+  if (target === null && offset === m.offset && stream.total === m.total && top === m.top && same(visible, m.visible) && same(fresh, m.fresh)) {
+    return null;
+  }
   return { _tag: "Scrolled", offset, total: stream.total, top, visible, fresh, revealed: target !== null };
 }
 
@@ -852,7 +1027,9 @@ export function scrolled(m: Model, stream: Stream): Msg | null {
 // The pixels a mostly sideways wheel or trackpad event shifts the halves' code right by, null for a mostly vertical one. A
 // device that reports lines is taken at four characters a line.
 export function wheelShift(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
-  if (Math.abs(e.delta.x) <= Math.abs(e.delta.y)) return null;
+  if (Math.abs(e.delta.x) <= Math.abs(e.delta.y)) {
+    return null;
+  }
   return -(e.delta_lines !== undefined ? e.delta_lines.x * 4 * CODE_CHAR : e.delta.x);
 }
 
@@ -861,7 +1038,9 @@ export function wheelShift(e: { delta: { x: number; y: number }; delta_lines?: {
 export const maxShift = (code: number, width: number): number => Math.max(0, code - ((width - 1) / 2 - 88));
 
 export function wheelDelta(e: { delta: { x: number; y: number }; delta_lines?: { x: number; y: number } }): number | null {
-  if (Math.abs(e.delta.x) > Math.abs(e.delta.y)) return null;
+  if (Math.abs(e.delta.x) > Math.abs(e.delta.y)) {
+    return null;
+  }
   const dy = e.delta_lines !== undefined ? e.delta_lines.y * ROW : e.delta.y;
   return dy === 0 ? 0 : -dy;
 }
@@ -869,7 +1048,9 @@ export function wheelDelta(e: { delta: { x: number; y: number }; delta_lines?: {
 // The scrollbar's thumb: its top and height in the track, or null when the stream fits and there is nothing to scroll.
 export const THUMB_MIN = 24;
 export function thumbOf(total: number, height: number, offset: number): { top: number; size: number } | null {
-  if (total <= height || height <= 0) return null;
+  if (total <= height || height <= 0) {
+    return null;
+  }
   const size = Math.max(THUMB_MIN, (height * height) / total);
   const room = Math.max(1, height - size);
   return { top: (clampOffset(offset, total, height) / maxOffset(total, height)) * room, size };
@@ -878,7 +1059,9 @@ export function thumbOf(total: number, height: number, offset: number): { top: n
 // The offset a thumb's top at `top` stands for.
 export function offsetOfThumb(total: number, height: number, top: number): number {
   const thumb = thumbOf(total, height, 0);
-  if (thumb === null) return 0;
+  if (thumb === null) {
+    return 0;
+  }
   return clampOffset((top / Math.max(1, height - thumb.size)) * maxOffset(total, height), total, height);
 }
 
@@ -893,7 +1076,9 @@ export function pathsOf(items: StreamItem[], start: number, end: number): string
   const out: string[] = [];
   for (const i of items.slice(Math.max(0, start), Math.max(0, end))) {
     const path = keyPath(i.key);
-    if (path !== "" && !out.includes(path)) out.push(path);
+    if (path !== "" && !out.includes(path)) {
+      out.push(path);
+    }
   }
   return out;
 }
@@ -914,7 +1099,9 @@ export function wanted(m: Model): string[] {
   const hi = idx.length === 0 ? 0 : Math.max(...idx);
   const order: number[] = [];
   const range = (from: number, to: number): void => {
-    for (let i = from; i <= to; i++) order.push(i);
+    for (let i = from; i <= to; i++) {
+      order.push(i);
+    }
   };
   range(lo, Math.min(files.length - 1, hi + AHEAD));
   range(hi + AHEAD + 1, files.length - 1);
@@ -927,8 +1114,14 @@ export function wanted(m: Model): string[] {
 
 // The key a scroll to a thread's card aims at, or null when the thread is in no file that is loaded.
 export function cardKey(m: Model, id: string): string | null {
-  if ((m.state === null ? [] : m.state.orphans).some((t) => t.id === id)) return itemKey("", `h:${id}`);
-  for (const [path, file] of m.files) if (file.threads.some((t) => t.id === id)) return itemKey(path, `h:${id}`);
+  if ((m.state === null ? [] : m.state.orphans).some((t) => t.id === id)) {
+    return itemKey("", `h:${id}`);
+  }
+  for (const [path, file] of m.files) {
+    if (file.threads.some((t) => t.id === id)) {
+      return itemKey(path, `h:${id}`);
+    }
+  }
   return null;
 }
 
@@ -939,7 +1132,9 @@ const holds = (i: StreamItem, n: number): boolean => (i.kind === "split" ? i.lef
 export function indexOfKey(items: StreamItem[], key: string): number {
   const at = items.findIndex((i) => i.key === key);
   const row = /^[rp](\d+)$/.exec(keyLocal(key));
-  if (at >= 0 || row === null) return at;
+  if (at >= 0 || row === null) {
+    return at;
+  }
   const path = keyPath(key);
   return items.findIndex((i) => keyPath(i.key) === path && holds(i, Number(row[1])));
 }
@@ -967,23 +1162,39 @@ export function rowState(m: Model, item: RowItem, side: Side = null): { selected
 export function itemClick(key: string): Msg | null {
   const path = keyPath(key);
   const local = keyLocal(key);
-  if (local === "file") return { _tag: "FoldToggled", path };
-  if (local.startsWith("h:")) return { _tag: "ThreadAction", id: local.slice(2), action: "toggle" };
-  if (local.startsWith("c:")) return { _tag: "ThreadAction", id: local.slice(2), action: "focus" };
+  if (local === "file") {
+    return { _tag: "FoldToggled", path };
+  }
+  if (local.startsWith("h:")) {
+    return { _tag: "ThreadAction", id: local.slice(2), action: "toggle" };
+  }
+  if (local.startsWith("c:")) {
+    return { _tag: "ThreadAction", id: local.slice(2), action: "focus" };
+  }
   return null;
 }
 
 // What a key pressed in the editor means: Ctrl+S or Cmd+S saves the text, Esc cancels.
 export function editorKey(keystroke: string, text: string): Msg | null {
-  if (keystroke === "ctrl-s" || keystroke === "cmd-s") return { _tag: "EditorSaved", text };
-  if (keystroke === "escape") return { _tag: "EditorCancelled" };
+  if (keystroke === "ctrl-s" || keystroke === "cmd-s") {
+    return { _tag: "EditorSaved", text };
+  }
+  if (keystroke === "escape") {
+    return { _tag: "EditorCancelled" };
+  }
   return null;
 }
 
 export function editorTitle(e: Editor): string {
-  if (e.title !== undefined) return e.title;
-  if (e.kind === "reply") return `Reply to ${e.thread ?? ""}`;
-  if (e.kind === "edit") return `Edit ${e.comment ?? ""}`;
+  if (e.title !== undefined) {
+    return e.title;
+  }
+  if (e.kind === "reply") {
+    return `Reply to ${e.thread ?? ""}`;
+  }
+  if (e.kind === "edit") {
+    return `Edit ${e.comment ?? ""}`;
+  }
   return `Draft note - ${e.anchor === null ? "" : anchorLabel(e.anchor)}`;
 }
 
@@ -1003,7 +1214,9 @@ export const unreadCount = (state: State | null): number => (state === null ? 0 
 
 const unsentMemo = new WeakMap<State, number>();
 export function unsentCount(state: State | null): number {
-  if (state === null) return 0;
+  if (state === null) {
+    return 0;
+  }
   let n = unsentMemo.get(state);
   if (n === undefined) {
     n = state.files.reduce((sum, f) => sum + f.unsent, 0) + state.orphans.filter((t) => t.unsent).length;
@@ -1034,12 +1247,16 @@ export function confirmRow(m: Model): ConfirmRow | null {
   const cancel: DockButton = { id: "confirm-cancel", label: "Cancel", msg: { _tag: "ConfirmCancelled" }, danger: false, off: false };
   if (m.confirm !== null) {
     const hit = findComment(m.files, m.state, m.confirm);
-    if (hit === null) return null;
+    if (hit === null) {
+      return null;
+    }
     const replies = hit.comment.parent === null && hit.thread.comments.length > 1;
     const ok: DockButton = { id: "confirm-delete", label: "Delete", msg: { _tag: "DeleteConfirmed", id: m.confirm }, danger: true, off: false };
     return { sentence: replies ? "Delete this comment? Its replies go too." : "Delete this comment?", color: "ansi1", buttons: [ok, cancel] };
   }
-  if (!m.confirmArchive) return null;
+  if (!m.confirmArchive) {
+    return null;
+  }
   const ok: DockButton = { id: "confirm-archive", label: "Archive", msg: { _tag: "ArchiveConfirmed" }, danger: false, off: m.inFlight, accent: true };
   const unread = unreadCount(m.state);
   const more = unread === 0 ? "" : ` ${unread} more resolved by the agent ${unread === 1 ? "is" : "are"} unread.`;
@@ -1067,7 +1284,9 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
     label = `${thread.id}${comment.id === thread.id ? "" : ` / ${comment.id}`}`;
   }
   const shown = m.selected === null ? undefined : summaryOf(m, m.selected);
-  if (shown !== undefined) add("file", "Comment on file", "comment-plus", { _tag: "FileCommentClicked" });
+  if (shown !== undefined) {
+    add("file", "Comment on file", "comment-plus", { _tag: "FileCommentClicked" });
+  }
   // What acts on the whole review, or on the file shown.
   const unsent = unsentCount(m.state);
   const none = noStops(m);
@@ -1079,7 +1298,15 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
     { id: "prev-thread", label: "Previous comment", icon: "arrow-up", iconOnly: true, key: "shift+n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: false }, danger: false, off: none },
     { id: "next-thread", label: "Next comment", icon: "arrow-down", iconOnly: true, key: "n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: true }, danger: false, off: none },
     { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", icon: "send", accent: unsent > 0, tip: m.sending ? "Sending..." : unsent > 0 ? `Send ${plural(unsent, "unsent comment", "unsent comments")}` : "No unsent comments", msg: { _tag: "SendClicked" }, danger: false, off: m.sending || unsent === 0 },
-    { id: "archive", label: archivable > 0 ? `Archive ${archivable}` : "Archive", icon: "archive", tip: archivable > 0 ? `Archive ${plural(archivable, "resolved thread", "resolved threads")}` : (note?.text ?? "No resolved threads to archive"), msg: { _tag: "ArchiveClicked" }, danger: false, off: m.inFlight || archivable === 0 },
+    {
+      id: "archive",
+      label: archivable > 0 ? `Archive ${archivable}` : "Archive",
+      icon: "archive",
+      tip: archivable > 0 ? `Archive ${plural(archivable, "resolved thread", "resolved threads")}` : (note?.text ?? "No resolved threads to archive"),
+      msg: { _tag: "ArchiveClicked" },
+      danger: false,
+      off: m.inFlight || archivable === 0,
+    },
   ];
   return { label, buttons, actions, note };
 }
@@ -1091,14 +1318,22 @@ const CODE_CHAR = 7;
 // shifts until the end of the longest line in view reaches the edge, and no further.
 export function codeWidth(items: StreamItem[]): number {
   let wide = 0;
-  for (const i of items) if (i.kind === "split") wide = Math.max(wide, (i.left?.text.length ?? 0) * CODE_CHAR, (i.right?.text.length ?? 0) * CODE_CHAR);
+  for (const i of items) {
+    if (i.kind === "split") {
+      wide = Math.max(wide, (i.left?.text.length ?? 0) * CODE_CHAR, (i.right?.text.length ?? 0) * CODE_CHAR);
+    }
+  }
   return wide;
 }
 
 // A width that fits the longest line, for the horizontal scroll of the diff.
 export function diffWidth(items: StreamItem[]): number {
   let wide = 300;
-  for (const i of items) if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") wide = Math.max(wide, i.text.length * CODE_CHAR + 150);
+  for (const i of items) {
+    if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") {
+      wide = Math.max(wide, i.text.length * CODE_CHAR + 150);
+    }
+  }
   return wide;
 }
 
@@ -1118,16 +1353,22 @@ export type Badge = { text: string; tone: "unsent" | "open" | "new" | "viewed" }
 export const badgeColor = (b: Badge): string => (b.tone === "unsent" ? WARN : b.tone === "open" ? "accent" : b.tone === "new" ? "done" : "dim");
 
 // One row of the sidebar: a folder heading, or a file under it. A heading takes no click.
-export type SideRow =
-  | { kind: "dir"; key: string; text: string }
-  | { kind: "file"; key: string; path: string; name: string; icon: string; letter: string; add: number; del: number; viewed: boolean; badges: Badge[] };
+export type SideRow = { kind: "dir"; key: string; text: string } | { kind: "file"; key: string; path: string; name: string; icon: string; letter: string; add: number; del: number; viewed: boolean; badges: Badge[] };
 
 function fileRow(f: FileSummary): SideRow {
   const badges: Badge[] = [];
-  if (f.unsent > 0) badges.push({ text: `${f.unsent} unsent`, tone: "unsent" });
-  if (f.open > 0) badges.push({ text: `${f.open} open`, tone: "open" });
-  if (f.new > 0) badges.push({ text: `${f.new} new`, tone: "new" });
-  if (f.viewed) badges.push({ text: "viewed", tone: "viewed" });
+  if (f.unsent > 0) {
+    badges.push({ text: `${f.unsent} unsent`, tone: "unsent" });
+  }
+  if (f.open > 0) {
+    badges.push({ text: `${f.open} open`, tone: "open" });
+  }
+  if (f.new > 0) {
+    badges.push({ text: `${f.new} new`, tone: "new" });
+  }
+  if (f.viewed) {
+    badges.push({ text: "viewed", tone: "viewed" });
+  }
   const name = f.path.slice(f.path.lastIndexOf("/") + 1);
   return { kind: "file", key: `f:${f.path}`, path: f.path, name: cleanText(name), icon: fileIcon(name), letter: LETTERS[f.change], add: f.add, del: f.del, viewed: f.viewed, badges };
 }
@@ -1141,7 +1382,9 @@ export function fileMatches(query: string, path: string): boolean {
   let at = 0;
   for (const wanted of query) {
     const found = chars.indexOf(wanted, at);
-    if (found < 0) return false;
+    if (found < 0) {
+      return false;
+    }
     at = found + 1;
   }
   return true;
@@ -1177,7 +1420,9 @@ const sidebarMemo = new WeakMap<FileSummary[], Sidebar>();
 
 function sidebarOf(files: FileSummary[], query: string): Sidebar {
   const kept = sidebarMemo.get(files);
-  if (kept !== undefined && kept.query === query) return kept;
+  if (kept !== undefined && kept.query === query) {
+    return kept;
+  }
   const hits = files.filter((f) => fileMatches(query, f.path));
   const rows: SideRow[] = [];
   let last: string | null = null;
@@ -1202,7 +1447,9 @@ export type HeaderButton = { id: string; label: string; icon: string; on: boolea
 // The two buttons for the sidebar. Moving it is offered only while it shows, since nothing would change on screen.
 export function sidebarButtons(m: Model): HeaderButton[] {
   const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", icon: m.panel.side === "left" ? "panel-left" : "panel-right", on: m.panel.open, msg: { _tag: "SidebarToggled" } }];
-  if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move file list to the right side" : "Move file list to the left side", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
+  if (m.panel.open) {
+    buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move file list to the right side" : "Move file list to the left side", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
+  }
   return buttons;
 }
 
@@ -1213,7 +1460,9 @@ export function layoutButton(m: Model): HeaderButton {
 
 // What sits under the header, left to right: the sidebar on its side, or left out when hidden, and the diff.
 export function paneOrder(m: Model): ("sidebar" | "diff")[] {
-  if (!m.panel.open) return ["diff"];
+  if (!m.panel.open) {
+    return ["diff"];
+  }
   return m.panel.side === "left" ? ["sidebar", "diff"] : ["diff", "sidebar"];
 }
 
@@ -1226,7 +1475,9 @@ type Totals = { files: number; add: number; del: number };
 const NO_TOTALS: Totals = { files: 0, add: 0, del: 0 };
 const totalsMemo = new WeakMap<State, Totals>();
 export function totals(state: State | null): Totals {
-  if (state === null) return NO_TOTALS;
+  if (state === null) {
+    return NO_TOTALS;
+  }
   let sum = totalsMemo.get(state);
   if (sum === undefined) {
     sum = { files: state.files.length, add: state.files.reduce((n, f) => n + f.add, 0), del: state.files.reduce((n, f) => n + f.del, 0) };

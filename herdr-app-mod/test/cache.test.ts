@@ -16,7 +16,10 @@ test("sidebar rows are what the uncached walk gives, and the same array while fi
   for (const q of ["", "rs", "src", "Cargo", "zzz", "dc"]) {
     const hits = files.filter((x) => fileMatches(q, x.path));
     const rows = sidebarRows(files, q);
-    assert.deepEqual(rows.flatMap((r) => (r.kind === "file" ? [r.path] : [])), hits.map((x) => x.path));
+    assert.deepEqual(
+      rows.flatMap((r) => (r.kind === "file" ? [r.path] : [])),
+      hits.map((x) => x.path),
+    );
     assert.equal(rows.filter((r) => r.kind === "file").length, hits.length);
     assert.equal(sidebarRows(files, q), rows);
   }

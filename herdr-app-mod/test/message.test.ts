@@ -56,7 +56,16 @@ test("the message arrives and every line is an item with its number", () => {
   assert.equal(m.message.loading, false);
   assert.equal(m.message.data?.agent, "claude-code");
   const lines = messageItems(m.message).filter((i) => i.kind === "line");
-  assert.deepEqual(lines.map((i) => (i.kind === "line" ? [i.n, i.text] : null)), [[1, "# Plan"], [2, "Step one"], [3, "Step two"], [4, "Step three"], [5, "Done"]]);
+  assert.deepEqual(
+    lines.map((i) => (i.kind === "line" ? [i.n, i.text] : null)),
+    [
+      [1, "# Plan"],
+      [2, "Step one"],
+      [3, "Step two"],
+      [4, "Step three"],
+      [5, "Done"],
+    ],
+  );
 });
 
 test("the hover marks one line, and a leave only counts for the line the model has", () => {
@@ -95,7 +104,10 @@ test("save keeps the comment in the model, writes nothing, and puts a card under
   assert.equal(out.model.message.selection, null);
   assert.deepEqual(out.model.message.comments, [{ id: 1, start: 2, end: 3, body: "Why two steps?" }]);
   const items = messageItems(out.model.message);
-  assert.deepEqual(items.map((i) => (i.kind === "line" ? i.n : `card${i.id}`)), [1, 2, 3, "card1", 4, 5]);
+  assert.deepEqual(
+    items.map((i) => (i.kind === "line" ? i.n : `card${i.id}`)),
+    [1, 2, 3, "card1", 4, 5],
+  );
   assert.deepEqual(sendButton(out.model), { label: "Send 1", off: false });
 });
 
@@ -125,7 +137,10 @@ test("edit opens the editor on the comment's text, save changes it, and the card
 test("delete removes the comment at once, and no other", () => {
   const m = comment(comment(shown(), 2, 2, "a"), 4, 4, "b");
   const out = steps(m, { _tag: "MessageCommentAction", id: 1, action: "delete" }).model;
-  assert.deepEqual(out.message.comments.map((c) => [c.id, c.body]), [[2, "b"]]);
+  assert.deepEqual(
+    out.message.comments.map((c) => [c.id, c.body]),
+    [[2, "b"]],
+  );
   assert.deepEqual(steps(out, { _tag: "MessageCommentAction", id: 9, action: "delete" }).model, out);
 });
 
@@ -140,7 +155,17 @@ test("with the editor open, another comment, a switch of view and a send wait", 
 test("send asks for one command with all the comments and the id of the message they were written on", () => {
   const m = comment(comment(shown(), 2, 3, "a"), 5, 5, "b");
   const out = steps(m, { _tag: "MessageSendClicked" });
-  assert.deepEqual(out.cmds, [{ _tag: "SendMessage", target: "t7", id: "m1", comments: [{ start: 2, end: 3, body: "a" }, { start: 5, end: 5, body: "b" }] }] satisfies Cmd[]);
+  assert.deepEqual(out.cmds, [
+    {
+      _tag: "SendMessage",
+      target: "t7",
+      id: "m1",
+      comments: [
+        { start: 2, end: 3, body: "a" },
+        { start: 5, end: 5, body: "b" },
+      ],
+    },
+  ] satisfies Cmd[]);
   assert.equal(out.model.message.sending, true);
   // A second click while it runs asks for nothing.
   assert.deepEqual(steps(out.model, { _tag: "MessageSendClicked" }).cmds, []);
@@ -233,9 +258,18 @@ test("the diff view is as it was after a visit to the message", () => {
 test("the message reply decodes, and a reply of another shape is a contract mismatch", () => {
   assert.deepEqual(decodeMessage({ schema: 1, agent: "claude", status: "working", id: "m1", lines: ["a", ""] }), { schema: 1, agent: "claude", status: "working", id: "m1", lines: ["a", ""] });
   assert.deepEqual(decodeMessageSent({ schema: 1, sent: 2 }), { schema: 1, sent: 2 });
-  assert.throws(() => decodeMessage({ schema: 1, agent: "claude", status: "idle", id: "m1", lines: [1] }), (e) => (e as ReviewError)._tag === "ContractMismatch");
-  assert.throws(() => decodeMessage({ schema: 2, agent: "claude", status: "idle", id: "m1", lines: [] }), (e) => (e as ReviewError)._tag === "ContractMismatch");
-  assert.throws(() => decodeMessageSent({ schema: 1 }), (e) => (e as ReviewError)._tag === "ContractMismatch");
+  assert.throws(
+    () => decodeMessage({ schema: 1, agent: "claude", status: "idle", id: "m1", lines: [1] }),
+    (e) => (e as ReviewError)._tag === "ContractMismatch",
+  );
+  assert.throws(
+    () => decodeMessage({ schema: 2, agent: "claude", status: "idle", id: "m1", lines: [] }),
+    (e) => (e as ReviewError)._tag === "ContractMismatch",
+  );
+  assert.throws(
+    () => decodeMessageSent({ schema: 1 }),
+    (e) => (e as ReviewError)._tag === "ContractMismatch",
+  );
 });
 
 // the runner
@@ -256,22 +290,33 @@ test("a read runs message --json for the target and answers MessageLoaded", asyn
   const t = env({ exec: answers(ok(JSON.stringify(reply())), ok("")) });
   const msg = await run(t.env, { _tag: "ReadMessage", target: "t7" });
   assert.deepEqual(msg, { _tag: "MessageLoaded", reply: reply() });
-  assert.deepEqual(execs(t.calls).map((c) => c.argv), [["message", "--json", "--target", "t7"]]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.argv),
+    [["message", "--json", "--target", "t7"]],
+  );
 });
 
 test("a send writes the comments and the message id to a file and passes only its path", async () => {
   const t = env({ exec: answers(ok(""), ok(JSON.stringify({ schema: 1, sent: 2 }))) });
-  const comments = [{ start: 2, end: 3, body: "Why `$(rm -rf /)`?" }, { start: 5, end: 5, body: "b" }];
+  const comments = [
+    { start: 2, end: 3, body: "Why `$(rm -rf /)`?" },
+    { start: 5, end: 5, body: "b" },
+  ];
   const msg = await run(t.env, { _tag: "SendMessage", target: "t7", id: "m1", comments });
   assert.deepEqual(msg, { _tag: "MessageSent", sent: 2 });
   const [written] = files(t.calls);
   assert.ok(written);
   assert.deepEqual(JSON.parse(written.text), { id: "m1", comments });
   const calls = execs(t.calls);
-  assert.deepEqual(calls.slice(0, 2).map((c) => c.command), ["mkdir", "chmod"]);
+  assert.deepEqual(
+    calls.slice(0, 2).map((c) => c.command),
+    ["mkdir", "chmod"],
+  );
   assert.deepEqual(calls[2]?.argv, ["message", "send", "--target", "t7", "--file", written.path]);
   assert.deepEqual(calls[2]?.options, { timeout: 30000 });
-  for (const c of calls) assert.ok(!c.argv.join(" ").includes("rm -rf"), "the comments are never on argv");
+  for (const c of calls) {
+    assert.ok(!c.argv.join(" ").includes("rm -rf"), "the comments are never on argv");
+  }
 });
 
 test("E: a refusal is Failed with op message-send and the reason of stderr", async () => {

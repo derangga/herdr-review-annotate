@@ -65,7 +65,9 @@ export default class ReviewView extends View {
   }
 
   dispatch(msg: Msg): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     const t0 = this.perf.start();
     const before = this.model;
     let [model, cmds] = update(before, msg);
@@ -81,19 +83,37 @@ export default class ReviewView extends View {
     }
     this.model = model;
     this.perf.dispatch(t0);
-    if (model.editor !== before.editor) this.syncEditor();
-    if ((model.confirm !== null && model.confirm !== before.confirm) || (model.confirmArchive && !before.confirmArchive)) this.focusAsk();
+    if (model.editor !== before.editor) {
+      this.syncEditor();
+    }
+    if ((model.confirm !== null && model.confirm !== before.confirm) || (model.confirmArchive && !before.confirmArchive)) {
+      this.focusAsk();
+    }
     // The panel takes the keyboard back once a jump is asked, and once the editor or a question is closed.
-    if (msg._tag === "ThreadJumped" || (before.editor !== null && model.editor === null) || ((before.confirm !== null || before.confirmArchive) && model.confirm === null && !model.confirmArchive)) this.focusNav();
+    if (msg._tag === "ThreadJumped" || (before.editor !== null && model.editor === null) || ((before.confirm !== null || before.confirmArchive) && model.confirm === null && !model.confirmArchive)) {
+      this.focusNav();
+    }
     // A press on a line, and the keys (Esc) go to the panel only when it holds the keyboard.
-    if (msg._tag === "RowPressed") this.focusNav();
+    if (msg._tag === "RowPressed") {
+      this.focusNav();
+    }
     // Esc is the one change the box did not make itself: it empties the box.
-    if (msg._tag === "FilterCleared") this.filter.set_value("");
-    if (msg._tag === "FilterOpened") this.focusFilter();
+    if (msg._tag === "FilterCleared") {
+      this.filter.set_value("");
+    }
+    if (msg._tag === "FilterOpened") {
+      this.focusFilter();
+    }
     // The model gave the keyboard back (Enter on a match, Esc), which is not a click elsewhere (FilterFocused).
-    if (before.filtering && !model.filtering && msg._tag !== "FilterFocused") this.focusNav();
-    if (model !== before) this.cx.notify();
-    for (const cmd of cmds) this.start(cmd);
+    if (before.filtering && !model.filtering && msg._tag !== "FilterFocused") {
+      this.focusNav();
+    }
+    if (model !== before) {
+      this.cx.notify();
+    }
+    for (const cmd of cmds) {
+      this.start(cmd);
+    }
   }
 
   // The editor's text lives in a textarea state the view owns: made when an editor opens, released when it
@@ -102,11 +122,15 @@ export default class ReviewView extends View {
     this.textarea?.release();
     this.textarea = null;
     const e = this.model.editor;
-    if (e === null) return;
+    if (e === null) {
+      return;
+    }
     const ta = TextareaState.new({ placeholder: "Write a note...", value: e.initial, rows: 5 });
     ta.focus();
     this.cx.timer.after(600, () => {
-      if (this.textarea === ta) ta.focus();
+      if (this.textarea === ta) {
+        ta.focus();
+      }
     });
     this.textarea = ta;
   }
@@ -116,7 +140,9 @@ export default class ReviewView extends View {
   focusAsk(): void {
     this.handle.focus();
     this.cx.timer.after(300, () => {
-      if (this.model.confirm !== null || this.model.confirmArchive) this.handle.focus();
+      if (this.model.confirm !== null || this.model.confirmArchive) {
+        this.handle.focus();
+      }
     });
   }
 
@@ -125,7 +151,9 @@ export default class ReviewView extends View {
   focusNav(): void {
     this.nav.focus();
     this.cx.timer.after(300, () => {
-      if (!this.closed && this.model.editor === null) this.nav.focus();
+      if (!this.closed && this.model.editor === null) {
+        this.nav.focus();
+      }
     });
   }
 
@@ -133,14 +161,18 @@ export default class ReviewView extends View {
   focusFilter(): void {
     this.filter.focus();
     this.cx.timer.after(300, () => {
-      if (!this.closed && this.model.panel.open && !this.model.filtering) this.filter.focus();
+      if (!this.closed && this.model.panel.open && !this.model.filtering) {
+        this.filter.focus();
+      }
     });
   }
 
   start(cmd: Cmd): void {
     this.cx.spawn(async () => {
       const reply = await run(this.env, cmd);
-      if (reply !== null) this.dispatch(reply);
+      if (reply !== null) {
+        this.dispatch(reply);
+      }
     });
   }
 

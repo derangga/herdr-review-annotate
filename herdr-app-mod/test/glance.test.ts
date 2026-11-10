@@ -14,7 +14,9 @@ const tick: Msg = { _tag: "Glanced" };
 function settle(m: Model): Model {
   for (let i = 0; i < 4; i++) {
     const msg = scrolled(m, streamLayout(m, NOW));
-    if (msg === null) return m;
+    if (msg === null) {
+      return m;
+    }
     m = steps(m, msg).model;
   }
   throw new Error("the scroll state did not settle");

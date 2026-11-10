@@ -17,7 +17,10 @@ const split = (): Model => ({ ...loadedModel(state, file), width: SPLIT_W });
 const plus = (row: number, side: "old" | "new" | null): Msg => ({ _tag: "PlusClicked", path: "src/a.rs", row, side });
 const act = (id: string, action: "reply" | "edit"): Msg => ({ _tag: "ThreadAction", id, action });
 const items = (m: Model): StreamItem[] => streamLayout(m, NOW).items;
-const own = (m: Model): string[] => items(m).filter((i) => i.key.startsWith("src/a.rs|")).map((i) => i.key.slice("src/a.rs|".length));
+const own = (m: Model): string[] =>
+  items(m)
+    .filter((i) => i.key.startsWith("src/a.rs|"))
+    .map((i) => i.key.slice("src/a.rs|".length));
 const editors = (m: Model): EditorItem[] => items(m).filter((i): i is EditorItem => i.kind === "editor");
 // What stands between two keys, which is where the editor is found.
 const between = (m: Model, from: string, to: string): string[] => {
@@ -36,7 +39,10 @@ test("E: side by side, a card sits in the half its line is on, and a file commen
   assert.equal(h["src/a.rs|h:u4"], "new");
   assert.equal(h["src/a.rs|h:u5"], null, "a file comment");
   assert.equal(h["|h:u6"], null, "a thread not in the diff");
-  assert.ok(Object.values(halves({ ...m, split: false })).every((x) => x === null), "unified is as it was");
+  assert.ok(
+    Object.values(halves({ ...m, split: false })).every((x) => x === null),
+    "unified is as it was",
+  );
 });
 
 test("a card in a half is counted at the half's width", () => {
@@ -51,7 +57,10 @@ test("a card in a half is counted at the half's width", () => {
 test("E: the [+] opens the editor under its row's cards, in the half it was clicked on in a split stream", () => {
   const right = steps(split(), plus(3, "new")).model;
   assert.deepEqual(between(right, "p2", "p4"), ["p2", "h:u3", "h:u1", "c:u1", "editor"]);
-  assert.deepEqual(editors(right).map((e) => [e.key, e.half, e.title]), [["src/a.rs|editor", "new", "Draft note - src/a.rs R2"]]);
+  assert.deepEqual(
+    editors(right).map((e) => [e.key, e.half, e.title]),
+    [["src/a.rs|editor", "new", "Draft note - src/a.rs R2"]],
+  );
   // On the old half of the pair it hangs on the left, after the same cards.
   const left = steps(split(), plus(2, "old")).model;
   assert.deepEqual(between(left, "p2", "p4"), ["p2", "h:u3", "h:u1", "c:u1", "editor"]);
@@ -95,7 +104,10 @@ test("E: a comment on the file opens the editor at the top of the file, full wid
   for (const m of [unified(), split()]) {
     const open = steps(m, { _tag: "FileCommentClicked" }).model;
     assert.deepEqual(own(open).slice(0, 3), ["file", "editor", "h:u5"]);
-    assert.deepEqual(editors(open).map((e) => [e.half, e.title]), [[null, "Draft note - src/a.rs"]]);
+    assert.deepEqual(
+      editors(open).map((e) => [e.half, e.title]),
+      [[null, "Draft note - src/a.rs"]],
+    );
   }
 });
 
@@ -166,7 +178,10 @@ test("E: opening an editor scrolls the stream just far enough to show it", () =>
 test("with the editor open a fold or a viewed mark is refused, since it would hide the editor", () => {
   const m = steps(loadedModel(fixtureState(), fixtureFile()), { _tag: "PlusClicked", path: "src/a.rs", row: 3, side: null }).model;
   assert.notEqual(m.editor, null);
-  for (const msg of [{ _tag: "FoldToggled", path: "src/a.rs" }, { _tag: "ViewedClicked", path: "src/a.rs", viewed: true }] as Msg[]) {
+  for (const msg of [
+    { _tag: "FoldToggled", path: "src/a.rs" },
+    { _tag: "ViewedClicked", path: "src/a.rs", viewed: true },
+  ] as Msg[]) {
     const out = steps(m, msg);
     assert.deepEqual(out.cmds, []);
     assert.equal(out.model.folds, m.folds);
@@ -183,7 +198,10 @@ test("on Save the draft is drawn at once as its card, in the editor's place, and
   assert.ok(at > 0);
   const saving = steps(open, { _tag: "EditorSaved", text: "Why?" }).model;
   const drawn = streamLayout(saving, NOW_T);
-  assert.equal(drawn.items.some((i) => i.kind === "editor"), false);
+  assert.equal(
+    drawn.items.some((i) => i.kind === "editor"),
+    false,
+  );
   const head = drawn.items[at];
   assert.equal(head?.kind === "head" && head.id, "draft");
   // The store's thread: the same anchor, row and text, with real ids.
@@ -192,7 +210,11 @@ test("on Save the draft is drawn at once as its card, in the editor's place, and
   const view = saving.files.get("src/a.rs");
   assert.ok(view !== undefined);
   const real = {
-    id: "u9", status: "open" as const, resolved_by: null, is_new: false, unsent: true,
+    id: "u9",
+    status: "open" as const,
+    resolved_by: null,
+    is_new: false,
+    unsent: true,
     placement: { kind: "matched" as const, row: 3, start_row: null },
     anchor: { path: anchor.path, old_path: anchor.old_path, kind: "line" as const, side: anchor.side, line: anchor.line, end_line: null, text: null, spec: { kind: "worktree" as const } },
     comments: [{ id: "u9", parent: null, author: "user", at: new Date(NOW_T).toISOString(), body: "Why?", sent: false, edited_since_sent: false }],
@@ -214,6 +236,9 @@ test("a reply being saved is drawn in its thread's card at once", () => {
   assert.ok(thread !== undefined);
   const saving = steps(m, { _tag: "ThreadAction", id: thread.id, action: "reply" }, { _tag: "EditorSaved", text: "on it" }).model;
   const items = streamLayout(saving, NOW_T).items;
-  assert.equal(items.some((i) => i.kind === "editor"), false);
+  assert.equal(
+    items.some((i) => i.kind === "editor"),
+    false,
+  );
   assert.ok(items.some((i) => i.kind === "body" && i.id === "draft" && i.lines.join("\n") === "on it"));
 });

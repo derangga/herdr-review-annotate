@@ -22,6 +22,7 @@ bash scripts/test-fetch-herdr-review.sh
   cd herdr-app-mod
   node --version
   npm ci
+  npm run lint
   npm test
   npm run build
 )

@@ -75,7 +75,10 @@ test("a resend is offered on an open thread whose comments are all sent, not on 
   const sentThread = { ...file, threads: file.threads.map((t) => (t.id === "u1" ? { ...t, unsent: false } : t)) };
   const m = reload(loaded(), state, sentThread).model;
   assert.deepEqual(resend(m, "u1")?.msg, { _tag: "SendClicked", threads: ["u1"] });
-  assert.equal(dock(m).buttons.find((b) => b.id === "resend"), undefined);
+  assert.equal(
+    dock(m).buttons.find((b) => b.id === "resend"),
+    undefined,
+  );
 });
 
 // send: ReviewCli
@@ -99,7 +102,11 @@ test("exit 0 answers Sent with the count, the agent and queued", async () => {
 });
 
 test("E: json error blocked, not_ready, agent_gone -> Refused", async () => {
-  for (const [kind, why] of [["blocked", "Blocked"], ["not_ready", "NotReady"], ["agent_gone", "AgentGone"]] as const) {
+  for (const [kind, why] of [
+    ["blocked", "Blocked"],
+    ["not_ready", "NotReady"],
+    ["agent_gone", "AgentGone"],
+  ] as const) {
     assert.deepEqual(failure((await sendWith({ code: 1, stdout: refusal(kind), stderr: "" })).msg), { _tag: "Refused", why });
   }
 });
@@ -109,7 +116,10 @@ test("E: json error no_agent -> NoTarget", async () => {
 });
 
 test("E: json error ambiguous -> AmbiguousTarget with the candidates", async () => {
-  const candidates = [{ address: "t7", agent: "claude-code", cwd: "/repo", status: "idle" }, { address: "t9", agent: "claude-code", cwd: "/repo/sub", status: "working" }];
+  const candidates = [
+    { address: "t7", agent: "claude-code", cwd: "/repo", status: "idle" },
+    { address: "t9", agent: "claude-code", cwd: "/repo/sub", status: "working" },
+  ];
   assert.deepEqual(failure((await sendWith({ code: 1, stdout: refusal("ambiguous", { candidates }), stderr: "" }, null)).msg), { _tag: "AmbiguousTarget", candidates });
 });
 
@@ -155,7 +165,9 @@ test("Sent with queued shows the queued line, with warnings adds them", () => {
 test("E: Refused -> status and one notify, nothing marked sent, the next click sends again", () => {
   for (const why of ["Blocked", "NotReady", "AgentGone"] as const) {
     const out = steps(loaded(), { _tag: "SendClicked" }, failedMsg({ _tag: "Refused", why }));
-    if (why !== "AgentGone") assert.equal(out.model.status, `nothing was sent: ${why}`);
+    if (why !== "AgentGone") {
+      assert.equal(out.model.status, `nothing was sent: ${why}`);
+    }
     assert.equal(out.cmds.filter((c) => c._tag === "Notify").length, 1);
     assert.equal(out.model.state, state); // the screen is as it was, no reload
     assert.equal(out.model.sending, false);
@@ -178,13 +190,19 @@ test("E: NoTarget -> status, nothing else", () => {
   assert.equal(out.model.sending, false);
 });
 
-const candidates = [{ address: "t7", agent: "claude-code", cwd: "/repo", status: "idle" }, { address: "t9", agent: "claude-code", cwd: "/repo/sub", status: "working" }];
+const candidates = [
+  { address: "t7", agent: "claude-code", cwd: "/repo", status: "idle" },
+  { address: "t9", agent: "claude-code", cwd: "/repo/sub", status: "working" },
+];
 
 test("E: AmbiguousTarget -> picker, then a picked address sends again with --target and the same threads", () => {
   const asked = steps(loaded(null), { _tag: "SendClicked", threads: ["u1"] }, failedMsg({ _tag: "AmbiguousTarget", candidates }));
   assert.deepEqual(asked.model.picker, candidates);
   assert.equal(asked.model.status, null);
-  assert.deepEqual(pickerOptions(candidates).map((b) => b.msg), [{ _tag: "PickerChosen", target: "t7" }, { _tag: "PickerChosen", target: "t9" }, { _tag: "PickerCancelled" }]);
+  assert.deepEqual(
+    pickerOptions(candidates).map((b) => b.msg),
+    [{ _tag: "PickerChosen", target: "t7" }, { _tag: "PickerChosen", target: "t9" }, { _tag: "PickerCancelled" }],
+  );
   const picked = steps(asked.model, { _tag: "PickerChosen", target: "t9" });
   assert.deepEqual(picked.cmds, [sendCmd("t9", ["u1"])]);
   assert.equal(picked.model.target, "t9");
@@ -217,7 +235,13 @@ test("a click on Archive only asks, with a sentence, an Archive button and Cance
   const row = confirmRow(first.model);
   // The fixture has one resolved thread the agent closed that the user has not seen.
   assert.equal(row?.sentence, "Archive 1 resolved thread? 1 more resolved by the agent is unread.");
-  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]), [["Archive", false, "ArchiveConfirmed"], ["Cancel", false, "ConfirmCancelled"]]);
+  assert.deepEqual(
+    row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]),
+    [
+      ["Archive", false, "ArchiveConfirmed"],
+      ["Cancel", false, "ConfirmCancelled"],
+    ],
+  );
   assert.equal(dock(first.model).actions.find((b) => b.id === "archive")?.label, "Archive 1");
 });
 
@@ -255,7 +279,10 @@ const counting = (n: number, unread = 0): Model => ({ ...loaded(), state: { ...l
 const archiveButton = (m: Model) => dock(m).actions.find((b) => b.id === "archive");
 
 test("the archive button and the question name the number, singular for one", () => {
-  for (const [n, label, sentence] of [[1, "Archive 1", "Archive 1 resolved thread?"], [3, "Archive 3", "Archive 3 resolved threads?"]] as const) {
+  for (const [n, label, sentence] of [
+    [1, "Archive 1", "Archive 1 resolved thread?"],
+    [3, "Archive 3", "Archive 3 resolved threads?"],
+  ] as const) {
     const m = counting(n);
     assert.equal(archiveButton(m)?.label, label);
     assert.equal(archiveButton(m)?.off, false);
@@ -292,7 +319,13 @@ test("nothing archivable but some unread: Archive is off and a dim note gives th
 test("the archive question is plain text with an accent button and no red, the delete question stays red", () => {
   const row = confirmRow(steps(counting(2), { _tag: "ArchiveClicked" }).model);
   assert.equal(row?.color, "foreground");
-  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.accent === true]), [["Archive", false, true], ["Cancel", false, false]]);
+  assert.deepEqual(
+    row?.buttons.map((b) => [b.label, b.danger, b.accent === true]),
+    [
+      ["Archive", false, true],
+      ["Cancel", false, false],
+    ],
+  );
   const asked = steps(loaded(), { _tag: "ThreadAction", id: "u1", action: "delete" }).model;
   const del = confirmRow(asked);
   assert.deepEqual([del?.color, del?.buttons[0]?.danger], ["ansi1", true]);

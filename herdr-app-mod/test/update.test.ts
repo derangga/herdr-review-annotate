@@ -45,11 +45,17 @@ test("the store watch starts once, from the first reply", () => {
   assert.ok(load && load._tag === "Load");
   const reply: Msg = { _tag: "Loaded", key: load.key, state };
   const { model, cmds } = steps(first.model, reply);
-  assert.deepEqual(cmds.filter((c) => c._tag === "WatchStore"), [{ _tag: "WatchStore", dir: "/state" }]);
+  assert.deepEqual(
+    cmds.filter((c) => c._tag === "WatchStore"),
+    [{ _tag: "WatchStore", dir: "/state" }],
+  );
   const again = steps(answer(model, cmds).model, trig("timer"));
   const second = again.cmds[0];
   assert.ok(second && second._tag === "Load");
-  assert.deepEqual(reload(again.model, state).cmds.filter((c) => c._tag === "WatchStore"), []);
+  assert.deepEqual(
+    reload(again.model, state).cmds.filter((c) => c._tag === "WatchStore"),
+    [],
+  );
 });
 
 test("E: WatchUnavailable -> the timer only, and the watch is tried again after the next load", () => {
@@ -62,7 +68,10 @@ test("E: WatchUnavailable -> the timer only, and the watch is tried again after 
   const retry = steps(lost, trig("timer"));
   const load = retry.cmds[0];
   assert.ok(load && load._tag === "Load");
-  assert.deepEqual(steps(retry.model, { _tag: "Loaded", key: load.key, state }).cmds.filter((c) => c._tag === "WatchStore"), [{ _tag: "WatchStore", dir: "/state" }]);
+  assert.deepEqual(
+    steps(retry.model, { _tag: "Loaded", key: load.key, state }).cmds.filter((c) => c._tag === "WatchStore"),
+    [{ _tag: "WatchStore", dir: "/state" }],
+  );
 });
 
 test("a trigger during a load starts nothing, and the end of the load starts one more", () => {

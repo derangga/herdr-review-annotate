@@ -12,7 +12,9 @@ const NOW = Date.parse("2026-11-09T10:00:30Z");
 // A stream of plain heights, to check the arithmetic on numbers that can be added up by eye.
 function plain(sizes: number[]): Stream {
   const starts = [0];
-  for (const s of sizes) starts.push((starts[starts.length - 1] as number) + s);
+  for (const s of sizes) {
+    starts.push((starts[starts.length - 1] as number) + s);
+  }
   const items = sizes.map((_, i) => ({ kind: "note" as const, key: `f|n${i}`, text: "" }));
   return { items, sizes, starts, total: starts[starts.length - 1] as number, wide: 300 };
 }
@@ -21,7 +23,9 @@ function plain(sizes: number[]): Stream {
 function settle(m: Model): Model {
   for (let i = 0; i < 4; i++) {
     const msg = scrolled(m, streamLayout(m, NOW));
-    if (msg === null) return m;
+    if (msg === null) {
+      return m;
+    }
     m = steps(m, msg).model;
   }
   throw new Error("the scroll state did not settle");
@@ -34,7 +38,10 @@ const shown = (height = 100): Model => settle({ ...loadedModel(fixtureState(), f
 test("E: item positions are the prefix sum of the heights, and the item at a pixel is the last one that begins at or above it", () => {
   const s = plain([20, 20, 50, 20]);
   assert.deepEqual(s.starts, [0, 20, 40, 90, 110]);
-  assert.deepEqual([0, 19, 20, 39, 40, 89, 90, 109, 110, 500].map((y) => itemAt(s.starts, y)), [0, 0, 1, 1, 2, 2, 3, 3, 3, 3]);
+  assert.deepEqual(
+    [0, 19, 20, 39, 40, 89, 90, 109, 110, 500].map((y) => itemAt(s.starts, y)),
+    [0, 0, 1, 1, 2, 2, 3, 3, 3, 3],
+  );
   assert.equal(itemAt([0], 10), 0); // an empty stream
 });
 
@@ -53,7 +60,10 @@ test("E: the items drawn are the ones that overlap the screen, the first shifted
 test("E: the offset stays between the top and the end of the stream, and a stream shorter than the screen does not scroll", () => {
   assert.equal(maxOffset(1000, 300), 700);
   assert.equal(maxOffset(200, 300), 0);
-  assert.deepEqual([-5, 0, 250, 700, 9000].map((o) => clampOffset(o, 1000, 300)), [0, 0, 250, 700, 700]);
+  assert.deepEqual(
+    [-5, 0, 250, 700, 9000].map((o) => clampOffset(o, 1000, 300)),
+    [0, 0, 250, 700, 700],
+  );
   assert.equal(clampOffset(50, 200, 300), 0);
 });
 
@@ -84,7 +94,9 @@ test("E: the thumb is sized and placed from the offset, the screen and the strea
   assert.equal(thumbOf(1000, 300, 9999)?.top, 210, "an offset past the end is clamped");
   assert.equal(thumbOf(300000, 300, 0)?.size, THUMB_MIN, "a long stream keeps a thumb that can be grabbed");
   // The thumb's place and the offset are inverses.
-  for (const o of [0, 100, 350, 700]) assert.equal(Math.round(offsetOfThumb(1000, 300, thumbOf(1000, 300, o)?.top ?? 0)), o);
+  for (const o of [0, 100, 350, 700]) {
+    assert.equal(Math.round(offsetOfThumb(1000, 300, thumbOf(1000, 300, o)?.top ?? 0)), o);
+  }
   assert.equal(offsetOfThumb(300, 300, 50), 0);
 });
 
@@ -165,7 +177,7 @@ test("E: a file that arrives above the top of the screen puts the item that was 
   const taller = { ...m, files: new Map([...m.files].filter(([p]) => p !== "notes.txt")) };
   const grown = settle({ ...taller, reveal: { key: m.top ?? "" } });
   assert.equal(grown.top, "src/a.rs|file");
-  assert.equal(grown.offset, (streamLayout(grown, NOW).starts[streamLayout(grown, NOW).items.findIndex((i) => i.key === "src/a.rs|file")] as number));
+  assert.equal(grown.offset, streamLayout(grown, NOW).starts[streamLayout(grown, NOW).items.findIndex((i) => i.key === "src/a.rs|file")] as number);
 });
 
 test("the files on screen start the fetch of the files below them", () => {

@@ -22,7 +22,9 @@ const ROWS: Row[] = [hunk, row("ctx", 1), row("del", 2), row("add", 2), row("add
 function review(): Model {
   const m = loadedModel(state, file);
   const files = new Map(m.files);
-  for (const p of ["img.png", "notes.txt", "src/a.rs", "src/b.rs"]) files.set(p, { ...file, path: p, threads: [], rows: ROWS });
+  for (const p of ["img.png", "notes.txt", "src/a.rs", "src/b.rs"]) {
+    files.set(p, { ...file, path: p, threads: [], rows: ROWS });
+  }
   return { ...m, files, height: 100 };
 }
 const wide = (m: Model): Model => ({ ...m, width: SPLIT_W });
@@ -32,7 +34,9 @@ const at = (m: Model, path: string, r: number, side: Cursor["side"] = null): Mod
 function press(m: Model, ...keys: string[]): Model {
   for (const k of keys) {
     const msg = panelKey(m, k);
-    if (msg !== null) m = update(m, msg)[0];
+    if (msg !== null) {
+      m = update(m, msg)[0];
+    }
   }
   return m;
 }
@@ -248,7 +252,9 @@ test("with a thread focused r, e, d and x are the card's buttons: reply, edit, d
   assert.equal(panelKey(m("a1"), "e"), null);
   assert.equal(panelKey(m("a1"), "d"), null);
   assert.deepEqual(panelKey(m("a1"), "r"), { _tag: "ThreadAction", id: "a1", action: "reply" });
-  for (const k of ["r", "e", "d", "x"]) assert.equal(panelKey(m(null), k), null);
+  for (const k of ["r", "e", "d", "x"]) {
+    assert.equal(panelKey(m(null), k), null);
+  }
 });
 
 test("the keys do nothing while the editor, a question, the picker or the filter box has the keyboard", () => {
@@ -262,7 +268,11 @@ test("the keys do nothing while the editor, a question, the picker or the filter
     { ...base, picker: [{ address: "t7", agent: "claude", cwd: "/repo", status: "idle" }] },
     { ...base, filtering: true },
   ];
-  for (const m of holds) for (const k of keys) assert.equal(panelKey(m, k), null, k);
+  for (const m of holds) {
+    for (const k of keys) {
+      assert.equal(panelKey(m, k), null, k);
+    }
+  }
   // Other chords are not these keys.
   assert.equal(panelKey(base, "alt-j"), null);
   assert.equal(panelKey(base, "ctrl-j"), null);
@@ -313,7 +323,9 @@ test("a spec change drops the cursor and the range", () => {
 
 test("the diff's keys do nothing in the agent-message view", () => {
   const m = { ...loadedModel(state, file), view: "message" as const };
-  for (const key of ["j", "k", "v", "c", "n", "/", "r", "x", "escape"]) assert.equal(panelKey(m, key), null, key);
+  for (const key of ["j", "k", "v", "c", "n", "/", "r", "x", "escape"]) {
+    assert.equal(panelKey(m, key), null, key);
+  }
 });
 
 test("a fetch that changes the cursor's row drops the cursor, and one that keeps it keeps the cursor", () => {

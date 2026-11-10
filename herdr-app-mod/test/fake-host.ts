@@ -23,11 +23,19 @@ export const ok = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: ""
 export const exit = (code: number, stderr: string): ExecResult => ({ code, stdout: "", stderr });
 
 export function defaultExec(_command: string, args: string[]): Reply {
-  if (args[0] === "state") return ok(fixture("state"));
-  if (args[0] === "file") return ok(fixture("file"));
+  if (args[0] === "state") {
+    return ok(fixture("state"));
+  }
+  if (args[0] === "file") {
+    return ok(fixture("file"));
+  }
   // The fixture file under each path asked for.
-  if (args[0] === "files") return ok(JSON.stringify({ schema: 1, files: args.flatMap((a, i) => (args[i - 1] === "--path" ? [{ ...JSON.parse(fixture("file")), path: a }] : [])) }));
-  if (args[0] === "theme") return ok(JSON.stringify({ schema: 1, gui: "app", colors: null, warnings: [] }));
+  if (args[0] === "files") {
+    return ok(JSON.stringify({ schema: 1, files: args.flatMap((a, i) => (args[i - 1] === "--path" ? [{ ...JSON.parse(fixture("file")), path: a }] : [])) }));
+  }
+  if (args[0] === "theme") {
+    return ok(JSON.stringify({ schema: 1, gui: "app", colors: null, warnings: [] }));
+  }
   return exit(2, "unexpected call");
 }
 
@@ -41,12 +49,16 @@ export function fakeHost(setup: Setup = {}): { host: Host; calls: Call[]; wake: 
     async exec(command, args, options) {
       record("exec", [command, args, options]);
       const reply = (setup.exec ?? defaultExec)(command, args);
-      if (reply === "reject") throw new Error("spawn failed");
+      if (reply === "reject") {
+        throw new Error("spawn failed");
+      }
       return reply;
     },
     async readTextFile(path) {
       record("readTextFile", [path]);
-      if (setup.file === "reject") throw new Error("unreadable");
+      if (setup.file === "reject") {
+        throw new Error("unreadable");
+      }
       return setup.file ?? null;
     },
     async writeTextFile(path, text, expected) {
@@ -55,7 +67,9 @@ export function fakeHost(setup: Setup = {}): { host: Host; calls: Call[]; wake: 
     },
     watchFolder(path) {
       record("watchFolder", [path]);
-      if (setup.watchRejects) return Promise.reject(new Error("no watch"));
+      if (setup.watchRejects) {
+        return Promise.reject(new Error("no watch"));
+      }
       return new Promise((resolve) => wakes.push(() => resolve([path])));
     },
     notify(notice: Notice) {

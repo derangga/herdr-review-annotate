@@ -7,7 +7,7 @@ import { anchorOf, batchOf, confirmKey, confirmRow, dock, editorKey, itemClick, 
 import type { RowItem } from "../src/rows.ts";
 import { run } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
-import { initModel, update } from "../src/update.ts";
+import { update } from "../src/update.ts";
 import type { Cmd, FileView, Model, Msg, ReviewError } from "../src/types.ts";
 import { exit, fakeHost, fixture, ok } from "./fake-host.ts";
 import { loadedModel, reload } from "./model.ts";
@@ -124,10 +124,25 @@ test("a hover is the row under the pointer, and a leave only counts for the row 
 test("the selected rows and the hovered one are marked for drawing, and the [+] is on code lines only", () => {
   const rows = (m: Model) => streamLayout(m, 0).items.filter((i): i is RowItem => i.key.startsWith("src/a.rs|r") && (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del"));
   const m = steps(loaded(), press(1), over(4)).model;
-  assert.deepEqual(rows(m).filter((i) => rowState(m, i).selected).map((i) => i.index), [1, 3, 4]);
-  assert.deepEqual(rows(m).filter((i) => rowState(m, i).hovered).map((i) => i.index), [4]);
+  assert.deepEqual(
+    rows(m)
+      .filter((i) => rowState(m, i).selected)
+      .map((i) => i.index),
+    [1, 3, 4],
+  );
+  assert.deepEqual(
+    rows(m)
+      .filter((i) => rowState(m, i).hovered)
+      .map((i) => i.index),
+    [4],
+  );
   const old = steps(loaded(), ...drag(2, 3)).model; // a del row first: the old side, so only rows with an old line
-  assert.deepEqual(rows(old).filter((i) => rowState(old, i).selected).map((i) => i.index), [2]);
+  assert.deepEqual(
+    rows(old)
+      .filter((i) => rowState(old, i).selected)
+      .map((i) => i.index),
+    [2],
+  );
   const hunk = steps(loaded(), over(0)).model;
   assert.equal(rowState(hunk, rows(hunk)[0]!).hovered, false);
 });
@@ -161,7 +176,9 @@ test("E: the [+] on a line outside a selection opens the editor on that line and
 
 test("E: the [+] on a line inside the selected range opens the editor on the whole range, on one outside it only on the line", () => {
   const range = steps(loaded(), ...drag(1, 4)).model;
-  for (const row of [1, 3, 4]) assert.deepEqual(steps(range, plus(row)).model.editor?.anchor, { path: "src/a.rs", old_path: null, side: "new", line: 1, end_line: 3 }, `row ${row}`);
+  for (const row of [1, 3, 4]) {
+    assert.deepEqual(steps(range, plus(row)).model.editor?.anchor, { path: "src/a.rs", old_path: null, side: "new", line: 1, end_line: 3 }, `row ${row}`);
+  }
   assert.deepEqual(steps(range, plus(4)).model.selection, range.selection);
   // Row 2 is a removed line, which the new-side range does not cover, and row 5 is past the range.
   assert.deepEqual(steps(range, plus(2)).model.editor?.anchor, { path: "src/a.rs", old_path: null, side: "old", line: 2, end_line: null });
@@ -195,8 +212,14 @@ test("the bar under the diff names the selection and has no Comment or Cancel bu
   const picked = steps(loaded(), ...drag(1, 4)).model;
   const bar = dock(picked);
   assert.ok(bar.label.startsWith("src/a.rs R1-3 (3 lines)"), bar.label);
-  assert.deepEqual(bar.buttons.map((b) => b.label), ["Comment on file"]);
-  assert.deepEqual(dock(loaded()).buttons.map((b) => b.label), ["Comment on file"]);
+  assert.deepEqual(
+    bar.buttons.map((b) => b.label),
+    ["Comment on file"],
+  );
+  assert.deepEqual(
+    dock(loaded()).buttons.map((b) => b.label),
+    ["Comment on file"],
+  );
   assert.ok(dock(loaded()).label.startsWith("Drag over lines"), dock(loaded()).label);
 });
 
@@ -267,7 +290,10 @@ test("E: Busy, BackendFailed, BadRequest -> the editor keeps its draft, and BadR
     const r = steps(m, failedMsg(error));
     assert.equal(r.model.editor, m.editor, `${error._tag} keeps the same editor, so its textarea is not replaced`);
     assert.equal(r.model.saving, false);
-    assert.deepEqual(r.cmds.filter((c) => c._tag === "Write"), []);
+    assert.deepEqual(
+      r.cmds.filter((c) => c._tag === "Write"),
+      [],
+    );
     assert.equal(loadsOf(r.cmds).length, 0);
   }
   const bad = steps(m, failedMsg({ _tag: "BadRequest", stderr: "invalid batch" }));
@@ -286,7 +312,10 @@ test("a selection survives a reload that leaves its rows alone, and goes when th
 
 test("the cards sit under their rows, the file comment before the rows, and the orphans first", () => {
   const items = streamLayout({ ...loaded(), expanded: new Set(["u2"]) }, Date.parse("2026-11-09T10:00:30Z")).items;
-  assert.deepEqual(items.slice(0, 3).map((i) => i.key), ["|l:orphans", "|h:u6", "|c:u6"]);
+  assert.deepEqual(
+    items.slice(0, 3).map((i) => i.key),
+    ["|l:orphans", "|h:u6", "|c:u6"],
+  );
   const keys = items.map((i) => i.key.replace("src/a.rs|", ""));
   assert.ok(keys.indexOf("h:u5") < keys.indexOf("r0"));
   assert.ok(keys.indexOf("r2") < keys.indexOf("h:u3") && keys.indexOf("h:u3") < keys.indexOf("r3"));
@@ -377,7 +406,13 @@ test("a click on Delete only asks, and the row names what goes with a Delete and
   assert.equal(asked.model.confirm, "u1");
   const row = confirmRow(asked.model);
   assert.equal(row?.sentence, "Delete this comment?");
-  assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]), [["Delete", true, "DeleteConfirmed"], ["Cancel", false, "ConfirmCancelled"]]);
+  assert.deepEqual(
+    row?.buttons.map((b) => [b.label, b.danger, b.msg._tag]),
+    [
+      ["Delete", true, "DeleteConfirmed"],
+      ["Cancel", false, "ConfirmCancelled"],
+    ],
+  );
   // A root with a reply says its replies go too, a reply and a root alone do not.
   const withReply = steps(loaded(), act("u2", "delete")).model;
   assert.equal(confirmRow(withReply)?.sentence, "Delete this comment? Its replies go too.");
@@ -433,8 +468,14 @@ test("each comment's card carries its buttons: edit and delete only on the user'
   assert.deepEqual(labels("a1"), ["Reply", "Reopen"]); // the agent's comment: no Edit, no Delete
   // A thread of two sent comments: Resolve and Resend are on the second only.
   const two = { ...file, threads: file.threads.map((t) => (t.id === "u1" ? { ...t, unsent: false, comments: [...t.comments, { ...t.comments[0], id: "r1", parent: "u1", author: "agent:claude" }] } : t)) } as FileView;
-  assert.deepEqual(cardButtons(loaded(two), "u1").map((b) => b.label), ["Reply", "Edit", "Delete"]);
-  assert.deepEqual(cardButtons(loaded(two), "r1").map((b) => b.label), ["Reply", "Resolve", "Resend"]);
+  assert.deepEqual(
+    cardButtons(loaded(two), "u1").map((b) => b.label),
+    ["Reply", "Edit", "Delete"],
+  );
+  assert.deepEqual(
+    cardButtons(loaded(two), "r1").map((b) => b.label),
+    ["Reply", "Resolve", "Resend"],
+  );
 });
 
 test("a card button sends the message the dock's button did, and Delete is the red one", () => {
@@ -446,7 +487,10 @@ test("a card button sends the message the dock's button did, and Delete is the r
   assert.deepEqual([u1.delete?.msg, u1.delete?.danger], [act("u1", "delete"), true]);
   assert.deepEqual(by("a1").reopen?.msg, act("a1", "reopen"));
   // The thread buttons are not in the dock: a focused comment adds none.
-  assert.deepEqual(dock(steps(loaded(), act("u1", "focus")).model).buttons.map((b) => b.label), ["Comment on file"]);
+  assert.deepEqual(
+    dock(steps(loaded(), act("u1", "focus")).model).buttons.map((b) => b.label),
+    ["Comment on file"],
+  );
 });
 
 test("a click on a card after lines were picked drops them", () => {
@@ -455,7 +499,10 @@ test("a click on a card after lines were picked drops them", () => {
   const m = steps(picked, act("u1", "focus")).model;
   assert.equal(m.selection, null);
   assert.equal(m.focus, "u1");
-  assert.deepEqual(dock(m).buttons.map((b) => b.label), ["Comment on file"]);
+  assert.deepEqual(
+    dock(m).buttons.map((b) => b.label),
+    ["Comment on file"],
+  );
 });
 
 test("an action while the editor is open waits, and focusing a comment does not", () => {
@@ -517,7 +564,9 @@ test("a click on a header or a card names its message, and a code row takes none
   // A path may hold the separator: only what follows the last one is the item.
   assert.deepEqual(itemClick("a|b.rs|file"), { _tag: "FoldToggled", path: "a|b.rs" });
   // A code row has its own press, hover and [+]; the rest take no click.
-  for (const key of ["src/a.rs|r12", "a|b.rs|r3", "|l:orphans", "src/a.rs|wait", "src/a.rs|note"]) assert.equal(itemClick(key), null);
+  for (const key of ["src/a.rs|r12", "a|b.rs|r3", "|l:orphans", "src/a.rs|wait", "src/a.rs|note"]) {
+    assert.equal(itemClick(key), null);
+  }
 });
 
 // --- the runner: argv, the body file, the error rows ---
@@ -543,12 +592,20 @@ test("a new comment writes the batch to a file in the private folder and passes 
   assert.equal(written.expected, null);
   assert.deepEqual(JSON.parse(written.text), { comments: [{ path: "src/a.rs", side: "new", line: 1, end_line: 3, body: "Why `$(rm -rf /)`?" }] });
   const calls = execs(t.calls);
-  assert.deepEqual(calls.slice(0, 2).map((c) => [c.command, c.argv]), [["mkdir", ["-p", DIR]], ["chmod", ["700", DIR]]]);
+  assert.deepEqual(
+    calls.slice(0, 2).map((c) => [c.command, c.argv]),
+    [
+      ["mkdir", ["-p", DIR]],
+      ["chmod", ["700", DIR]],
+    ],
+  );
   const apply = calls[2];
   assert.ok(apply);
   assert.deepEqual(apply.argv, ["comment", "apply", "--as", "user", "--file", written.path, "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
   assert.deepEqual(apply.options, { timeout: 30000 });
-  for (const c of calls) assert.ok(!c.argv.join(" ").includes("rm -rf"), "the body is never on argv");
+  for (const c of calls) {
+    assert.ok(!c.argv.join(" ").includes("rm -rf"), "the body is never on argv");
+  }
 });
 
 test("the six calls and their flags: --as user on reply, resolve and reopen only", async () => {
@@ -559,7 +616,9 @@ test("the six calls and their flags: --as user on reply, resolve and reopen only
   await run(t.env, writeCmd({ kind: "reopen", id: "u1" }));
   await run(t.env, writeCmd({ kind: "delete", id: "u1" }));
   await run(t.env, writeCmd({ kind: "seen", id: "u1" }));
-  const comment = execs(t.calls).filter((c) => c.argv[0] === "comment").map((c) => c.argv);
+  const comment = execs(t.calls)
+    .filter((c) => c.argv[0] === "comment")
+    .map((c) => c.argv);
   const [reply, edit] = files(t.calls);
   assert.deepEqual(comment, [
     ["comment", "reply", "--as", "user", "u1", "--body-file", reply!.path, "--repo", "/repo"],
@@ -633,5 +692,8 @@ test("a resolve, reopen, delete and seen touch no file and no folder", async () 
   await run(t.env, writeCmd({ kind: "resolve", id: "u1" }));
   await run(t.env, writeCmd({ kind: "seen", id: "u1" }));
   assert.deepEqual(files(t.calls), []);
-  assert.deepEqual(execs(t.calls).map((c) => c.command), ["/home/app/mods/herdr-review/bin/herdr-review", "/home/app/mods/herdr-review/bin/herdr-review"]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.command),
+    ["/home/app/mods/herdr-review/bin/herdr-review", "/home/app/mods/herdr-review/bin/herdr-review"],
+  );
 });

@@ -36,7 +36,9 @@ function fail(error: ReviewError): never {
 }
 
 export function specArgs(spec: Spec | null): string[] {
-  if (spec === null) return [];
+  if (spec === null) {
+    return [];
+  }
   return spec.kind === "worktree" ? ["--spec", "worktree"] : ["--spec", "branch", "--base", spec.base];
 }
 
@@ -63,11 +65,19 @@ export function makeCli(host: Host, bin: string | null): ReviewCli {
 
   // The stdout of a reply with exit 0, else the error its exit code stands for.
   function check(result: ExecResult): string {
-    if (result.code === 0) return result.stdout;
+    if (result.code === 0) {
+      return result.stdout;
+    }
     const stderr = result.stderr.trim();
-    if (result.code === 2 && /^unknown (command|option|comment command)/.test(stderr)) return fail({ _tag: "TooOld" });
-    if (result.code === 1 && stderr.includes("review is busy")) return fail({ _tag: "Busy" });
-    if (result.code === 2) return fail({ _tag: "BadRequest", stderr });
+    if (result.code === 2 && /^unknown (command|option|comment command)/.test(stderr)) {
+      return fail({ _tag: "TooOld" });
+    }
+    if (result.code === 1 && stderr.includes("review is busy")) {
+      return fail({ _tag: "Busy" });
+    }
+    if (result.code === 2) {
+      return fail({ _tag: "BadRequest", stderr });
+    }
     return fail({ _tag: "BackendFailed", code: result.code, stderr: stderr });
   }
 

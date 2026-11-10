@@ -44,11 +44,22 @@ test("the selection survives a toggle", () => {
 
 test("unified is the diff's rows, and a split stream pairs removed with added, line by line", () => {
   const unified = own({ ...split(), split: false }).filter((i) => i.key.includes("|r"));
-  assert.deepEqual(unified.map((i) => i.kind), ["hunk", "ctx", "del", "add", "add", "ctx", "ctx"]);
+  assert.deepEqual(
+    unified.map((i) => i.kind),
+    ["hunk", "ctx", "del", "add", "add", "ctx", "ctx"],
+  );
   // Hunk full width, ctx on both halves, del 2 against add 3, add 4 against an empty half.
-  assert.deepEqual(own(split()).filter((i) => i.kind === "hunk" || i.kind === "split").map(halves), ["hunk", "1|1", "2|3", "-|4", "5|5", "6|6"]);
+  assert.deepEqual(
+    own(split())
+      .filter((i) => i.kind === "hunk" || i.kind === "split")
+      .map(halves),
+    ["hunk", "1|1", "2|3", "-|4", "5|5", "6|6"],
+  );
   const items = own(split()).filter((i): i is SplitItem => i.kind === "split");
-  assert.deepEqual(items.map((i) => i.key), ["src/a.rs|p1", "src/a.rs|p2", "src/a.rs|p4", "src/a.rs|p5", "src/a.rs|p6"]);
+  assert.deepEqual(
+    items.map((i) => i.key),
+    ["src/a.rs|p1", "src/a.rs|p2", "src/a.rs|p4", "src/a.rs|p5", "src/a.rs|p6"],
+  );
   assert.equal(items[0]?.left, items[0]?.right, "a context row is one item on both halves");
   assert.equal(items[2]?.left, null);
   assert.ok(items.every((i) => heightOf(i, 900) === ROW));
@@ -59,17 +70,29 @@ test("pairing: the longer run's extra rows face an empty half, and a run of adde
   const rows = [row("del", 1), row("del", 2), row("del", 3), row("add", 1), row("ctx", 9), row("add", 5), row("add", 6), row("del", 7)];
   const m = wide(loadedModel(state, { ...file, rows, threads: [] }));
   // dels 0-2 against add 3; ctx 4; adds 5-6 (no dels before them); del 7 alone.
-  assert.deepEqual(own(m).filter((i) => i.kind === "split").map(halves), ["0|3", "1|-", "2|-", "4|4", "-|5", "-|6", "7|-"]);
+  assert.deepEqual(
+    own(m)
+      .filter((i) => i.kind === "split")
+      .map(halves),
+    ["0|3", "1|-", "2|-", "4|4", "-|5", "-|6", "7|-"],
+  );
 });
 
 test("cards sit under the paired item that holds their row, the left row's threads before the right row's", () => {
   const keys = own(split()).map((i) => i.key);
   const at = (k: string) => keys.indexOf(k);
   // u3 is on the old row 2 and u1 on the new row 3, the pair p2; u2 on row 4 sits under the next pair.
-  assert.deepEqual(keys.slice(at("src/a.rs|p2"), at("src/a.rs|p5")).filter((k) => !k.includes("|c:")), ["src/a.rs|p2", "src/a.rs|h:u3", "src/a.rs|h:u1", "src/a.rs|p4", "src/a.rs|h:u2"]);
+  assert.deepEqual(
+    keys.slice(at("src/a.rs|p2"), at("src/a.rs|p5")).filter((k) => !k.includes("|c:")),
+    ["src/a.rs|p2", "src/a.rs|h:u3", "src/a.rs|h:u1", "src/a.rs|p4", "src/a.rs|h:u2"],
+  );
   assert.ok(at("src/a.rs|h:u4") > at("src/a.rs|p6"));
   // Every thread's card is once in the stream, as in unified.
-  const heads = (m: Model) => own(m).filter((i) => i.kind === "head").map((i) => i.key).sort();
+  const heads = (m: Model) =>
+    own(m)
+      .filter((i) => i.kind === "head")
+      .map((i) => i.key)
+      .sort();
   assert.deepEqual(heads(split()), heads({ ...split(), split: false }));
 });
 
@@ -149,7 +172,13 @@ test("a [+] on a half comments on that side of a context row", () => {
 test("a selection is tinted on the half of its side, and the [+] is on the half under the pointer", () => {
   const ctx = (own(split()).find((i) => i.kind === "split") as SplitItem).left as RowItem;
   const old = { ...split(), selection: pick(file, 1, "old"), hover: { path: "src/a.rs", row: 1, side: "new" as const } };
-  assert.deepEqual([rowState(old, ctx, "old"), rowState(old, ctx, "new")], [{ selected: true, hovered: false }, { selected: false, hovered: true }]);
+  assert.deepEqual(
+    [rowState(old, ctx, "old"), rowState(old, ctx, "new")],
+    [
+      { selected: true, hovered: false },
+      { selected: false, hovered: true },
+    ],
+  );
   const range = { ...old, selection: span(file, 1, 4, "new"), hover: null };
   assert.equal(rowState(range, ctx, "old").selected, false);
   assert.equal(rowState(range, ctx, "new").selected, true);
@@ -162,13 +191,19 @@ const runs: FileView = { ...file, rows: [rowOf("hunk", 0), rowOf("ctx", 1), ...[
 const runsModel = (): Model => wide(loadedModel(state, runs));
 
 test("partner is the row that faces a row in the side-by-side pairing", () => {
-  assert.deepEqual(runs.rows.map((_, i) => partner(runs, i)), [null, 1, 5, 6, 7, 2, 3, 4, 8, 11, 12, 9, 10, null]);
+  assert.deepEqual(
+    runs.rows.map((_, i) => partner(runs, i)),
+    [null, 1, 5, 6, 7, 2, 3, 4, 8, 11, 12, 9, 10, null],
+  );
   assert.equal(partner(file, 3), 2);
   assert.equal(partner(file, 4), null);
   // It is the pairing the stream draws.
   for (const i of own(runsModel()).filter((x): x is SplitItem => x.kind === "split")) {
-    if (i.left !== null && i.right !== null && i.left !== i.right) assert.deepEqual([partner(runs, i.left.index), partner(runs, i.right.index)], [i.right.index, i.left.index]);
-    else if (i.left !== i.right) assert.equal(partner(runs, ((i.left ?? i.right) as RowItem).index), null);
+    if (i.left !== null && i.right !== null && i.left !== i.right) {
+      assert.deepEqual([partner(runs, i.left.index), partner(runs, i.right.index)], [i.right.index, i.left.index]);
+    } else if (i.left !== i.right) {
+      assert.equal(partner(runs, ((i.left ?? i.right) as RowItem).index), null);
+    }
   }
 });
 
@@ -205,7 +240,10 @@ test("a flip of the layout scrolls back to the item on top and drops the hover",
   const rows = streamLayout(back, NOW).items;
   assert.equal(rows[indexOfKey(rows, back.reveal?.key ?? "")]?.key, "src/a.rs|r4");
   // A key that is in the stream is itself, and one that is not a row has no stand-in.
-  assert.equal(indexOfKey(rows, "src/a.rs|r1"), rows.findIndex((i) => i.key === "src/a.rs|r1"));
+  assert.equal(
+    indexOfKey(rows, "src/a.rs|r1"),
+    rows.findIndex((i) => i.key === "src/a.rs|r1"),
+  );
   assert.equal(indexOfKey(rows, "src/a.rs|r99"), -1);
   assert.equal(indexOfKey(rows, "src/a.rs|h:nope"), -1);
 });

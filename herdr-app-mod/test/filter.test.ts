@@ -11,10 +11,14 @@ const base: Model = loadedModel(state, file);
 
 const f = (path: string): FileSummary => ({ path, old_path: null, change: "modified", add: 1, del: 0, hash: "0123456789abcdef", viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
 const paths = (q: string, files: FileSummary[]) => sidebarRows(files, q).flatMap((r) => (r.kind === "file" ? [r.path] : []));
-const run = (m: Model, ...msgs: Msg[]) => msgs.reduce<{ m: Model; cmds: unknown[] }>((acc, msg) => {
-  const [next, out] = update(acc.m, msg);
-  return { m: next, cmds: [...acc.cmds, ...out] };
-}, { m, cmds: [] });
+const run = (m: Model, ...msgs: Msg[]) =>
+  msgs.reduce<{ m: Model; cmds: unknown[] }>(
+    (acc, msg) => {
+      const [next, out] = update(acc.m, msg);
+      return { m: next, cmds: [...acc.cmds, ...out] };
+    },
+    { m, cmds: [] },
+  );
 
 test("a path matches when the query's characters appear in it in order", () => {
   assert.ok(fileMatches("sra", "src/a.rs"));
@@ -41,11 +45,20 @@ test("a space is a character of the query", () => {
 
 test("the sidebar keeps the diff's order and its headings, and a folder with no match has no heading", () => {
   const files = [f("src/a.rs"), f("src/b.rs"), f("README.md"), f("src/deep/c.rs"), f("src/d.rs")];
-  assert.deepEqual(sidebarRows(files, "").map((r) => r.kind), ["dir", "file", "file", "dir", "file", "dir", "file", "dir", "file"]);
+  assert.deepEqual(
+    sidebarRows(files, "").map((r) => r.kind),
+    ["dir", "file", "file", "dir", "file", "dir", "file", "dir", "file"],
+  );
   const rows = sidebarRows(files, "srcd");
-  assert.deepEqual(rows.map((r) => (r.kind === "dir" ? r.text : r.kind === "file" ? r.path : "")), ["src/deep/", "src/deep/c.rs", "src/", "src/d.rs"]);
+  assert.deepEqual(
+    rows.map((r) => (r.kind === "dir" ? r.text : r.kind === "file" ? r.path : "")),
+    ["src/deep/", "src/deep/c.rs", "src/", "src/d.rs"],
+  );
   assert.deepEqual(paths("b", files), ["src/b.rs"]);
-  assert.deepEqual(sidebarRows(files, "readme").map((r) => (r.kind === "dir" ? r.text : r.name)), ["./", "README.md"]);
+  assert.deepEqual(
+    sidebarRows(files, "readme").map((r) => (r.kind === "dir" ? r.text : r.name)),
+    ["./", "README.md"],
+  );
   assert.deepEqual(sidebarRows(files, "zzz"), []);
 });
 
@@ -73,7 +86,9 @@ test("typing sets the query and focus says whether a key types", () => {
 
 test("while the box has the keyboard n, N and / type and only Esc is a command", () => {
   const m = { ...base, filtering: true, filter: "x" };
-  for (const key of ["n", "shift-n", "N", "/", "enter", "a"]) assert.equal(panelKey(m, key), null, key);
+  for (const key of ["n", "shift-n", "N", "/", "enter", "a"]) {
+    assert.equal(panelKey(m, key), null, key);
+  }
   assert.deepEqual(panelKey(m, "escape"), { _tag: "FilterCleared" });
   assert.deepEqual(panelKey({ ...m, filter: "" }, "escape"), { _tag: "FilterCleared" });
 });

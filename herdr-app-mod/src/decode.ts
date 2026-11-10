@@ -1,32 +1,6 @@
 // The boundary: everything that comes from outside the mod is checked here, once, by hand. Inside the
 // mod the types are trusted. A bad reply throws ContractMismatch with the path of the field.
-import type {
-  Anchor,
-  ArchiveReply,
-  Candidate,
-  Change,
-  Colors,
-  Comment,
-  Focus,
-  FileSummary,
-  FileView,
-  MessageReply,
-  MessageSentReply,
-  PaneEntry,
-  Panel,
-  Placement,
-  Props,
-  ReviewError,
-  Row,
-  SendReply,
-  ThemeReply,
-  Spec,
-  State,
-  Thread,
-  Mark,
-  Token,
-  TokenKind,
-} from "./types.ts";
+import type { Anchor, ArchiveReply, Candidate, Change, Colors, Comment, Focus, FileSummary, FileView, MessageReply, MessageSentReply, PaneEntry, Panel, Placement, Props, ReviewError, Row, SendReply, ThemeReply, Spec, State, Thread, Mark, Token, TokenKind } from "./types.ts";
 
 const SCHEMA = 1;
 
@@ -38,7 +12,9 @@ function bad(path: string, detail: string): never {
 type Obj = Record<string, unknown>;
 
 function obj(v: unknown, path: string): Obj {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return bad(path, "expected an object");
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    return bad(path, "expected an object");
+  }
   return v as Obj;
 }
 function str(o: Obj, k: string, path: string): string {
@@ -63,7 +39,9 @@ function bool(o: Obj, k: string, path: string): boolean {
 }
 function list<T>(o: Obj, k: string, path: string, item: (v: unknown, path: string) => T): T[] {
   const v = o[k];
-  if (!Array.isArray(v)) return bad(`${path}.${k}`, "expected an array");
+  if (!Array.isArray(v)) {
+    return bad(`${path}.${k}`, "expected an array");
+  }
   return v.map((x, i) => item(x, `${path}.${k}[${i}]`));
 }
 function oneOf<T extends string>(o: Obj, k: string, path: string, allowed: readonly T[]): T {
@@ -77,14 +55,20 @@ function strings(v: unknown, path: string): string {
 // "worktree" or "branch:<base>", the text meta.json and the CLI use.
 function spec(o: Obj, k: string, path: string): Spec {
   const text = str(o, k, path);
-  if (text === "worktree") return { kind: "worktree" };
-  if (text.startsWith("branch:") && text.length > 7) return { kind: "branch", base: text.slice(7) };
+  if (text === "worktree") {
+    return { kind: "worktree" };
+  }
+  if (text.startsWith("branch:") && text.length > 7) {
+    return { kind: "branch", base: text.slice(7) };
+  }
   return bad(`${path}.${k}`, "expected worktree or branch:<base>");
 }
 
 function schema(o: Obj): void {
   const got = o["schema"];
-  if (got !== SCHEMA) bad("schema", `this mod reads schema ${SCHEMA}, the binary sent ${JSON.stringify(got)}`);
+  if (got !== SCHEMA) {
+    bad("schema", `this mod reads schema ${SCHEMA}, the binary sent ${JSON.stringify(got)}`);
+  }
 }
 
 const CHANGES: readonly Change[] = ["modified", "added", "deleted", "renamed", "untracked", "binary", "submodule", "too_large", "unparsed"];
@@ -114,15 +98,25 @@ const TOKEN_KINDS: readonly TokenKind[] = ["comment", "string", "number", "keywo
 // field that is not a list is no parts.
 function tokens(o: Obj, text: string): Token[] {
   const v = o["tokens"];
-  if (!Array.isArray(v)) return [];
+  if (!Array.isArray(v)) {
+    return [];
+  }
   const out: Token[] = [];
   let end = 0;
   for (const t of v) {
-    if (!Array.isArray(t) || t.length !== 3) continue;
+    if (!Array.isArray(t) || t.length !== 3) {
+      continue;
+    }
     const [from, to, kind] = t as unknown[];
-    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) continue;
-    if (typeof kind !== "string" || !(TOKEN_KINDS as readonly string[]).includes(kind)) continue;
-    if (from < end || from >= to || to > text.length) continue;
+    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) {
+      continue;
+    }
+    if (typeof kind !== "string" || !(TOKEN_KINDS as readonly string[]).includes(kind)) {
+      continue;
+    }
+    if (from < end || from >= to || to > text.length) {
+      continue;
+    }
     out.push({ from, to, kind: kind as TokenKind });
     end = to;
   }
@@ -132,14 +126,22 @@ function tokens(o: Obj, text: string): Token[] {
 // The changed words of a row, `{from, to}` each, read as loosely as tokens and dropped on the same grounds.
 function marks(o: Obj, text: string): Mark[] {
   const v = o["marks"];
-  if (!Array.isArray(v)) return [];
+  if (!Array.isArray(v)) {
+    return [];
+  }
   const out: Mark[] = [];
   let end = 0;
   for (const m of v) {
-    if (typeof m !== "object" || m === null) continue;
+    if (typeof m !== "object" || m === null) {
+      continue;
+    }
     const { from, to } = m as Record<string, unknown>;
-    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) continue;
-    if (from < end || from >= to || to > text.length) continue;
+    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) {
+      continue;
+    }
+    if (from < end || from >= to || to > text.length) {
+      continue;
+    }
     out.push({ from, to });
     end = to;
   }
@@ -237,7 +239,9 @@ export function decodeFile(raw: unknown): FileView {
   for (const [i, t] of threads.entries()) {
     for (const k of ["row", "start_row"] as const) {
       const at = t.placement[k];
-      if (at !== null && (at < 0 || at >= rows.length)) bad(`$.threads[${i}].placement.${k}`, "row index out of range");
+      if (at !== null && (at < 0 || at >= rows.length)) {
+        bad(`$.threads[${i}].placement.${k}`, "row index out of range");
+      }
     }
   }
   return {
@@ -260,8 +264,14 @@ export function decodeFiles(raw: unknown, paths: string[]): FileView[] {
   const o = obj(raw, "$");
   schema(o);
   const files = list(o, "files", "$", (v) => decodeFile(v));
-  if (files.length !== paths.length) bad("$.files", `expected ${paths.length} files, got ${files.length}`);
-  for (const [i, f] of files.entries()) if (f.path !== paths[i]) bad(`$.files[${i}].path`, `expected ${JSON.stringify(paths[i])}, got ${JSON.stringify(f.path)}`);
+  if (files.length !== paths.length) {
+    bad("$.files", `expected ${paths.length} files, got ${files.length}`);
+  }
+  for (const [i, f] of files.entries()) {
+    if (f.path !== paths[i]) {
+      bad(`$.files[${i}].path`, `expected ${JSON.stringify(paths[i])}, got ${JSON.stringify(f.path)}`);
+    }
+  }
   return files;
 }
 
@@ -317,9 +327,15 @@ export function decodeTheme(raw: unknown): ThemeReply {
   schema(o);
   const gui = oneOf(o, "gui", "$", ["app", "plugin"] as const);
   const warnings = list(o, "warnings", "$", strings);
-  if (o["colors"] === null) return { schema: SCHEMA, gui, colors: null, warnings };
+  if (o["colors"] === null) {
+    return { schema: SCHEMA, gui, colors: null, warnings };
+  }
   const colors: Colors = {};
-  for (const [k, v] of Object.entries(obj(o["colors"], "$.colors"))) if (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) colors[k] = v as `#${string}`;
+  for (const [k, v] of Object.entries(obj(o["colors"], "$.colors"))) {
+    if (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) {
+      colors[k] = v as `#${string}`;
+    }
+  }
   return { schema: SCHEMA, gui, colors, warnings };
 }
 
@@ -362,7 +378,9 @@ export function decodePanel(text: string | null): Panel {
 
 // focused() and panes() are the host's, not ours, so they are read as loosely as props.
 export function decodeFocus(raw: unknown): Focus | null {
-  if (typeof raw !== "object" || raw === null) return null;
+  if (typeof raw !== "object" || raw === null) {
+    return null;
+  }
   return {
     tab: nonEmpty(field(raw, "tab")),
     cwd: nonEmpty(field(raw, "cwd")),
@@ -372,11 +390,15 @@ export function decodeFocus(raw: unknown): Focus | null {
 }
 
 export function decodePanes(raw: unknown): PaneEntry[] {
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
   const out: PaneEntry[] = [];
   for (const p of raw) {
     const cwd = nonEmpty(field(p, "cwd"));
-    if (cwd === null) continue;
+    if (cwd === null) {
+      continue;
+    }
     const agent = field(field(p, "program"), "agent") === true || nonEmpty(field(p, "status")) !== null;
     out.push({ tab: nonEmpty(field(p, "tab")), cwd, terminal: nonEmpty(field(p, "terminal")), agent });
   }

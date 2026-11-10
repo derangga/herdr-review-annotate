@@ -37,7 +37,9 @@ const EXTENSIONS = new Map<string, string>([
 // `name` is a file name without its directory.
 export function fileIcon(name: string): string {
   const whole = NAMES.get(name);
-  if (whole !== undefined) return whole;
+  if (whole !== undefined) {
+    return whole;
+  }
   const dot = name.lastIndexOf(".");
   return dot < 0 ? GENERIC : (EXTENSIONS.get(name.slice(dot + 1).toLowerCase()) ?? GENERIC);
 }

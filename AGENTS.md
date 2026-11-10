@@ -9,8 +9,9 @@ beads (`bd`).
 2. `bd show <id>`, then `bd update <id> --status in_progress`.
 3. Read every section the bead names before writing code.
 4. The bead is done when each line of its acceptance criteria is true and `cargo clippy` and
-   `cargo test` are clean. A bead that touches `herdr-app-mod/` also needs `npm test` and `npm run typecheck`
-   in that folder (the typecheck is local: run `npm run setup-types` once to copy the declarations) and
+   `cargo test` are clean. A bead that touches `herdr-app-mod/` also needs `npm run lint`, `npm test` and
+   `npm run typecheck` in that folder (`npm run format` fixes what lint reports; the typecheck is local: run
+   `npm run setup-types` once to copy the declarations) and
    `herdr-app check` passing on the mod staged by `scripts/stage-app-mod.sh`. Then `bd close <id>`.
 5. Work found along the way that the bead does not cover becomes a new bead:
    `bd create "<title>" --deps discovered-from:<id>`.

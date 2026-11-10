@@ -40,7 +40,10 @@ test("the stream counts the pixel each item begins at, and its height, from the 
   assert.equal(starts.length, sizes.length + 1);
   assert.equal(starts[0], 0);
   assert.ok(starts.every((x, i) => i === 0 || x === (starts[i - 1] as number) + (sizes[i - 1] as number)));
-  assert.equal(total, sizes.reduce((a, b) => a + b, 0));
+  assert.equal(
+    total,
+    sizes.reduce((a, b) => a + b, 0),
+  );
   assert.equal(starts[sizes.length], total);
   assert.ok(wide >= 300);
 });
@@ -52,7 +55,10 @@ test("a file marked viewed is its header alone, a folded one says what it hides,
   assert.ok(head && head.kind === "file");
   assert.deepEqual([head.folded, head.viewed, head.hides], [true, true, ""]);
   const folded = steps(m, { _tag: "FoldToggled", path: "src/a.rs" }).model;
-  assert.deepEqual(keys(folded).filter((k) => k.startsWith("src/a.rs|")), ["src/a.rs|file"]);
+  assert.deepEqual(
+    keys(folded).filter((k) => k.startsWith("src/a.rs|")),
+    ["src/a.rs|file"],
+  );
   const a = streamLayout(folded, NOW).items.find((i) => i.key === "src/a.rs|file");
   assert.ok(a && a.kind === "file");
   assert.equal(a.hides, "5 threads");
@@ -71,7 +77,10 @@ test("marking a file viewed folds it and scrolls to its header, unmarking opens 
   const marked = steps(m, { _tag: "ViewedClicked", path: "src/a.rs", viewed: true });
   assert.equal(marked.model.folds.get("src/a.rs"), true);
   assert.deepEqual(marked.model.reveal, { key: "src/a.rs|file" });
-  assert.deepEqual(keys(marked.model).filter((k) => k.startsWith("src/a.rs|")), ["src/a.rs|file"]);
+  assert.deepEqual(
+    keys(marked.model).filter((k) => k.startsWith("src/a.rs|")),
+    ["src/a.rs|file"],
+  );
   const unmarked = steps(m, { _tag: "ViewedClicked", path: "img.png", viewed: false }).model;
   assert.equal(isFolded(unmarked, state.files[0] as FileSummary), false);
   // The reload says a.rs is viewed: the fold is the file's own now.
@@ -156,7 +165,10 @@ test("E: the stream is built once and kept while a wheel tick, a hover, a drag o
 test("a file's items are kept while nothing they show changes, and the same rows serve a new minute or a width", () => {
   const m = drawn();
   const first = streamLayout(m, NOW).items.find((i) => i.key === "src/a.rs|r1");
-  assert.equal(streamLayout(steps(m, { _tag: "Wheeled", dy: 10 }).model, NOW).items.find((i) => i.key === "src/a.rs|r1"), first);
+  assert.equal(
+    streamLayout(steps(m, { _tag: "Wheeled", dy: 10 }).model, NOW).items.find((i) => i.key === "src/a.rs|r1"),
+    first,
+  );
   const runsOf = (x: Model, now: number) => {
     const row = streamLayout(x, now).items.find((i) => i.key === "src/a.rs|r1");
     assert.ok(row && row.kind === "ctx");
@@ -256,7 +268,9 @@ test("a refresh marks the loaded files on screen dirty, and the timer and the wa
   const m = steps(drawn(), scroll("notes.txt|file", ["notes.txt", "gone.rs"])).model;
   const idle = { ...m, dirty: new Set<string>(), inFlight: true };
   assert.deepEqual([...steps(idle, { _tag: "Triggered", source: "refresh" }).model.dirty], ["notes.txt"]);
-  for (const source of ["timer", "watch"] as const) assert.equal(steps(idle, { _tag: "Triggered", source }).model.dirty.size, 0, source);
+  for (const source of ["timer", "watch"] as const) {
+    assert.equal(steps(idle, { _tag: "Triggered", source }).model.dirty.size, 0, source);
+  }
 });
 
 test("a reload fetches again an off-screen file whose summary differs only in its hash, and not one whose summary is the same", () => {
@@ -302,7 +316,10 @@ test("E: a click in the sidebar scrolls the stream to that file's header, and th
   const at = indexOfKey(items, target?.key ?? "");
   assert.equal(at, items.length - 1);
   // The scroll offset is the heights before it.
-  assert.equal(sizes.slice(0, at).reduce((a, b) => a + b, 0), sizes.reduce((a, b) => a + b, 0) - 30);
+  assert.equal(
+    sizes.slice(0, at).reduce((a, b) => a + b, 0),
+    sizes.reduce((a, b) => a + b, 0) - 30,
+  );
   // The stream could not put the header at the top: the last screen shows a.rs above it. The clicked file wins.
   const landed = steps(click, scroll("src/a.rs|r3", ["src/a.rs", "src/b.rs"], true)).model;
   assert.equal(landed.selected, "src/b.rs");

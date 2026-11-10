@@ -27,7 +27,9 @@ export function answer(m: Model, cmds: Cmd[], file: FileView = fixtureFile()): {
   const all = [...cmds];
   for (let guard = 0; guard < 50; guard++) {
     const ask = all.slice(all.length - cmds.length).find((c) => c._tag === "LoadFiles");
-    if (ask === undefined || ask._tag !== "LoadFiles") break;
+    if (ask === undefined || ask._tag !== "LoadFiles") {
+      break;
+    }
     const out = steps(m, { _tag: "FilesLoaded", key: ask.key, files: ask.paths.map((p) => (p === file.path ? file : blank(file, p))) });
     m = out.model;
     cmds = out.cmds;
@@ -50,7 +52,9 @@ export function reload(m: Model, state: State, file: FileView = fixtureFile()): 
 export function loadedModel(state: State = fixtureState(), file: FileView = fixtureFile(), target: string | null = "t7", shown: string | null = file.path): Model {
   const open = steps(initModel(), { _tag: "Opened", root: "/repo", target });
   const load = open.cmds[0];
-  if (load === undefined || load._tag !== "Load") throw new Error("opening did not load");
+  if (load === undefined || load._tag !== "Load") {
+    throw new Error("opening did not load");
+  }
   const arrived = steps(open.model, { _tag: "Loaded", key: load.key, state });
   const done = answer(arrived.model, arrived.cmds, file);
   return shown === null ? done.model : steps(done.model, { _tag: "Scrolled", offset: 0, total: 0, top: `${shown}|file`, visible: [shown], fresh: [], revealed: false }).model;

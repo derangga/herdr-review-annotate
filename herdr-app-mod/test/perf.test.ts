@@ -20,10 +20,7 @@ test("percentile is the nearest rank, and 0 for nothing", () => {
 });
 
 test("the summary line has count, mean, p95 and max for render and dispatch, the rebuilds and the drawn items", () => {
-  assert.equal(
-    summary(5, [1, 2, 3, 10], [0.5], 2, [4, 6]),
-    "perf window=5.0s render n=4 mean=4.00ms p95=10.00ms max=10.00ms | dispatch n=1 mean=0.50ms p95=0.50ms max=0.50ms | layout_rebuilds=2 | drawn mean=5.0 max=6",
-  );
+  assert.equal(summary(5, [1, 2, 3, 10], [0.5], 2, [4, 6]), "perf window=5.0s render n=4 mean=4.00ms p95=10.00ms max=10.00ms | dispatch n=1 mean=0.50ms p95=0.50ms max=0.50ms | layout_rebuilds=2 | drawn mean=5.0 max=6");
 });
 
 test("a window rolls over on the first event after it ended, emits one line and starts again", () => {

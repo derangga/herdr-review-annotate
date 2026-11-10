@@ -22,7 +22,9 @@ export const noop = (): Recorder => NOOP;
 
 // Nearest rank: the smallest value that at least p of the values are at or below. Empty is 0.
 export function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0;
+  if (values.length === 0) {
+    return 0;
+  }
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))] as number;
 }
@@ -44,7 +46,9 @@ export function makeRecorder(now: () => number, emit: (line: string) => void, wi
   let drawn: number[] = [];
   let rebuilds = 0;
   const flush = (): void => {
-    if (renders.length + dispatches.length + rebuilds > 0) emit(summary((now() - began) / 1000, renders, dispatches, rebuilds, drawn));
+    if (renders.length + dispatches.length + rebuilds > 0) {
+      emit(summary((now() - began) / 1000, renders, dispatches, rebuilds, drawn));
+    }
     began = now();
     renders = [];
     dispatches = [];
@@ -52,7 +56,9 @@ export function makeRecorder(now: () => number, emit: (line: string) => void, wi
     rebuilds = 0;
   };
   const tick = (): void => {
-    if (now() - began >= windowMs) flush();
+    if (now() - began >= windowMs) {
+      flush();
+    }
   };
   return {
     on: true,
@@ -101,6 +107,8 @@ const clock = (): number => (typeof performance !== "undefined" ? performance.no
 // On only for `perf: true` in the mod's props.
 export function recorderFor(host: Host, now: () => number = clock): Recorder {
   const props = host.props();
-  if (typeof props !== "object" || props === null || (props as Record<string, unknown>).perf !== true) return NOOP;
+  if (typeof props !== "object" || props === null || (props as Record<string, unknown>).perf !== true) {
+    return NOOP;
+  }
   return makeRecorder(now, fileSink(host));
 }

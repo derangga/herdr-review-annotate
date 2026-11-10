@@ -28,21 +28,31 @@ export function sendButton(m: Model): { label: string; off: boolean } {
 
 // Reading the message: the one place that asks the CLI. Without a target there is nothing to read.
 function read(m: Model): Step {
-  if (m.target === null) return [set(m, { loading: false, status: NO_AGENT }), []];
+  if (m.target === null) {
+    return [set(m, { loading: false, status: NO_AGENT }), []];
+  }
   return [set(m, { loading: true, status: null }), [{ _tag: "ReadMessage", target: m.target }]];
 }
 
 // The header button. Opening the message view reads the message again, and the diff view comes back as it was.
 export function viewChosen(m: Model, view: "diff" | "message"): Step {
-  if (view === m.view) return [m, []];
-  if (m.editor !== null) return [told(m, BUSY_EDITOR), []];
-  if (view === "diff") return [{ ...set(m, { drag: null, hover: null }), view: "diff" }, []];
+  if (view === m.view) {
+    return [m, []];
+  }
+  if (m.editor !== null) {
+    return [told(m, BUSY_EDITOR), []];
+  }
+  if (view === "diff") {
+    return [{ ...set(m, { drag: null, hover: null }), view: "diff" }, []];
+  }
   return read({ ...m, view: "message" });
 }
 
 // Refresh. The comments stay when the message that comes back is the same one.
 export function refreshed(m: Model): Step {
-  if (m.view !== "message" || m.message.loading) return [m, []];
+  if (m.view !== "message" || m.message.loading) {
+    return [m, []];
+  }
   // A new message would close the editor and lose what is typed in it.
   return m.editor !== null ? [told(m, BUSY_EDITOR), []] : read(m);
 }
@@ -54,7 +64,9 @@ export function messageLoaded(m: Model, reply: NonNullable<MessageView["data"]>)
   const same = old.data !== null && old.data.id === reply.id;
   const dropped = !same && old.comments.length > 0;
   const status = dropped ? `the agent wrote a new message, ${plural(old.comments.length, "comment", "comments")} dropped` : null;
-  if (same) return [set(m, { data: reply, loading: false, status }), []];
+  if (same) {
+    return [set(m, { data: reply, loading: false, status }), []];
+  }
   const next = set(m, { data: reply, loading: false, status, comments: [], selection: null, drag: null, hover: null });
   return [{ ...next, editor: m.view === "message" ? null : m.editor }, []];
 }
@@ -62,23 +74,35 @@ export function messageLoaded(m: Model, reply: NonNullable<MessageView["data"]>)
 // The pointer is over a line, or left it. While a press is held, a line other than the one it began on makes the range.
 export function hovered(m: Model, line: number, on: boolean): Step {
   const mv = m.message;
-  if (!on) return mv.hover === line ? [set(m, { hover: null }), []] : [m, []];
-  if (!inMessage(m, line)) return [m, []];
+  if (!on) {
+    return mv.hover === line ? [set(m, { hover: null }), []] : [m, []];
+  }
+  if (!inMessage(m, line)) {
+    return [m, []];
+  }
   const d = mv.drag;
-  if (d === null) return mv.hover === line ? [m, []] : [set(m, { hover: line }), []];
-  if (d.head === line && mv.hover === line) return [m, []];
+  if (d === null) {
+    return mv.hover === line ? [m, []] : [set(m, { hover: line }), []];
+  }
+  if (d.head === line && mv.hover === line) {
+    return [m, []];
+  }
   return [set(m, { hover: line, drag: { ...d, head: line, moved: d.moved || line !== d.line }, selection: line === d.line && !d.moved ? mv.selection : range(d.line, line) }), []];
 }
 
 // A press starts a drag and changes nothing else yet: a release without a move is a click, which clears the selection.
 export function pressed(m: Model, line: number): Step {
-  if (m.editor !== null || !inMessage(m, line)) return [m, []];
+  if (m.editor !== null || !inMessage(m, line)) {
+    return [m, []];
+  }
   return [set(m, { hover: line, drag: { line, head: line, moved: false } }), []];
 }
 
 export function released(m: Model): Step {
   const d = m.message.drag;
-  if (d === null) return [m, []];
+  if (d === null) {
+    return [m, []];
+  }
   return [set(m, { drag: null, selection: d.moved ? m.message.selection : null }), []];
 }
 
@@ -87,9 +111,15 @@ export function released(m: Model): Step {
 const SENDING = "wait for the send to finish";
 
 export function plusClicked(m: Model, line: number): Step {
-  if (m.editor !== null) return [told(m, BUSY_EDITOR), []];
-  if (m.message.sending) return [told(m, SENDING), []];
-  if (!inMessage(m, line)) return [m, []];
+  if (m.editor !== null) {
+    return [told(m, BUSY_EDITOR), []];
+  }
+  if (m.message.sending) {
+    return [told(m, SENDING), []];
+  }
+  if (!inMessage(m, line)) {
+    return [m, []];
+  }
   const s = m.message.selection;
   const sel = s !== null && line >= s.from && line <= s.to ? s : { from: line, to: line };
   const editor = { kind: "comment" as const, anchor: null, thread: null, comment: null, initial: "", title: `Comment on ${rangeLabel(sel.from, sel.to)}` };
@@ -100,33 +130,51 @@ export function plusClicked(m: Model, line: number): Step {
 export function messageSaved(m: Model, text: string): Step {
   const e = m.editor;
   const body = text.trim();
-  if (e === null || body === "") return [m, []];
+  if (e === null || body === "") {
+    return [m, []];
+  }
   const mv = m.message;
   if (e.kind === "edit") {
     const id = Number(e.comment);
     return [{ ...set(m, { comments: mv.comments.map((c) => (c.id === id ? { ...c, body } : c)), status: null }), editor: null }, []];
   }
-  if (mv.selection === null) return [m, []];
+  if (mv.selection === null) {
+    return [m, []];
+  }
   const comment: MessageComment = { id: mv.next, start: mv.selection.from, end: mv.selection.to, body };
   return [{ ...set(m, { comments: [...mv.comments, comment], next: mv.next + 1, selection: null, status: null }), editor: null }, []];
 }
 
 // Edit opens the editor on the comment, and delete removes it at once, as the TUI does.
 export function commentAction(m: Model, id: number, action: "edit" | "delete"): Step {
-  if (m.editor !== null) return [told(m, BUSY_EDITOR), []];
-  if (m.message.sending) return [told(m, SENDING), []];
+  if (m.editor !== null) {
+    return [told(m, BUSY_EDITOR), []];
+  }
+  if (m.message.sending) {
+    return [told(m, SENDING), []];
+  }
   const c = m.message.comments.find((x) => x.id === id);
-  if (c === undefined) return [m, []];
-  if (action === "delete") return [set(m, { comments: m.message.comments.filter((x) => x.id !== id) }), []];
+  if (c === undefined) {
+    return [m, []];
+  }
+  if (action === "delete") {
+    return [set(m, { comments: m.message.comments.filter((x) => x.id !== id) }), []];
+  }
   return [{ ...m, editor: { kind: "edit", anchor: null, thread: null, comment: String(id), initial: c.body, title: `Edit comment on ${rangeLabel(c.start, c.end)}` } }, []];
 }
 
 // Send all the comments, on the message they were written on. The id lets the CLI refuse when the agent has written since.
 export function sendClicked(m: Model): Step {
   const mv = m.message;
-  if (mv.sending || mv.loading || m.editor !== null || mv.data === null) return [m, []];
-  if (mv.comments.length === 0) return [set(m, { status: "nothing to send" }), []];
-  if (m.target === null) return [set(m, { status: NO_AGENT }), []];
+  if (mv.sending || mv.loading || m.editor !== null || mv.data === null) {
+    return [m, []];
+  }
+  if (mv.comments.length === 0) {
+    return [set(m, { status: "nothing to send" }), []];
+  }
+  if (m.target === null) {
+    return [set(m, { status: NO_AGENT }), []];
+  }
   const comments = mv.comments.map((c) => ({ start: c.start, end: c.end, body: c.body }));
   return [set(m, { sending: true, status: "sending..." }), [{ _tag: "SendMessage", target: m.target, id: mv.data.id, comments }]];
 }
@@ -174,18 +222,20 @@ export function errorText(error: ReviewError): string {
 }
 
 // What the view draws, top to bottom: every line of the message, and a card under the last line of each comment.
-export type MessageItem =
-  | { kind: "line"; n: number; text: string; selected: boolean; hovered: boolean }
-  | { kind: "card"; id: number; label: string; body: string[] };
+export type MessageItem = { kind: "line"; n: number; text: string; selected: boolean; hovered: boolean } | { kind: "card"; id: number; label: string; body: string[] };
 
 export function messageItems(mv: MessageView): MessageItem[] {
-  if (mv.data === null) return [];
+  if (mv.data === null) {
+    return [];
+  }
   const out: MessageItem[] = [];
   const sel = mv.selection;
   mv.data.lines.forEach((text, i) => {
     const n = i + 1;
     out.push({ kind: "line", n, text, selected: sel !== null && n >= sel.from && n <= sel.to, hovered: mv.hover === n });
-    for (const c of mv.comments.filter((x) => x.end === n)) out.push({ kind: "card", id: c.id, label: rangeLabel(c.start, c.end), body: c.body.split("\n") });
+    for (const c of mv.comments.filter((x) => x.end === n)) {
+      out.push({ kind: "card", id: c.id, label: rangeLabel(c.start, c.end), body: c.body.split("\n") });
+    }
   });
   return out;
 }

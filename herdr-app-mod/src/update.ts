@@ -1,7 +1,40 @@
 // The reducer. (Model, Msg) -> (Model, Cmd[]). Pure. Single flight lives here: at most one load runs, and
 // a trigger that comes during one, or while an editor is open, sets `pending` and starts one more load
 // when the load ends or the editor closes.
-import { anchorOf, archivableCount, BATCH, cardKey, cardOrder, clampOffset, cursorSpot, filterCount, filterPick, findComment, isFolded, isSplit, itemKey, jumpStop, keyPath, lane, maxOffset, offsetOfThumb, partner, pick, plural, plusTarget, sameRows, sameSpot, sideOf, span, spots, thumbOf, topSpot, unsentCount, visualOn, wanted } from "./rows.ts";
+import {
+  anchorOf,
+  archivableCount,
+  BATCH,
+  cardKey,
+  cardOrder,
+  clampOffset,
+  cursorSpot,
+  filterCount,
+  filterPick,
+  findComment,
+  isFolded,
+  isSplit,
+  itemKey,
+  jumpStop,
+  keyPath,
+  lane,
+  maxOffset,
+  offsetOfThumb,
+  partner,
+  pick,
+  plural,
+  plusTarget,
+  sameRows,
+  sameSpot,
+  sideOf,
+  span,
+  spots,
+  thumbOf,
+  topSpot,
+  unsentCount,
+  visualOn,
+  wanted,
+} from "./rows.ts";
 import type { Spot } from "./rows.ts";
 import { commentAction, hovered as messageHovered, initMessage, messageFailed, messageLoaded, messageSaved, messageSent, plusClicked as messagePlusClicked, pressed as messagePressed, refreshed as messageRefreshed, released as messageReleased, sendClicked as messageSendClicked, viewChosen } from "./message.ts";
 import type { Cmd, Colors, FileView, Jump, Model, Msg, Panel, ReviewError, Reveal, Spec, State, ThreadActionKind, WriteOp } from "./types.ts";
@@ -89,7 +122,9 @@ function rekey(m: Model, change: Partial<Pick<Model, "root" | "spec">>): Model {
 
 // A load of the state. The files whose last fetch failed are tried again by the files this load wants.
 function startLoad(m: Model): Step {
-  if (m.root === null) return [m, []];
+  if (m.root === null) {
+    return [m, []];
+  }
   return [{ ...m, inFlight: true, pending: false, skipped: new Set() }, [{ _tag: "Load", key: m.key, root: m.root, spec: m.spec }]];
 }
 
@@ -99,23 +134,33 @@ const holding = (m: Model): boolean => m.editor !== null && m.landing === null;
 
 // The next few files the stream wants, in the order `wanted` gives, fetched in one command.
 function nextFiles(m: Model): Step {
-  if (m.root === null || m.inFlight || holding(m) || m.stopped) return [m, []];
+  if (m.root === null || m.inFlight || holding(m) || m.stopped) {
+    return [m, []];
+  }
   const paths = wanted(m).slice(0, BATCH);
-  if (paths.length === 0) return [m, []];
+  if (paths.length === 0) {
+    return [m, []];
+  }
   return [{ ...m, inFlight: true, batch: paths }, [{ _tag: "LoadFiles", key: m.key, root: m.root, spec: m.spec, paths }]];
 }
 
 // Starts what waits when nothing holds it back: the one load that `pending` stands for, else the files the stream
 // still wants. One command runs at a time.
 function flush(m: Model, cmds: Cmd[] = []): Step {
-  if (m.inFlight || holding(m) || m.stopped) return [m, cmds];
+  if (m.inFlight || holding(m) || m.stopped) {
+    return [m, cmds];
+  }
   const [next, more] = m.pending ? startLoad(m) : nextFiles(m);
   return [next, [...cmds, ...more]];
 }
 
 function trigger(m: Model): Step {
-  if (m.root === null) return [m, []];
-  if (m.inFlight || holding(m)) return [{ ...m, pending: true }, []];
+  if (m.root === null) {
+    return [m, []];
+  }
+  if (m.inFlight || holding(m)) {
+    return [{ ...m, pending: true }, []];
+  }
   return startLoad(m);
 }
 
@@ -130,7 +175,9 @@ const rowOf = (m: Model, path: string, row: number): FileView | null => {
 // would land elsewhere: the stream scrolls back to the item on top (or the one that holds its row), unless a scroll is
 // already on its way, and no hover is kept.
 function flipped(m: Model, next: Model): Model {
-  if (isSplit(m) === isSplit(next)) return next;
+  if (isSplit(m) === isSplit(next)) {
+    return next;
+  }
   // The cursor stays on its row: it has no half in unified, and in side by side the row's own, or the range's while one grows.
   const c = next.cursor;
   const row = c === null ? undefined : next.files.get(c.path)?.rows[c.row];
@@ -144,14 +191,20 @@ function flipped(m: Model, next: Model): Model {
 // onto another row of the same file makes the range between the row the press began on and this one.
 function hovered(m: Model, path: string, row: number, side: Side, on: boolean): Step {
   const same = m.hover !== null && m.hover.path === path && m.hover.row === row && m.hover.side === side;
-  if (!on) return same ? [{ ...m, hover: null }, []] : [m, []];
+  if (!on) {
+    return same ? [{ ...m, hover: null }, []] : [m, []];
+  }
   const file = rowOf(m, path, row);
-  if (file === null) return [m, []];
+  if (file === null) {
+    return [m, []];
+  }
   const next = same ? m : { ...m, hover: { path, row, side } };
   const d = next.drag;
   // The pointer's place in a side-by-side drag is a pair: on the other half than the press began on, it is the row facing this one.
   const head = d !== null && d.side !== null && side !== null && side !== d.side ? (partner(file, row) ?? row) : row;
-  if (d === null || d.path !== path || d.head === head || rowOf(m, path, d.row) === null) return [next, []];
+  if (d === null || d.path !== path || d.head === head || rowOf(m, path, d.row) === null) {
+    return [next, []];
+  }
   return [{ ...next, drag: { ...d, head, moved: true }, selection: span(file, d.row, head, d.side), focus: null, confirm: null }, []];
 }
 
@@ -160,7 +213,9 @@ function hovered(m: Model, path: string, row: number, side: Side, on: boolean): 
 // outside the window) is replaced. The editor open means the rows take no press.
 function pressed(m: Model, path: string, row: number, side: Side): Step {
   const file = m.editor !== null ? null : rowOf(m, path, row);
-  if (file === null) return [m, []];
+  if (file === null) {
+    return [m, []];
+  }
   // The keyboard's cursor goes where the press is. A press ends a range v began: what a drag makes is the mouse's.
   const cursor = file.rows[row]?.kind === "hunk" ? m.cursor : { path, row, side };
   return [{ ...m, cursor, visual: false, hover: { path, row, side }, drag: { path, row, head: row, moved: false, side } }, []];
@@ -169,7 +224,9 @@ function pressed(m: Model, path: string, row: number, side: Side): Step {
 // The button went up, anywhere in the panel. A press that never moved was a click, and a click on a line clears the
 // selection and highlights nothing. A press that moved keeps the range it made.
 function released(m: Model): Step {
-  if (m.drag === null && m.grip === null) return [m, []];
+  if (m.drag === null && m.grip === null) {
+    return [m, []];
+  }
   return [{ ...m, drag: null, grip: null, selection: m.drag !== null && !m.drag.moved ? null : m.selection }, []];
 }
 
@@ -184,7 +241,9 @@ function scrollTo(m: Model, offset: number): Step {
 // the thumb by as many, which is that many pixels of the track and so more of the stream.
 function thumbMoved(m: Model, y: number): Step {
   const thumb = thumbOf(m.total, m.height, 0);
-  if (m.grip === null || thumb === null) return [m, []];
+  if (m.grip === null || thumb === null) {
+    return [m, []];
+  }
   return scrollTo(m, m.grip.offset + ((y - m.grip.y) * maxOffset(m.total, m.height)) / Math.max(1, m.height - thumb.size));
 }
 
@@ -198,10 +257,16 @@ function trackClicked(m: Model, y: number): Step {
 // becomes the selection, so it stays lit while the editor is open.
 function plusClicked(m: Model, path: string, row: number, side: Side): Step {
   const file = m.files.get(path);
-  if (file === undefined) return [m, []];
-  if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
+  if (file === undefined) {
+    return [m, []];
+  }
+  if (m.editor !== null) {
+    return [{ ...m, status: BUSY_EDITOR }, []];
+  }
   const sel = plusTarget(file, m.selection, row, side);
-  if (sel === null) return [m, []];
+  if (sel === null) {
+    return [m, []];
+  }
   return [{ ...m, selection: sel, visual: false, focus: null, confirm: null, status: null, reveal: showEditor(path), editor: { kind: "comment", anchor: anchorOf(file, sel), thread: null, comment: null, initial: "" } }, []];
 }
 
@@ -215,8 +280,12 @@ const draftLanded = (m: Model): Model => ({ ...m, editor: null, selection: null,
 // The file a draft's card will be in: its anchor's, or its thread's. "" for a thread not in the diff, whose card the state carries.
 function draftFile(m: Model): string {
   const e = m.editor;
-  if (e === null) return "";
-  if (e.anchor !== null) return e.anchor.path;
+  if (e === null) {
+    return "";
+  }
+  if (e.anchor !== null) {
+    return e.anchor.path;
+  }
   const key = cardKey(m, e.thread ?? "");
   return key === null ? "" : keyPath(key);
 }
@@ -257,8 +326,15 @@ function cursorHunk(m: Model, forward: boolean): Step {
   const walk = lane(m, all);
   const c = m.cursor;
   const i = c === null ? -1 : walk.findIndex((s) => sameSpot(s, c));
-  if (i < 0) return cursorMoved(m, 0);
-  const to = forward ? walk.slice(i + 1).find((s) => s.first) : walk.slice(0, i).reverse().find((s) => s.first);
+  if (i < 0) {
+    return cursorMoved(m, 0);
+  }
+  const to = forward
+    ? walk.slice(i + 1).find((s) => s.first)
+    : walk
+        .slice(0, i)
+        .reverse()
+        .find((s) => s.first);
   return to === undefined ? [m, []] : [cursorTo(m, to), []];
 }
 
@@ -266,54 +342,81 @@ function cursorHunk(m: Model, forward: boolean): Step {
 function cursorSide(m: Model, side: "old" | "new"): Step {
   const at = cursorSpot(m);
   const file = at === null ? undefined : m.files.get(at.path);
-  if (at === null || file === undefined || !isSplit(m) || at.side === side || visualOn(m)) return [m, []];
+  if (at === null || file === undefined || !isSplit(m) || at.side === side || visualOn(m)) {
+    return [m, []];
+  }
   const row = partner(file, at.row);
   return row === null ? [m, []] : [cursorTo(m, { path: at.path, row, side, first: false }), []];
 }
 
 // v: with a selection open, ends it; else a one-row range at the cursor that the motions grow.
 function visualToggled(m: Model): Step {
-  if (m.selection !== null) return [{ ...m, selection: null, visual: false }, []];
+  if (m.selection !== null) {
+    return [{ ...m, selection: null, visual: false }, []];
+  }
   const at = cursorSpot(m);
   const file = at === null ? undefined : m.files.get(at.path);
-  if (at === null || file === undefined) return cursorMoved(m, 0);
+  if (at === null || file === undefined) {
+    return cursorMoved(m, 0);
+  }
   const sel = pick(file, at.row, at.side);
   return sel === null ? [m, []] : [{ ...m, selection: sel, visual: true, focus: null, confirm: null }, []];
 }
 
 function write(m: Model, op: WriteOp, change: Partial<Model> = {}): Step {
-  if (m.root === null) return [m, []];
+  if (m.root === null) {
+    return [m, []];
+  }
   return [{ ...m, ...change }, [{ _tag: "Write", root: m.root, spec: m.spec, op }]];
 }
 
 function saved(m: Model, text: string): Step {
-  if (m.view === "message") return messageSaved(m, text);
+  if (m.view === "message") {
+    return messageSaved(m, text);
+  }
   const e = m.editor;
-  if (e === null || m.saving || text.trim() === "") return [m, []];
+  if (e === null || m.saving || text.trim() === "") {
+    return [m, []];
+  }
   // The draft's card is drawn at once (rows.draftThread); a failed write brings the editor back with the text.
   const saving = { saving: true, status: null, draft: text };
-  if (e.kind === "comment") return e.anchor === null ? [m, []] : write(m, { kind: "comment", anchor: e.anchor, text }, saving);
-  if (e.kind === "reply") return e.thread === null ? [m, []] : write(m, { kind: "reply", id: e.thread, text }, saving);
+  if (e.kind === "comment") {
+    return e.anchor === null ? [m, []] : write(m, { kind: "comment", anchor: e.anchor, text }, saving);
+  }
+  if (e.kind === "reply") {
+    return e.thread === null ? [m, []] : write(m, { kind: "reply", id: e.thread, text }, saving);
+  }
   return e.comment === null ? [m, []] : write(m, { kind: "edit", id: e.comment, text }, saving);
 }
 
 function threadAction(m: Model, id: string, action: ThreadActionKind): Step {
   const hit = findComment(m.files, m.state, id);
-  if (hit === null) return [m, []]; // the thread went away since the click
+  if (hit === null) {
+    return [m, []];
+  } // the thread went away since the click
   const { thread, comment } = hit;
   const mine = comment.author === "user";
   // A card and a line are never both picked, or the bar would show the line's buttons under a highlighted card.
-  if (action === "focus") return [{ ...m, focus: id, confirm: null, selection: null }, []];
-  if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
+  if (action === "focus") {
+    return [{ ...m, focus: id, confirm: null, selection: null }, []];
+  }
+  if (m.editor !== null) {
+    return [{ ...m, status: BUSY_EDITOR }, []];
+  }
   const base = { ...m, focus: id, confirm: null, status: null };
   const there = showEditor(keyPath(cardKey(m, thread.id) ?? ""));
   switch (action) {
     case "toggle": {
-      if (thread.status !== "resolved") return [{ ...base, focus: thread.id }, []];
+      if (thread.status !== "resolved") {
+        return [{ ...base, focus: thread.id }, []];
+      }
       const open = m.expanded.has(thread.id);
       const expanded = new Set(m.expanded);
-      if (open) expanded.delete(thread.id);
-      else expanded.add(thread.id);
+      if (open) {
+        expanded.delete(thread.id);
+      } else {
+        expanded.add(thread.id);
+      }
       const next = { ...base, focus: thread.id, expanded };
       // Opening a resolved thread an agent closed is looking at it: it is not new any more.
       return !open && thread.is_new ? write({ ...next, seenSent: new Set(m.seenSent).add(thread.id) }, { kind: "seen", id: thread.id }) : [next, []];
@@ -327,7 +430,9 @@ function threadAction(m: Model, id: string, action: ThreadActionKind): Step {
     case "reopen":
       return thread.status === "resolved" ? write(base, { kind: "reopen", id: thread.id }) : [base, []];
     case "delete":
-      if (!mine) return [base, []];
+      if (!mine) {
+        return [base, []];
+      }
       // Only the question: DeleteConfirmed writes, ConfirmCancelled undoes this. The comment asked about takes the focus, so
       // the tinted card is the one the bar's question is about.
       return [{ ...m, confirm: id, focus: id }, []];
@@ -341,10 +446,16 @@ function threadAction(m: Model, id: string, action: ThreadActionKind): Step {
 // Next or previous comment. A thread that is drawn is focused and scrolled to at once. A file whose threads are not
 // drawn is opened (unfolded) and, when it has not arrived, waits in `jump` for the fetch that brings it.
 function jumped(m: Model, forward: boolean): Step {
-  if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
-  if (m.root === null || m.picker !== null) return [m, []];
+  if (m.editor !== null) {
+    return [{ ...m, status: BUSY_EDITOR }, []];
+  }
+  if (m.root === null || m.picker !== null) {
+    return [m, []];
+  }
   const stop = jumpStop(m, forward);
-  if (stop === null) return [{ ...m, status: "no comments in this review" }, []];
+  if (stop === null) {
+    return [{ ...m, status: "no comments in this review" }, []];
+  }
   const base = { ...m, confirm: null, confirmArchive: false, status: null };
   if ("id" in stop) {
     const key = cardKey(m, stop.id);
@@ -353,7 +464,9 @@ function jumped(m: Model, forward: boolean): Step {
   const jump: Jump = { path: stop.path, edge: forward ? "first" : "last" };
   const open = { ...base, selection: null, folds: new Map(m.folds).set(stop.path, false) };
   const view = m.files.get(stop.path);
-  if (view !== undefined) return flush(landed(open, jump, view));
+  if (view !== undefined) {
+    return flush(landed(open, jump, view));
+  }
   return flush({ ...open, jump, reveal: { key: itemKey(stop.path, "file") } });
 }
 
@@ -361,15 +474,23 @@ function jumped(m: Model, forward: boolean): Step {
 function landed(m: Model, jump: Jump, view: FileView): Model {
   const ids = cardOrder(view);
   const id = jump.edge === "first" ? ids[0] : ids[ids.length - 1];
-  if (id === undefined) return { ...m, jump: null, status: `no comments in ${jump.path}` };
+  if (id === undefined) {
+    return { ...m, jump: null, status: `no comments in ${jump.path}` };
+  }
   const key = cardKey({ ...m, files: new Map(m.files).set(jump.path, view) }, id);
   return { ...m, jump: null, focus: id, reveal: key === null ? m.reveal : { key } };
 }
 
 function sendClicked(m: Model, threads: string[]): Step {
-  if (m.root === null || m.sending) return [m, []];
-  if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR, sticky: false }, []];
-  if (threads.length === 0 && unsentCount(m.state) === 0) return [{ ...m, status: "nothing to send", sticky: false }, []];
+  if (m.root === null || m.sending) {
+    return [m, []];
+  }
+  if (m.editor !== null) {
+    return [{ ...m, status: BUSY_EDITOR, sticky: false }, []];
+  }
+  if (threads.length === 0 && unsentCount(m.state) === 0) {
+    return [{ ...m, status: "nothing to send", sticky: false }, []];
+  }
   return [{ ...m, sending: true, sendThreads: threads, picker: null, confirmArchive: false, status: "sending...", sticky: true }, [{ _tag: "Send", root: m.root, target: m.target, threads }]];
 }
 
@@ -381,12 +502,16 @@ function sent(m: Model, msg: Extract<Msg, { _tag: "Sent" }>): Step {
 
 // The click only asks: the question is the one field, so ConfirmCancelled puts the model back as it was.
 function archiveClicked(m: Model): Step {
-  if (m.root === null || m.inFlight || m.editor !== null || archivableCount(m.state) === 0) return [m, []];
+  if (m.root === null || m.inFlight || m.editor !== null || archivableCount(m.state) === 0) {
+    return [m, []];
+  }
   return [{ ...m, confirmArchive: true }, []];
 }
 
 function archiveConfirmed(m: Model): Step {
-  if (m.root === null || m.inFlight || !m.confirmArchive) return [m, []];
+  if (m.root === null || m.inFlight || !m.confirmArchive) {
+    return [m, []];
+  }
   return [{ ...m, confirmArchive: false, status: "archiving...", sticky: true }, [{ _tag: "Archive", root: m.root }]];
 }
 
@@ -396,13 +521,17 @@ function archiveConfirmed(m: Model): Step {
 function glanced(m: Model): Step {
   const id = m.fresh.find((x) => m.glance.includes(x) && !m.seenSent.has(x));
   const same = m.glance.length === m.fresh.length && m.glance.every((x, i) => x === m.fresh[i]);
-  if (m.root === null || m.stopped || id === undefined) return same ? [m, []] : [{ ...m, glance: m.fresh }, []];
+  if (m.root === null || m.stopped || id === undefined) {
+    return same ? [m, []] : [{ ...m, glance: m.fresh }, []];
+  }
   return write({ ...m, glance: m.fresh, seenSent: new Set(m.seenSent).add(id) }, { kind: "seen", id });
 }
 
 function deleteConfirmed(m: Model, id: string): Step {
   const hit = findComment(m.files, m.state, id);
-  if (m.confirm !== id || hit === null || hit.comment.author !== "user" || m.editor !== null) return [m, []];
+  if (m.confirm !== id || hit === null || hit.comment.author !== "user" || m.editor !== null) {
+    return [m, []];
+  }
   return write({ ...m, focus: id, confirm: null, status: null }, { kind: "delete", id });
 }
 
@@ -420,8 +549,12 @@ function savePanel(m: Model, panel: Panel): Step {
 // Enter in the box keeps the filter and gives the keyboard back. The file shown goes to the first match unless
 // it matches already. With no match nothing happens, so the user keeps typing or presses Esc.
 function entered(m: Model): Step {
-  if (m.filter === "") return [{ ...m, filtering: false }, []];
-  if (filterCount(m.state === null ? [] : m.state.files, m.filter).shown === 0) return [m, []];
+  if (m.filter === "") {
+    return [{ ...m, filtering: false }, []];
+  }
+  if (filterCount(m.state === null ? [] : m.state.files, m.filter).shown === 0) {
+    return [m, []];
+  }
   const left = { ...m, filtering: false };
   const first = filterPick(m);
   return first === null ? [left, []] : update(left, { _tag: "FileChosen", path: first });
@@ -448,7 +581,9 @@ function settle(m: Model): Model {
 // Syntax colours depend on text outside the diff, so a change there reaches a file on screen only through Refresh or a
 // changed summary (design/graphs/gui-stream.md has the detail). The sidebar's file stays while it is in the diff, else it is the first.
 function loadedState(m: Model, key: string, state: State): Step {
-  if (key !== m.key) return flush({ ...m, inFlight: false }); // stale: the reply is dropped
+  if (key !== m.key) {
+    return flush({ ...m, inFlight: false });
+  } // stale: the reply is dropped
   const paths = new Set(state.files.map((f) => f.path));
   const files = new Map([...m.files].filter(([path]) => paths.has(path)));
   const dirty = new Set([...m.dirty, ...[...files.keys()].filter((p) => summaryJson(m.state, p) !== summaryJson(state, p))].filter((p) => files.has(p)));
@@ -475,22 +610,30 @@ function loadedState(m: Model, key: string, state: State): Step {
   );
   // A saved draft whose card no fetch will bring (a thread not in the diff, a file not loaded or not refetched) lands now.
   const done = shown.landing !== null && (shown.landing === "" || !shown.dirty.has(shown.landing)) ? draftLanded(shown) : shown;
-  if (done.storeWatch === null && state.store_dir !== "") return flush({ ...done, storeWatch: state.store_dir }, [{ _tag: "WatchStore", dir: state.store_dir }]);
+  if (done.storeWatch === null && state.store_dir !== "") {
+    return flush({ ...done, storeWatch: state.store_dir }, [{ _tag: "WatchStore", dir: state.store_dir }]);
+  }
   return flush(done);
 }
 
 // Files arrived. A file above the top of the screen that is now another height moves what is on screen, so the
 // item that was at the top is scrolled to again, to within that item. A jump that waited for one of them lands.
 function loadedFiles(m: Model, key: string, replies: FileView[]): Step {
-  if (key !== m.key) return flush({ ...m, inFlight: false, batch: [] });
+  if (key !== m.key) {
+    return flush({ ...m, inFlight: false, batch: [] });
+  }
   const files = new Map(m.files);
   const dirty = new Set(m.dirty);
   let selection = m.selection;
   let cursor = m.cursor;
   for (const f of replies) {
-    if (selection !== null && selection.path === f.path && !sameRows(m.files.get(f.path) ?? null, f, selection)) selection = null;
+    if (selection !== null && selection.path === f.path && !sameRows(m.files.get(f.path) ?? null, f, selection)) {
+      selection = null;
+    }
     // The cursor is a row index: when that row is another line now, a c on it would comment on the wrong line.
-    if (cursor !== null && cursor.path === f.path && !sameRows(m.files.get(f.path) ?? null, f, { path: f.path, side: "new", from: cursor.row, to: cursor.row, anchor: cursor.row })) cursor = null;
+    if (cursor !== null && cursor.path === f.path && !sameRows(m.files.get(f.path) ?? null, f, { path: f.path, side: "new", from: cursor.row, to: cursor.row, anchor: cursor.row })) {
+      cursor = null;
+    }
     files.set(f.path, f);
     dirty.delete(f.path);
   }
@@ -499,23 +642,33 @@ function loadedFiles(m: Model, key: string, replies: FileView[]): Step {
   const above = first >= 0 && replies.some((f) => order.indexOf(f.path) >= 0 && order.indexOf(f.path) < first);
   let next = settle({ ...m, files, dirty, selection, cursor, inFlight: false, batch: [], reveal: above && m.top !== null && m.reveal === null ? { key: m.top } : m.reveal });
   // The saved draft's file arrived with its card: the editor goes in this same update.
-  if (next.landing !== null && replies.some((f) => f.path === next.landing)) next = draftLanded(next);
+  if (next.landing !== null && replies.some((f) => f.path === next.landing)) {
+    next = draftLanded(next);
+  }
   const waiting = m.jump === null ? undefined : replies.find((f) => f.path === (m.jump as Jump).path);
-  if (m.jump !== null && waiting !== undefined) next = landed(next, m.jump, waiting);
+  if (m.jump !== null && waiting !== undefined) {
+    next = landed(next, m.jump, waiting);
+  }
   return flush(next);
 }
 
 export function update(m: Model, msg: Msg): Step {
   switch (msg._tag) {
     case "Opened": {
-      if (msg.root === null) return [{ ...m, banner: "open the panel from a pane that has a folder" }, []];
+      if (msg.root === null) {
+        return [{ ...m, banner: "open the panel from a pane that has a folder" }, []];
+      }
       return trigger(rekey({ ...m, target: msg.target }, { root: msg.root }));
     }
     case "Triggered": {
       // Refresh also fetches the files on screen again, which the timer and the watch do not: a change the summary does not show
       // (the colours, see loadedState) reaches them this way.
-      if (msg.source === "refresh") return trigger({ ...m, dirty: new Set([...m.dirty, ...m.visible.filter((p) => m.files.has(p))]), stopped: false, retried: false, status: m.sticky ? null : m.status, sticky: false });
-      if (m.stopped && (msg.source === "watch" || msg.source === "timer")) return [m, []];
+      if (msg.source === "refresh") {
+        return trigger({ ...m, dirty: new Set([...m.dirty, ...m.visible.filter((p) => m.files.has(p))]), stopped: false, retried: false, status: m.sticky ? null : m.status, sticky: false });
+      }
+      if (m.stopped && (msg.source === "watch" || msg.source === "timer")) {
+        return [m, []];
+      }
       return trigger(m);
     }
     case "Loaded": {
@@ -560,24 +713,36 @@ export function update(m: Model, msg: Msg): Step {
       return released(m);
     case "FoldToggled": {
       // The editor is drawn in its file: a fold would hide it.
-      if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
+      if (m.editor !== null) {
+        return [{ ...m, status: BUSY_EDITOR }, []];
+      }
       const f = m.state?.files.find((x) => x.path === msg.path);
-      if (f === undefined) return [m, []];
+      if (f === undefined) {
+        return [m, []];
+      }
       const folded = !isFolded(m, f);
       return flush({ ...m, folds: new Map(m.folds).set(f.path, folded), selection: folded && m.selection?.path === f.path ? null : m.selection });
     }
     case "Failed":
       return failed(m, msg);
     case "SpecChosen": {
-      if (specText(m.spec) === specText(msg.spec)) return [m, []];
-      if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
+      if (specText(m.spec) === specText(msg.spec)) {
+        return [m, []];
+      }
+      if (m.editor !== null) {
+        return [{ ...m, status: BUSY_EDITOR }, []];
+      }
       // Another spec is another diff: no file that was fetched is kept.
       const fresh = { ...m, files: new Map(), dirty: new Set<string>(), skipped: new Set<string>(), selection: null, cursor: null, visual: false, drag: null, hover: null, grip: null, offset: 0, jump: null, reveal: null, visible: [], top: null, status: m.sticky ? null : m.status, sticky: false };
       return trigger(rekey(fresh, { spec: msg.spec }));
     }
     case "FileChosen": {
-      if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
-      if (m.state?.files.every((f) => f.path !== msg.path)) return [m, []];
+      if (m.editor !== null) {
+        return [{ ...m, status: BUSY_EDITOR }, []];
+      }
+      if (m.state?.files.every((f) => f.path !== msg.path)) {
+        return [m, []];
+      }
       // The stream scrolls to the file's header, and the files around it are fetched as the stream shows them.
       return flush({ ...m, selection: null, jump: null, selected: msg.path, reveal: { key: itemKey(msg.path, "file") }, status: m.sticky ? null : m.status, sticky: false });
     }
@@ -597,7 +762,9 @@ export function update(m: Model, msg: Msg): Step {
     case "PlusClicked":
       return plusClicked(m, msg.path, msg.row, msg.side);
     case "FileCommentClicked":
-      if (m.editor !== null || m.selected === null) return [m, []];
+      if (m.editor !== null || m.selected === null) {
+        return [m, []];
+      }
       return [{ ...m, selection: null, status: null, reveal: showEditor(m.selected), editor: { kind: "comment", anchor: { path: m.selected, old_path: null, side: null, line: null, end_line: null }, thread: null, comment: null, initial: "" } }, []];
     case "EditorSaved":
       return saved(m, msg.text);
@@ -617,7 +784,9 @@ export function update(m: Model, msg: Msg): Step {
     case "SendClicked":
       return sendClicked(m, msg.threads ?? []);
     case "PickerChosen": {
-      if (m.root === null || m.sending || m.picker === null || !m.picker.some((c) => c.address === msg.target)) return [m, []];
+      if (m.root === null || m.sending || m.picker === null || !m.picker.some((c) => c.address === msg.target)) {
+        return [m, []];
+      }
       return [{ ...m, picker: null, target: msg.target, sending: true, status: "sending...", sticky: true }, [{ _tag: "Send", root: m.root, target: msg.target, threads: m.sendThreads }]];
     }
     case "PickerCancelled":
@@ -635,13 +804,14 @@ export function update(m: Model, msg: Msg): Step {
     case "Archived":
       return archived(m, msg);
     case "ViewedClicked":
-      if (m.root === null) return [m, []];
-      if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
+      if (m.root === null) {
+        return [m, []];
+      }
+      if (m.editor !== null) {
+        return [{ ...m, status: BUSY_EDITOR }, []];
+      }
       // Marking a file viewed folds it and puts its header at the top, as the TUI does; the mark is the CLI's.
-      return [
-        { ...m, folds: new Map(m.folds).set(msg.path, msg.viewed), selection: m.selection?.path === msg.path && msg.viewed ? null : m.selection, reveal: msg.viewed ? { key: itemKey(msg.path, "file") } : m.reveal },
-        [{ _tag: "SetViewed", root: m.root, spec: m.spec, path: msg.path, viewed: msg.viewed }],
-      ];
+      return [{ ...m, folds: new Map(m.folds).set(msg.path, msg.viewed), selection: m.selection?.path === msg.path && msg.viewed ? null : m.selection, reveal: msg.viewed ? { key: itemKey(msg.path, "file") } : m.reveal }, [{ _tag: "SetViewed", root: m.root, spec: m.spec, path: msg.path, viewed: msg.viewed }]];
     case "SidebarToggled":
       // A box that is no longer drawn cannot hold the keyboard.
       return savePanel({ ...m, filtering: m.panel.open ? false : m.filtering }, { ...m.panel, open: !m.panel.open });
@@ -653,7 +823,9 @@ export function update(m: Model, msg: Msg): Step {
       return [{ ...m, filtering: msg.on }, []];
     case "FilterOpened":
       // `/` with the sidebar hidden shows it first, as the TUI does. The view gives the box the keyboard.
-      if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) return [m, []];
+      if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) {
+        return [m, []];
+      }
       return m.panel.open ? [m, []] : savePanel(m, { ...m.panel, open: true });
     case "FilterCleared":
       return [{ ...m, filter: "", filtering: false }, []];
@@ -696,11 +868,21 @@ export function update(m: Model, msg: Msg): Step {
 // What each error does. The one place that says it: each row of the table in design/gui.md.
 export function failed(m: Model, msg: Extract<Msg, { _tag: "Failed" }>): Step {
   const { op, error } = msg;
-  if (op === "watch-store") return [{ ...m, storeWatch: null }, []]; // tried again after the next load
-  if (op === "watch-root") return [m, []]; // the timer carries the panel
-  if (op === "seen") return [m, []]; // nothing shown, the marker stays until the next load
-  if (op === "panel") return [{ ...m, status: "could not remember the sidebar setting", sticky: false }, []]; // the view is right, only the file is not
-  if (op === "message" || op === "message-send") return messageFailed(m, error); // the message view's own status, the diff's is left alone
+  if (op === "watch-store") {
+    return [{ ...m, storeWatch: null }, []];
+  } // tried again after the next load
+  if (op === "watch-root") {
+    return [m, []];
+  } // the timer carries the panel
+  if (op === "seen") {
+    return [m, []];
+  } // nothing shown, the marker stays until the next load
+  if (op === "panel") {
+    return [{ ...m, status: "could not remember the sidebar setting", sticky: false }, []];
+  } // the view is right, only the file is not
+  if (op === "message" || op === "message-send") {
+    return messageFailed(m, error);
+  } // the message view's own status, the diff's is left alone
   const fetch = op === "load" || op === "files";
   const base = {
     ...m,
@@ -716,7 +898,9 @@ export function failed(m: Model, msg: Extract<Msg, { _tag: "Failed" }>): Step {
     sticky: false,
   };
   // The draft was written; only the reload that would show it failed. The editor goes rather than wait for ever.
-  if (fetch && m.landing !== null) return flush(...reduceError(draftLanded(base), error));
+  if (fetch && m.landing !== null) {
+    return flush(...reduceError(draftLanded(base), error));
+  }
   return flush(...reduceError(base, error));
 }
 
@@ -739,9 +923,7 @@ function reduceError(m: Model, error: ReviewError): Step {
       // A gone terminal never comes back, so drop it: the next Send, which the user clicks knowing
       // this, finds the agent by folder or offers the picker.
       const gone = error.why === "AgentGone";
-      const status = gone
-        ? "nothing was sent: the agent is gone. Send again to find an agent for this folder"
-        : `nothing was sent: ${error.why}`;
+      const status = gone ? "nothing was sent: the agent is gone. Send again to find an agent for this folder" : `nothing was sent: ${error.why}`;
       return [{ ...m, target: gone ? null : m.target, status }, [{ _tag: "Notify", title: "herdr-review", body: status }]];
     }
     case "NoTarget":

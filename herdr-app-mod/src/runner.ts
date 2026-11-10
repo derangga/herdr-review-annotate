@@ -17,7 +17,9 @@ export async function withRecovery(op: Op, handler: () => Promise<Msg | null>): 
   try {
     return await handler();
   } catch (e) {
-    if (isTagged(e)) return { _tag: "Failed", op, error: e };
+    if (isTagged(e)) {
+      return { _tag: "Failed", op, error: e };
+    }
     throw e;
   }
 }
@@ -77,7 +79,9 @@ export function run(env: Env, cmd: Cmd): Promise<Msg | null> {
       return env.cli.theme().then(
         (r): Msg => ({ _tag: "ThemeLoaded", colors: r.colors, warnings: r.warnings }),
         (e: unknown): Msg => {
-          if (!isTagged(e)) throw e;
+          if (!isTagged(e)) {
+            throw e;
+          }
           return { _tag: "ThemeLoaded", colors: null, warnings: [`could not read the plugin theme: ${errorText(e)}`] };
         },
       );
@@ -121,7 +125,9 @@ async function shell(host: Host, command: string, args: string[]): Promise<void>
   } catch {
     return fail(`could not run ${command}`);
   }
-  if (result.code !== 0) fail(result.stderr.trim() || `${command} failed (${result.code})`);
+  if (result.code !== 0) {
+    fail(result.stderr.trim() || `${command} failed (${result.code})`);
+  }
 }
 
 // The text goes to a file in a folder only this user can open, and the file's path is all the CLI is told.
@@ -184,10 +190,14 @@ export async function watch(env: Env, dir: string, op: "watch-root" | "watch-sto
     try {
       await env.host.watchFolder(dir);
     } catch {
-      if (!env.closed()) env.dispatch({ _tag: "Failed", op, error: { _tag: "WatchUnavailable" } });
+      if (!env.closed()) {
+        env.dispatch({ _tag: "Failed", op, error: { _tag: "WatchUnavailable" } });
+      }
       return null;
     }
-    if (env.closed()) break;
+    if (env.closed()) {
+      break;
+    }
     env.dispatch({ _tag: "Triggered", source: "watch" });
   }
   return null;
@@ -197,17 +207,22 @@ export async function watch(env: Env, dir: string, op: "watch-root" | "watch-sto
 // asks for the keyboard, so n and N reach the panel. "next-comment" and "previous-comment" are what
 // `herdr-app do herdr-review.next-comment` and a keys.json binding to that name deliver, from anywhere. Any
 // other command is not ours.
-export const commandMsg = (command: string): Msg | null =>
-  command === "next-comment" ? { _tag: "ThreadJumped", forward: true } : command === "previous-comment" ? { _tag: "ThreadJumped", forward: false } : null;
+export const commandMsg = (command: string): Msg | null => (command === "next-comment" ? { _tag: "ThreadJumped", forward: true } : command === "previous-comment" ? { _tag: "ThreadJumped", forward: false } : null);
 
 export async function listen(env: Env, onFocus: () => void): Promise<null> {
   while (!env.closed()) {
     try {
       const command = await env.host.nextCommand();
-      if (env.closed()) break;
-      if (command === "focus") onFocus();
+      if (env.closed()) {
+        break;
+      }
+      if (command === "focus") {
+        onFocus();
+      }
       const msg = commandMsg(command);
-      if (msg !== null) env.dispatch(msg);
+      if (msg !== null) {
+        env.dispatch(msg);
+      }
     } catch {
       return null;
     }
@@ -218,12 +233,18 @@ export async function listen(env: Env, onFocus: () => void): Promise<null> {
 // The reads of init: root and target from props, else the focused terminal, else a pane of the same tab.
 export function open(host: Host): Msg {
   const props = decodeProps(host.props());
-  if (props.root !== null) return { _tag: "Opened", root: props.root, target: props.target };
+  if (props.root !== null) {
+    return { _tag: "Opened", root: props.root, target: props.target };
+  }
   const focus = decodeFocus(host.focused());
-  if (focus !== null && focus.cwd !== null) return { _tag: "Opened", root: focus.cwd, target: props.target ?? (focus.agent ? focus.terminal : null) };
+  if (focus !== null && focus.cwd !== null) {
+    return { _tag: "Opened", root: focus.cwd, target: props.target ?? (focus.agent ? focus.terminal : null) };
+  }
   const tab = focus === null ? null : focus.tab;
   const panes = decodePanes(host.panes()).filter((p) => p.tab === tab);
   const pane = panes.find((p) => p.agent) ?? panes[0];
-  if (pane === undefined) return { _tag: "Opened", root: null, target: null };
+  if (pane === undefined) {
+    return { _tag: "Opened", root: null, target: null };
+  }
   return { _tag: "Opened", root: pane.cwd, target: props.target ?? (pane.agent ? pane.terminal : null) };
 }

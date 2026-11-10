@@ -27,7 +27,10 @@ test("a load runs state alone and answers Loaded with the key it was asked for",
   assert.ok(msg && msg._tag === "Loaded");
   assert.equal(msg.key, "k");
   assert.equal(msg.state.files.length, 5);
-  assert.deepEqual(execs(t.calls).map((c) => c.argv), [["state", "--json", "--repo", "/repo"]]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.argv),
+    [["state", "--json", "--repo", "/repo"]],
+  );
 });
 
 test("a fetch of files is one files call with a --path for each, and answers FilesLoaded with the key and the files in the order asked", async () => {
@@ -35,8 +38,14 @@ test("a fetch of files is one files call with a --path for each, and answers Fil
   const msg = await run(t.env, files(["src/a.rs", "notes.txt"]));
   assert.ok(msg && msg._tag === "FilesLoaded");
   assert.equal(msg.key, "k");
-  assert.deepEqual(msg.files.map((f) => f.path), ["src/a.rs", "notes.txt"]);
-  assert.deepEqual(execs(t.calls).map((c) => c.argv), [["files", "--json", "--repo", "/repo", "--path", "src/a.rs", "--path", "notes.txt"]]);
+  assert.deepEqual(
+    msg.files.map((f) => f.path),
+    ["src/a.rs", "notes.txt"],
+  );
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.argv),
+    [["files", "--json", "--repo", "/repo", "--path", "src/a.rs", "--path", "notes.txt"]],
+  );
 });
 
 test("E: a path not in the diff fails the whole fetch, as op files with BadRequest", async () => {
@@ -83,21 +92,32 @@ test("E: BinaryMissing -> the next candidate, in the order props.bin, the staged
   const t = env({ exec: (command, args) => (command === "herdr-review" ? defaultExec(command, args) : "reject") }, "/custom/herdr-review");
   const msg = await run(t.env, load());
   assert.ok(msg && msg._tag === "Loaded");
-  assert.deepEqual(execs(t.calls).slice(0, 3).map((c) => c.command), ["/custom/herdr-review", STAGED, "herdr-review"]);
+  assert.deepEqual(
+    execs(t.calls)
+      .slice(0, 3)
+      .map((c) => c.command),
+    ["/custom/herdr-review", STAGED, "herdr-review"],
+  );
 });
 
 test("the binary that started is kept for every later call", async () => {
   const t = env({ exec: (command, args) => (command === STAGED ? defaultExec(command, args) : "reject") });
   await run(t.env, load());
   await run(t.env, load());
-  assert.deepEqual(execs(t.calls).map((c) => c.command), [STAGED, STAGED]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.command),
+    [STAGED, STAGED],
+  );
 });
 
 test("E: no candidate left -> Failed BinaryMissing", async () => {
   const t = env({ exec: () => "reject" });
   const msg = await run(t.env, load());
   assert.deepEqual(msg, { _tag: "Failed", op: "load", error: { _tag: "BinaryMissing" } });
-  assert.deepEqual(execs(t.calls).map((c) => c.command), [STAGED, "herdr-review"]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => c.command),
+    [STAGED, "herdr-review"],
+  );
 });
 
 test("E: TooOld -> exit 2 with an unknown command, option or comment command, and the search stops", async () => {
@@ -162,8 +182,14 @@ test("a watch wake is a trigger, and a wake after close dispatches nothing", asy
 });
 
 test("a thrown value that is not a tagged object is a bug and goes up", async () => {
-  await assert.rejects(withRecovery("load", async () => Promise.reject(new TypeError("boom"))), TypeError);
-  await assert.rejects(withRecovery("load", async () => Promise.reject(null)), (e) => e === null);
+  await assert.rejects(
+    withRecovery("load", async () => Promise.reject(new TypeError("boom"))),
+    TypeError,
+  );
+  await assert.rejects(
+    withRecovery("load", async () => Promise.reject(null)),
+    (e) => e === null,
+  );
 });
 
 test("Notify calls Host.notify and answers nothing", async () => {
@@ -216,7 +242,10 @@ const writes = (calls: { method: string; args: unknown[] }[]) => calls.filter((c
 test("ReadPanel reads panel.json under appHome and answers the decoded settings", async () => {
   const t = env({ file: '{"side":"right","open":false}' });
   assert.deepEqual(await run(t.env, { _tag: "ReadPanel" }), { _tag: "PanelLoaded", panel: { side: "right", open: false } });
-  assert.deepEqual(t.calls.filter((c) => c.method === "readTextFile").map((c) => c.args), [[PANEL]]);
+  assert.deepEqual(
+    t.calls.filter((c) => c.method === "readTextFile").map((c) => c.args),
+    [[PANEL]],
+  );
 });
 
 test("E: ReadPanel with no file, a bad file or a read that rejects answers the defaults", async () => {
@@ -251,7 +280,9 @@ test("a refused write (the file changed since the read) is read again and then s
   let n = 0;
   const write = t.host.writeTextFile;
   t.host.writeTextFile = async (...a) => {
-    if (n++ === 0) throw new Error("stale");
+    if (n++ === 0) {
+      throw new Error("stale");
+    }
     return write(...a);
   };
   assert.equal(await run(t.env, { _tag: "SavePanel", panel: { side: "right", open: true } }), null);
@@ -267,7 +298,13 @@ test("ReadTheme runs theme --json on the binary that answered, and answers the c
   await run(t.env, load());
   const msg = await run(t.env, { _tag: "ReadTheme" });
   assert.deepEqual(msg, { _tag: "ThemeLoaded", colors: { background: "#1e1e2e" }, warnings: ["bad key"] });
-  assert.deepEqual(execs(t.calls).map((c) => [c.command, c.argv]), [["/opt/herdr-review", ["state", "--json", "--repo", "/repo"]], ["/opt/herdr-review", ["theme", "--json"]]]);
+  assert.deepEqual(
+    execs(t.calls).map((c) => [c.command, c.argv]),
+    [
+      ["/opt/herdr-review", ["state", "--json", "--repo", "/repo"]],
+      ["/opt/herdr-review", ["theme", "--json"]],
+    ],
+  );
 });
 
 test("E: ReadTheme under app answers colors null", async () => {

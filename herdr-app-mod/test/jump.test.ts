@@ -27,7 +27,10 @@ const jump = (m: Model, forward: boolean) => steps(m, { _tag: "ThreadJumped", fo
 const other = (path: string, threads: FileView["threads"]): FileView => ({ ...file, path, threads });
 
 test("the cards of a file are in screen order: no row first, then by row, not the reply's order", () => {
-  assert.deepEqual(file.threads.map((t) => t.id), ["u1", "u2", "u3", "u4", "u5"]);
+  assert.deepEqual(
+    file.threads.map((t) => t.id),
+    ["u1", "u2", "u3", "u4", "u5"],
+  );
   assert.deepEqual(cardOrder(file), A);
 });
 
@@ -89,8 +92,19 @@ test("no threads in the review: nothing to jump to, a status, the buttons off", 
   assert.deepEqual(cmds, []);
   assert.equal(model.focus, null);
   const nav = dock(m).actions.filter((b) => b.id === "prev-thread" || b.id === "next-thread");
-  assert.deepEqual(nav.map((b) => [b.label, b.off]), [["Previous comment", true], ["Next comment", true]]);
-  assert.deepEqual(dock(loaded()).actions.filter((b) => b.id.endsWith("-thread")).map((b) => b.off), [false, false]);
+  assert.deepEqual(
+    nav.map((b) => [b.label, b.off]),
+    [
+      ["Previous comment", true],
+      ["Next comment", true],
+    ],
+  );
+  assert.deepEqual(
+    dock(loaded())
+      .actions.filter((b) => b.id.endsWith("-thread"))
+      .map((b) => b.off),
+    [false, false],
+  );
 });
 
 test("a thread that is drawn is focused and scrolled to at once, with no fetch", () => {
@@ -125,7 +139,10 @@ test("a jump into a file that has not arrived scrolls to its header, fetches it 
   // The focus stays where it was until the file is there.
   assert.equal(go.model.focus, "u4");
   const [t1, t2] = [file.threads[0], file.threads[1]] as [FileView["threads"][number], FileView["threads"][number]];
-  const b = other("src/b.rs", [{ ...t2, id: "b2", placement: { kind: "matched", row: 5, start_row: null }, comments: [{ ...t2.comments[0]!, id: "b2" }] }, { ...t1, id: "b1", placement: { kind: "matched", row: 1, start_row: null }, comments: [{ ...t1.comments[0]!, id: "b1" }] }]);
+  const b = other("src/b.rs", [
+    { ...t2, id: "b2", placement: { kind: "matched", row: 5, start_row: null }, comments: [{ ...t2.comments[0]!, id: "b2" }] },
+    { ...t1, id: "b1", placement: { kind: "matched", row: 1, start_row: null }, comments: [{ ...t1.comments[0]!, id: "b1" }] },
+  ]);
   const done = steps(go.model, { _tag: "FilesLoaded", key: fetch.key, files: [b] }).model;
   assert.equal(done.jump, null);
   // Going forward lands on the first card on screen, which is not the first the reply lists.
@@ -140,7 +157,10 @@ test("going back into a file lands on its last card", () => {
   const fetch = go.cmds[0];
   assert.ok(fetch && fetch._tag === "LoadFiles");
   const [t1, t2] = [file.threads[0], file.threads[1]] as [FileView["threads"][number], FileView["threads"][number]];
-  const n = other("notes.txt", [{ ...t1, id: "n1", placement: { kind: "matched", row: 1, start_row: null } }, { ...t2, id: "n2", placement: { kind: "matched", row: 4, start_row: null } }]);
+  const n = other("notes.txt", [
+    { ...t1, id: "n1", placement: { kind: "matched", row: 1, start_row: null } },
+    { ...t2, id: "n2", placement: { kind: "matched", row: 4, start_row: null } },
+  ]);
   assert.equal(steps(go.model, { _tag: "FilesLoaded", key: fetch.key, files: [n] }).model.focus, "n2");
 });
 
@@ -205,7 +225,9 @@ test("n is next, shift+n is previous, other chords are not ours, and nothing is 
   assert.deepEqual(panelKey(m, "n"), { _tag: "ThreadJumped", forward: true });
   assert.deepEqual(panelKey(m, "shift-n"), { _tag: "ThreadJumped", forward: false });
   assert.deepEqual(panelKey(m, "N"), { _tag: "ThreadJumped", forward: false });
-  for (const key of ["cmd-n", "ctrl-n", "x", "escape", "enter"]) assert.equal(panelKey(m, key), null, key);
+  for (const key of ["cmd-n", "ctrl-n", "x", "escape", "enter"]) {
+    assert.equal(panelKey(m, key), null, key);
+  }
   const editing: Model = { ...m, editor: { kind: "reply", anchor: null, thread: "u1", comment: null, initial: "" } };
   assert.equal(panelKey(editing, "n"), null);
   assert.equal(panelKey({ ...m, confirm: "u1" }, "n"), null);
@@ -230,7 +252,10 @@ test("herdr-app's commands: focus gives the panel the keyboard, the two comment 
   let focused = 0;
   await listen(env, () => focused++);
   assert.equal(focused, 2); // the last "focus" came after the close
-  assert.deepEqual(sent, [{ _tag: "ThreadJumped", forward: true }, { _tag: "ThreadJumped", forward: false }]);
+  assert.deepEqual(sent, [
+    { _tag: "ThreadJumped", forward: true },
+    { _tag: "ThreadJumped", forward: false },
+  ]);
   fake.host.nextCommand = () => Promise.reject(new Error("gone"));
   assert.equal(await listen({ ...env, closed: () => false }, () => focused++), null);
 });

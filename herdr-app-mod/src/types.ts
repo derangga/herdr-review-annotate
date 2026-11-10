@@ -3,16 +3,7 @@
 
 export type Spec = { kind: "worktree" } | { kind: "branch"; base: string };
 
-export type Change =
-  | "modified"
-  | "added"
-  | "deleted"
-  | "renamed"
-  | "untracked"
-  | "binary"
-  | "submodule"
-  | "too_large"
-  | "unparsed";
+export type Change = "modified" | "added" | "deleted" | "renamed" | "untracked" | "binary" | "submodule" | "too_large" | "unparsed";
 
 export type FileSummary = {
   path: string;
@@ -324,14 +315,7 @@ export type Msg =
 // the comment. delete asks, DeleteConfirmed writes. focus selects a comment, toggle selects a thread and opens or closes a resolved one.
 export type ThreadActionKind = "focus" | "toggle" | "reply" | "edit" | "resolve" | "reopen" | "delete";
 
-export type WriteOp =
-  | { kind: "comment"; anchor: NewAnchor; text: string }
-  | { kind: "reply"; id: string; text: string }
-  | { kind: "edit"; id: string; text: string }
-  | { kind: "resolve"; id: string }
-  | { kind: "reopen"; id: string }
-  | { kind: "delete"; id: string }
-  | { kind: "seen"; id: string };
+export type WriteOp = { kind: "comment"; anchor: NewAnchor; text: string } | { kind: "reply"; id: string; text: string } | { kind: "edit"; id: string; text: string } | { kind: "resolve"; id: string } | { kind: "reopen"; id: string } | { kind: "delete"; id: string } | { kind: "seen"; id: string };
 export type WriteKind = WriteOp["kind"] | "viewed";
 
 export type Op = "load" | "files" | "watch-root" | "watch-store" | "write" | "seen" | "send" | "archive" | "viewed" | "panel" | "message" | "message-send";
