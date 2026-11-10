@@ -76,7 +76,7 @@ herdr-review/
   scripts/fetch-herdr-review.sh   prebuilt binary and SHA-256, for `plugin install`
   scripts/stage-local.sh          build and stage, for `plugin link`
   scripts/stage-app-mod.sh        build the panel and the binary, copy both to the herdr-app mod folder
-  scripts/ci.sh                   the CI steps, in CI's order
+  scripts/ci.sh                   the CI steps, in CI's order: `ci.sh test`, `ci.sh build`, or both
   tests/*.rs           integration tests: store processes, live pickup, a temporary repository
   tests/fixtures/*.patch
   src/<module>/tests.rs  unit tests of the modules that have one

@@ -870,8 +870,10 @@ What the repository needs for a second language. The first bead that writes Type
 - `AGENTS.md` (this repo's, not the one in `~/.config/herdr-app`): the work loop's "done" line names
   `cargo clippy` and `cargo test`. Add the TypeScript tests and `herdr-app check` for a bead that touches
   `herdr-app-mod/`, and a row in "Where things are" pointing at `gui.md`.
-- `scripts/ci.sh` and `.github/workflows/ci.yml`: after the cargo steps, `npm ci`, `npm test` and
-  `npm run build` in `herdr-app-mod/`. `ci.yml` sets up Node 22. The typecheck is not in CI.
+- `scripts/ci.sh` and `.github/workflows/ci.yml`: the test stage runs `npm ci`, `npm run lint` and `npm test`
+  in `herdr-app-mod/` after the cargo checks, and the build stage runs `npm run build` after
+  `cargo build --no-default-features`. `ci.yml` runs each stage as its own job and sets up Node 22. The
+  typecheck is not in CI.
 - `herdr-plugin.toml` does not change. The Herdr plugin installs from a checkout and fetches the binary in
   `scripts/fetch-herdr-review.sh`, so `herdr-app-mod/` adds source files to the plugin folder and nothing
   else.
