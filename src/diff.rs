@@ -180,6 +180,31 @@ pub struct DiffFile {
     pub flags: Flags,
 }
 
+/// A 64-bit FNV-1a hash, seeded with what every hash of a file starts with.
+struct Fnv(u64);
+
+impl Fnv {
+    /// Starts with the file's change, old path and mode flag.
+    fn new(file: &DiffFile) -> Self {
+        let mut hash = Self(0xcbf2_9ce4_8422_2325);
+        let old = file.old_path.as_ref().map_or("", RelPath::as_str);
+        let mode = file.flags.mode_changed;
+        hash.eat(format!("{:?}\0{old}\0{mode}\n", file.change).as_bytes());
+        hash
+    }
+
+    fn eat(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn finish(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
 impl DiffFile {
     /// The added and removed lines of the file, for the sidebar. A file with no hunks has none.
     pub fn stat(&self) -> (usize, usize) {
@@ -195,25 +220,36 @@ impl DiffFile {
     /// old path, its mode flag and the kind and text of each added and removed row. Context rows and
     /// line numbers are left out, so the whole-file view and lines that only moved keep the mark.
     pub fn fingerprint(&self) -> String {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut eat = |bytes: &[u8]| {
-            for &byte in bytes {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
-        let old = self.old_path.as_ref().map_or("", RelPath::as_str);
-        let mode = self.flags.mode_changed;
-        eat(format!("{:?}\0{old}\0{mode}\n", self.change).as_bytes());
+        let mut hash = Fnv::new(self);
         for row in self.hunks.iter().flat_map(|hunk| &hunk.rows) {
             let tag = match row.kind {
                 RowKind::Context => continue,
                 RowKind::Added => '+',
                 RowKind::Removed => '-',
             };
-            eat(format!("{tag}{}\n", row.text).as_bytes());
+            hash.eat(format!("{tag}{}\n", row.text).as_bytes());
         }
-        format!("{hash:016x}")
+        hash.finish()
+    }
+
+    /// What `state --json` sends as `hash`: the same FNV-1a, over everything the panel draws of the
+    /// file's diff. Unlike `fingerprint` it takes each hunk header and every row with its kind and
+    /// line numbers, context included, so lines that only moved, or a changed context line, change it.
+    pub fn content_hash(&self) -> String {
+        let mut hash = Fnv::new(self);
+        for hunk in &self.hunks {
+            hash.eat(format!("@{}\n", hunk.header).as_bytes());
+            for row in &hunk.rows {
+                let kind = match row.kind {
+                    RowKind::Context => ' ',
+                    RowKind::Added => '+',
+                    RowKind::Removed => '-',
+                };
+                let (old, new) = (row.old.map_or(-1, i64::from), row.new.map_or(-1, i64::from));
+                hash.eat(format!("{kind}{old}\0{new}\0{}\n", row.text).as_bytes());
+            }
+        }
+        hash.finish()
     }
 
     fn listed(path: RelPath, change: Change) -> Self {
@@ -1230,6 +1266,24 @@ mod tests {
         )
         .remove(0);
         assert_ne!(file.fingerprint(), added.fingerprint());
+    }
+
+    #[test]
+    fn the_content_hash_covers_every_drawn_row() {
+        let file = two_hunks();
+        let again = parse(TWO_HUNKS.as_bytes(), MAX_PATCH).remove(0);
+        assert_eq!(file.content_hash(), again.content_hash());
+        assert_eq!(file.content_hash().len(), 16);
+        let edited = parse(TWO_HUNKS.replace("+L16\n", "+Z16\n").as_bytes(), MAX_PATCH).remove(0);
+        assert_eq!(file.stat(), edited.stat());
+        assert_ne!(file.content_hash(), edited.content_hash());
+        let moved = parse(
+            TWO_HUNKS.replace("-13,7 +14,7", "-30,7 +31,7").as_bytes(),
+            MAX_PATCH,
+        )
+        .remove(0);
+        assert_eq!(file.fingerprint(), moved.fingerprint());
+        assert_ne!(file.content_hash(), moved.content_hash());
     }
 
     #[test]

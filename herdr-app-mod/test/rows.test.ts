@@ -115,7 +115,7 @@ test("the sidebar has a heading where the folder changes, and the files under it
   assert.deepEqual([bin.letter, bin.viewed, bin.badges.at(-1)], ["B", true, { text: "viewed", tone: "viewed" }]);
 });
 
-const f = (path: string, change: FileSummary["change"] = "modified"): FileSummary => ({ path, old_path: null, change, add: 1, del: 0, viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
+const f = (path: string, change: FileSummary["change"] = "modified"): FileSummary => ({ path, old_path: null, change, add: 1, del: 0, hash: "0123456789abcdef", viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
 
 test("files group by consecutive folder, the top folder is ./, and a folder that returns gets a second heading", () => {
   const rows = sidebarRows([f("src/a.rs"), f("src/b.rs"), f("README.md"), f("src/deep/c.rs"), f("src/d.rs", "untracked")]);

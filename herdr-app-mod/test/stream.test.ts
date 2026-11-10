@@ -164,7 +164,7 @@ test("a file's items are kept while nothing they show changes, and the same rows
 
 // --- the order files are fetched in ---
 
-const many = (n: number): FileSummary[] => Array.from({ length: n }, (_, i) => ({ path: `f${i}.rs`, old_path: null, change: "modified" as const, add: 1, del: 0, viewed: false, threads: 0, open: 0, new: 0, unsent: 0 }));
+const many = (n: number): FileSummary[] => Array.from({ length: n }, (_, i) => ({ path: `f${i}.rs`, old_path: null, change: "modified" as const, add: 1, del: 0, hash: "0123456789abcdef", viewed: false, threads: 0, open: 0, new: 0, unsent: 0 }));
 const big = (n: number): State => ({ ...state, files: many(n), orphans: [] });
 const opened = (n: number): { model: Model; first: string[] } => {
   const open = steps(initModel(), { _tag: "Opened", root: "/repo", target: null });
@@ -241,6 +241,18 @@ test("a reload fetches again the files whose summary changed and the files on sc
   // A file that left the diff goes.
   const gone = steps({ ...m, inFlight: true }, { _tag: "Loaded", key: m.key, state: { ...state, files: state.files.filter((f) => f.path !== "notes.txt") } });
   assert.equal(gone.model.files.has("notes.txt"), false);
+});
+
+test("a reload fetches again an off-screen file whose summary differs only in its hash, and not one whose summary is the same", () => {
+  const m = steps(drawn(), scroll("notes.txt|file", ["notes.txt"])).model;
+  assert.ok(m.files.has("src/a.rs") && !m.visible.includes("src/a.rs"));
+  const same = steps({ ...m, inFlight: true, dirty: new Set() }, { _tag: "Loaded", key: m.key, state });
+  assert.equal(same.model.dirty.has("src/a.rs"), false);
+  assert.equal(wanted(same.model).includes("src/a.rs"), false);
+  const next = { ...state, files: state.files.map((f) => (f.path === "src/a.rs" ? { ...f, hash: "ffffffffffffffff" } : f)) };
+  const out = steps({ ...m, inFlight: true, dirty: new Set() }, { _tag: "Loaded", key: m.key, state: next });
+  assert.equal(out.model.dirty.has("src/a.rs"), true);
+  assert.ok(wanted(out.model).includes("src/a.rs"));
 });
 
 test("E: a reply for another root or spec than the model's is dropped", () => {

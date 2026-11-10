@@ -92,6 +92,7 @@ function fileSummary(v: unknown, path: string): FileSummary {
     change: oneOf(o, "change", path, CHANGES),
     add: int(o, "add", path),
     del: int(o, "del", path),
+    hash: str(o, "hash", path),
     viewed: bool(o, "viewed", path),
     threads: int(o, "threads", path),
     open: int(o, "open", path),

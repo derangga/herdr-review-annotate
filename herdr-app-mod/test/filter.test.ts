@@ -9,7 +9,7 @@ const state = fixtureState();
 const file = fixtureFile();
 const base: Model = loadedModel(state, file);
 
-const f = (path: string): FileSummary => ({ path, old_path: null, change: "modified", add: 1, del: 0, viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
+const f = (path: string): FileSummary => ({ path, old_path: null, change: "modified", add: 1, del: 0, hash: "0123456789abcdef", viewed: false, threads: 0, open: 0, new: 0, unsent: 0 });
 const paths = (q: string, files: FileSummary[]) => sidebarRows(files, q).flatMap((r) => (r.kind === "file" ? [r.path] : []));
 const run = (m: Model, ...msgs: Msg[]) => msgs.reduce<{ m: Model; cmds: unknown[] }>((acc, msg) => {
   const [next, out] = update(acc.m, msg);

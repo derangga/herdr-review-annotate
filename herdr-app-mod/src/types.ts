@@ -20,6 +20,7 @@ export type FileSummary = {
   change: Change;
   add: number;
   del: number;
+  hash: string; // changes whenever the file's diff rows change
   viewed: boolean;
   threads: number;
   open: number;

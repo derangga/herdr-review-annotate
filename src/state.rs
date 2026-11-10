@@ -366,6 +366,7 @@ pub fn state(
                 change: change_json(file.change),
                 add,
                 del,
+                hash: file.content_hash(),
                 viewed: viewed(&loaded, file),
                 threads: 0,
                 open: 0,

@@ -143,6 +143,9 @@ test("a missing or retyped field names its path", () => {
   const raw = state();
   delete raw.files[0].add;
   assert.equal(mismatch(() => decodeState(raw)).path, "$.files[0].add");
+  const h = state();
+  delete h.files[0].hash;
+  assert.equal(mismatch(() => decodeState(h)).path, "$.files[0].hash");
   const f = file();
   f.threads[1].comments[0].sent = "yes";
   assert.equal(mismatch(() => decodeFile(f)).path, "$.threads[1].comments[0].sent");
