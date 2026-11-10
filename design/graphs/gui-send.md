@@ -51,7 +51,7 @@ The model keeps the chosen `target` for the rest of the copy's life. The CLI als
 ([send](../send.md)), so the next copy of the panel starts from it.
 
 A resend names the thread's id with `--thread`. It sends that thread even if it was already sent, and only if
-it is open. Resend is offered on an open thread whose comments are all sent.
+it is open. Resend is offered on an open thread whose comments are all sent, as a button on the thread's last comment.
 
 No retry anywhere in send. A second send after an unclear failure could deliver the batch twice, so the
 user decides by clicking again.

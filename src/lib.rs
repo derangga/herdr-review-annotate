@@ -18,6 +18,7 @@ pub mod json;
 pub mod keymap;
 pub mod message;
 pub mod message_action;
+pub mod message_json;
 pub mod message_tui;
 pub mod meta;
 pub mod motion;

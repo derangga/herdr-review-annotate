@@ -18,7 +18,9 @@ copies is "How the body behaves" in [tui](../tui.md).
                                                        key `<path>|r<n>`, `<path>|h:<id>`, `<path>|c:<id>`, `<path>|note`
            side by side (rows.isSplit: model.split, else width >= SPLIT_W 900)? one item per code row, key `<path>|p<n>`, 20 px:
              a run of del rows pairs line by line with the add run after it, the longer run's rest faces a null half;
-             a ctx row is on both halves; a hunk header stays a plain row; the cards of a pair come after it, its left row's first
+             a ctx row is on both halves; a hunk header stays a plain row; the cards of a pair come after it, its left row's first,
+             each in the half its thread's anchor side names (`half`: old left, new right; a file comment and the orphans full width)
+         an open editor: an `editor` item (key `<path>|editor`, `EDITOR_H` 200 px) under its row's cards, its thread's card, or at the top of the file
          else a placeholder `<path>|wait`              rows.estimateRows(summary) lines of 20 px
        starts = the prefix sum of sizes (one longer than items), total = the last of it, wide = the width the longest line needs (0 side by side,
        which fits the pane: a half's code shifts sideways only as far as the longest line on screen needs)
@@ -37,14 +39,14 @@ A key is the file's path, `|`, and what the item is. Only what follows the last 
 
 Heights are the mod's to give: nothing is measured. `rows.heightOf` is exact for a code row (20 px) and
 for a header, and estimated for a card: its text wrapped at 7.5 px a character in the card's width
-(`cardWidth`: the stream's width less 60, at most 560), 18 px a line, padding and the closing gap added. It
+(`cardWidth`: the stream's width less 60, at most 560; in a half of a side-by-side stream `halfCardWidth`: half the width less the rule, 28 and 12, at most 560), 18 px a line, padding and the closing gap added. It
 errs on the side of too tall, so text never reaches the next item. An item is drawn in a box of exactly its height
 with its overflow hidden, and a card's background fills its box. The card is drawn at that fixed height, and not at its natural
 one, because the prefix sums, the scrollbar, the hit test and a scroll to an item all use the same numbers: a card that drew
 taller or shorter than it was counted would move every item under it away from where the offset says it is.
 
 The layout is kept while nothing it is built from changes (`rows.layoutCache`): the state, the files, the folds, the open threads,
-the focus, the width, the layout (`isSplit`), the files that failed and the minute. A wheel tick, a hover, a drag and a selection change none of
+the focus, the width, the layout (`isSplit`), the editor and the view, the files that failed and the minute. A wheel tick, a hover, a drag and a selection change none of
 them, so none of them cuts items or prefix sums again, and no render rebuilds the whole stream because the pointer moved. The code
 rows' text cut into runs is kept per file reply on top of that (`rowsOf`), so the minute or the width changing does not cut every
 row again inside one frame.

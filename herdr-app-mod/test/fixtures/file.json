@@ -12,7 +12,8 @@
       "kind": "hunk",
       "old": null,
       "new": null,
-      "text": "@@ -1,4 +1,5 @@"
+      "text": "@@ -1,4 +1,5 @@",
+      "marks": []
     },
     {
       "kind": "ctx",
@@ -30,7 +31,8 @@
           7,
           "function"
         ]
-      ]
+      ],
+      "marks": []
     },
     {
       "kind": "del",
@@ -43,6 +45,12 @@
           7,
           "function"
         ]
+      ],
+      "marks": [
+        {
+          "from": 4,
+          "to": 7
+        }
       ]
     },
     {
@@ -56,6 +64,12 @@
           7,
           "function"
         ]
+      ],
+      "marks": [
+        {
+          "from": 4,
+          "to": 7
+        }
       ]
     },
     {
@@ -69,7 +83,8 @@
           8,
           "function"
         ]
-      ]
+      ],
+      "marks": []
     },
     {
       "kind": "ctx",
@@ -82,13 +97,15 @@
           8,
           "function"
         ]
-      ]
+      ],
+      "marks": []
     },
     {
       "kind": "ctx",
       "old": 4,
       "new": 5,
-      "text": "}"
+      "text": "}",
+      "marks": []
     }
   ],
   "threads": [

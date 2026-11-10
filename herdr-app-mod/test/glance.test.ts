@@ -19,7 +19,8 @@ function settle(m: Model): Model {
   }
   throw new Error("the scroll state did not settle");
 }
-const view = (file: FileView = fixtureFile()): Model => settle(loadedModel(undefined, file));
+// A tall screen: each open comment on a card carries a row of buttons, which takes room.
+const view = (file: FileView = fixtureFile()): Model => settle({ ...loadedModel(undefined, file), height: 900 });
 const resolved = (t: Thread, id: string, is_new: boolean): Thread => ({ ...t, id, status: "resolved", resolved_by: "agent:claude", is_new, comments: t.comments.map((c, i) => (i === 0 ? { ...c, id } : c)) });
 const withThreads = (...extra: Thread[]): FileView => {
   const f = fixtureFile();

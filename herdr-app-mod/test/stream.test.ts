@@ -98,7 +98,7 @@ test("a file that has not arrived is a header and a stretch as tall as its diff 
 });
 
 test("a card is estimated from its text and the width, taller for a narrower stream and for more lines", () => {
-  const body = (lines: string[], meta: string | null = null, last = true): BodyItem => ({ kind: "body", key: "x|c:1", id: "1", tone: "user", meta, lines, focused: false, last });
+  const body = (lines: string[], meta: string | null = null, last = true): BodyItem => ({ kind: "body", key: "x|c:1", id: "1", tone: "user", meta, lines, buttons: [], focused: false, last, half: null });
   const one = heightOf(body(["short"]), 600);
   assert.equal(one, 6 + 18 + 6);
   // 540 px of card minus 22 of padding is 69 characters of 7.5 px: 200 characters wrap to 3 lines.
@@ -109,9 +109,15 @@ test("a card is estimated from its text and the width, taller for a narrower str
   assert.equal(heightOf(body(["a"], "claude · now", false), 600), 6 + 16 + 18);
   // The card stops at 560 however wide the stream is.
   assert.equal(heightOf(body(["x".repeat(200)]), 3000), heightOf(body(["x".repeat(200)]), 620));
+  // A comment's button row is 4 px of space and a 24 px row of buttons, and wraps to another row in a narrow card.
+  const withButtons = (labels: string[]): BodyItem => ({ ...body(["a"]), buttons: labels.map((label) => ({ id: label, label, msg: { _tag: "SelectionCleared" } as Msg, danger: false, off: false })) });
+  assert.equal(heightOf(withButtons(["Reply", "Edit"]), 600), 6 + 18 + 4 + 24 + 6);
+  assert.equal(heightOf(withButtons(["Reply", "Resolve", "Resend", "Edit", "Delete"]), 600), 6 + 18 + 4 + 24 + 6);
+  // A 200 px stream gives a 160 px card and 138 px of text: the five buttons are about 330 px wide, so three rows with a 6 px gap.
+  assert.equal(heightOf(withButtons(["Reply", "Resolve", "Resend", "Edit", "Delete"]), 200), 6 + 18 + 4 + 3 * 24 + 2 * 6 + 6);
   // The head is one line, and a quote is another.
-  assert.equal(heightOf({ kind: "head", key: "x|h:1", id: "1", tone: "user", title: "t", badges: [], quote: null, collapsible: false, open: true, focused: false, last: false }, 600), 34);
-  assert.equal(heightOf({ kind: "head", key: "x|h:1", id: "1", tone: "user", title: "t", badges: [], quote: "q", collapsible: false, open: true, focused: false, last: false }, 600), 52);
+  assert.equal(heightOf({ kind: "head", key: "x|h:1", id: "1", tone: "user", title: "t", badges: [], quote: null, collapsible: false, open: true, focused: false, last: false, half: null }, 600), 34);
+  assert.equal(heightOf({ kind: "head", key: "x|h:1", id: "1", tone: "user", title: "t", badges: [], quote: "q", collapsible: false, open: true, focused: false, last: false, half: null }, 600), 52);
 });
 
 test("the sizes follow the width and height the stream reports", () => {

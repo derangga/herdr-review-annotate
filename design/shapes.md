@@ -174,7 +174,8 @@ Row
 { "kind": "hunk" | "ctx" | "add" | "del",
   "old": 41 | null, "new": 41 | null,
   "text": "...",                   no leading + or -. A hunk row holds the whole `@@ ... @@` line
-  "tokens": [ [0, 2, "keyword"], [3, 7, "function"] ] }     optional, see below
+  "tokens": [ [0, 2, "keyword"], [3, 7, "function"] ],     optional, see below
+  "marks": [ { "from": 4, "to": 7 } ] }                    always written, `[]` when none, see below
 
 TokenKind: "comment" | "string" | "number" | "keyword" | "operator" | "function" | "type"
 ```
@@ -200,6 +201,15 @@ one `git show` cannot give, is parsed from the rows of each hunk alone. `file` s
 are parsed (the new side first), and the rows past that have no `tokens`: the pane parses a bit at a time in
 the background and this command in one go, so it is bounded where the pane is not. In a release build that is under
 half a second at most.
+
+`marks` says which words of `text` changed, on a removed row and the added row that replaced it, as the TUI marks
+them ([tui-layout](tui-layout.md)). Each is `{ "from", "to" }` in UTF-16 code units like `tokens`, end exclusive,
+in order, not overlapping and not empty. Pairing is the TUI's: a run of removed rows pairs with the run of added
+rows right after it, the first with the first, and `words::changed` compares the pair. A row with no partner, a
+pair `changed` gives no marks (a rewritten line, a line of over 200 tokens), a context row and a hunk row have
+`[]`. Unlike `tokens` it is written on every row, as `[]` when empty: Rust does the comparison and the panel only
+draws it. It is an addition under schema 1, and a binary from before it sends none, which the decoder reads as no
+marks. The decoder is as loose about `marks` as about `tokens`, since a missing highlight is not worth a banner.
 
 A file that is not rendered (`binary`, `submodule`, `too_large`, `unparsed`) has `rows: []` and a `note`.
 `old` is null on an `add` row, `new` is null on a `del` row, and both are null on a `hunk` row. A thread
@@ -252,3 +262,17 @@ archive:       { "schema": 1, "archived": 2, "unsent": 1 }
 list stays empty and `message` says how many agents matched. `status` is hc's plain word from `hc ls`. A usage error exits
 2 and prints a line on stderr, not JSON.
 
+### `message --json` and `message send`
+
+```
+message --json, exit 0:  { "schema": 1, "agent": "claude" | "claude-code", "status": "idle" | "working" | "blocked" | "done" | "unknown",
+                           "id": "<message id>", "lines": ["...", ""] }
+message send --file:     { "id"?: "<message id>", "comments": [ { "start": 2, "end": 3, "body": "..." } ] }
+message send, exit 0:    { "schema": 1, "sent": 2 }
+```
+
+`lines` is the newest assistant message split into source lines, as the pane shows it, and `start` and `end` count
+into it from 1, both included. `agent` is the name Herdr or hc reports. `status` is the word of `herdr agent get`, or hc's
+`status.state`, and `unknown` when the agent has not reported. A failure prints no JSON: exit 1 with the reason on
+stderr (the message cannot be read, or the delivery was refused), exit 2 when the file is wrong. `send --json`'s `error`
+kinds are not used. Rust types: `MessageJson` and `MessageSentJson` in `json.rs`, `Target` in `message_json.rs`.

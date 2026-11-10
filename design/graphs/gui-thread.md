@@ -10,13 +10,14 @@ written below.
 ```
 -> ThreadAction { action, id }                         user action
      id is a comment id. A card is a head item and one item per comment, so a click on the head is `toggle` with
-     the root's id and a click on a comment is `focus`. The buttons are in the bar under the diff and act on the
-     focused comment: a list item holds no handler, so a card cannot hold a button. reply, resolve and reopen act
-     on the thread of that comment, edit and delete on the comment itself.
+     the root's id and a click on a comment is `focus`. The buttons are on the card, at the bottom of each comment
+     (`rows.cardButtons`), and name that comment's id; a press on one stops there and is not also a `focus`. Reply is
+     on every comment, resolve or reopen and resend on the thread's last, edit and delete on the user's own.
+     reply, resolve and reopen act on the thread of that comment, edit and delete on the comment itself.
   -> update(model, ThreadAction)                       (pure)
        any action but focus while the editor is open   status "finish or cancel the comment first"
-       reply   -> open the editor for that thread
-       edit    -> open the editor with the comment's text, only on a comment whose author is "user"
+       reply   -> open the editor for that thread, under its card (gui-comment.md), and reveal it
+       edit    -> open the editor with the comment's text, only on a comment whose author is "user", under its card, and reveal it
        resolve -> Cmd.Write { resolve, id }            only on an open thread
        reopen  -> Cmd.Write { reopen, id }             only on a resolved thread
        delete  -> sets Model.confirm = id and nothing else   only on a comment whose author is "user"
@@ -99,6 +100,6 @@ card, back on the last), a stale reply leaving the jump waiting, a failed fetch,
 a file that arrives empty, the editor open, the keys (`n`, `shift-n`, `N`, other chords, nothing while the editor, a
 question or the picker is up), and the commands. `test/stream.test.ts` checks that the card index a jump scrolls to
 is the card's item. Also: the argv of each of the six calls, `--as user` on reply, resolve and
-reopen and on nothing else, the edit and delete buttons absent on an agent's comment, a click on Delete only
+reopen and on nothing else, each comment's card buttons (Reply on every one, Resolve or Reopen and Resend on the last only, Edit and Delete absent on an agent's comment, each button's message and Delete red) and none of them in the dock, a click on Delete only
 asks and the row has the right sentence and buttons, only DeleteConfirmed writes, Cancel and Esc leave the
 model as it was, focusing another comment drops the question and a reload keeps it while the comment is there, a `seen` for a thread that is not new is never sent, and the editor text survives a failed reply.

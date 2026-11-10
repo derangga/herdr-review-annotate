@@ -118,7 +118,7 @@ test("E: a click on the track centres the thumb there", () => {
 });
 
 test("E: after any change the model learns the offset, the first item on screen and the files on screen from the stream", () => {
-  const m = shown();
+  const m = shown(150); // the cards above the first file carry a row of buttons, which takes room
   const s = streamLayout(m, NOW);
   assert.equal(m.top, s.items[0]?.key);
   assert.equal(m.total, s.total);

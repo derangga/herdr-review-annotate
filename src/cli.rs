@@ -17,6 +17,7 @@ use crate::comment::{
 use crate::diff::{GitError, RepoRoot};
 use crate::env::Env;
 use crate::hc::HcError;
+use crate::message_json::Target as MessageTarget;
 use crate::meta::{load, locate};
 use crate::send::{Backend, SendArgs};
 use crate::state::{Query, SpecChoice, choose};
@@ -32,6 +33,8 @@ pub const USAGE: &str = "usage:
   herdr-review file   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --json
   herdr-review archive [--repo <root>] [--json]
   herdr-review view   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --set|--unset
+  herdr-review message --json (--pane <herdr pane> | --target <t7>)
+  herdr-review message send (--pane <herdr pane> | --target <t7>) --file <f>
   herdr-review message
   herdr-review message-tui
   herdr-review comment apply   [--repo <root>] [--name <agent>] [--spec worktree|branch] [--base <ref>] --stdin
@@ -132,6 +135,15 @@ pub enum Command {
     },
     Message,
     MessageTui,
+    /// `message --json`: the agent's newest message, for the panel.
+    MessageRead {
+        target: MessageTarget,
+    },
+    /// `message send`: comments on its lines, as the agent's next prompt.
+    MessageSend {
+        target: MessageTarget,
+        file: PathBuf,
+    },
 }
 
 /// Positional arguments, flags that take a value, and flags that do not.
@@ -444,6 +456,48 @@ fn parse_view(args: &[String]) -> Result<Command, Usage> {
     Ok(Command::View { query, path, set })
 }
 
+/// `--pane` or `--target`, the one the panel passes. Both is a usage error.
+fn message_target(parsed: &mut Parsed) -> Result<Option<MessageTarget>, Usage> {
+    match (parsed.value("--pane"), parsed.value("--target")) {
+        (None, None) => Ok(None),
+        (Some(pane), None) => Ok(Some(MessageTarget::Pane(pane))),
+        (None, Some(text)) => TerminalAddress::parse(&text)
+            .map(|address| Some(MessageTarget::Terminal(address)))
+            .ok_or_else(|| {
+                Usage(format!(
+                    "--target takes an hc address such as t7, not '{text}'"
+                ))
+            }),
+        (Some(_), Some(_)) => Err(Usage("give --pane or --target, not both".into())),
+    }
+}
+
+/// `message` is the action. With `--json` it prints the newest message, and `message send` sends
+/// comments on it. Both name the agent.
+fn parse_message(args: &[String]) -> Result<Command, Usage> {
+    let sending = args.first().is_some_and(|arg| arg == "send");
+    let rest = args.get(usize::from(sending)..).unwrap_or_default();
+    let mut parsed = split(rest, &["--pane", "--target", "--file"], &["--json"])?;
+    let target = message_target(&mut parsed)?;
+    let file = parsed.value("--file");
+    let json = parsed.switch("--json");
+    no_arguments(parsed)?;
+    match (sending, target, file, json) {
+        (true, Some(target), Some(file), false) => Ok(Command::MessageSend {
+            target,
+            file: PathBuf::from(file),
+        }),
+        (true, ..) => Err(Usage(
+            "message send needs --pane or --target, and --file <f>".into(),
+        )),
+        (false, Some(target), None, true) => Ok(Command::MessageRead { target }),
+        (false, None, None, false) => Ok(Command::Message),
+        (false, ..) => Err(Usage(
+            "message --json needs --pane or --target, and prints JSON only".into(),
+        )),
+    }
+}
+
 /// `send` and its flags. `--target` is an hc address and implies hc, so it cannot go with
 /// `--backend herdr`, and `--thread` replaces `--all-open`.
 fn parse_send(args: &[String]) -> Result<Command, Usage> {
@@ -508,10 +562,7 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             Ok(Command::Open { repo, base })
         }
         "send" => parse_send(rest),
-        "message" => {
-            no_arguments(split(rest, &[], &[])?)?;
-            Ok(Command::Message)
-        }
+        "message" => parse_message(rest),
         "message-tui" => {
             no_arguments(split(rest, &[], &[])?)?;
             Ok(Command::MessageTui)
@@ -558,6 +609,8 @@ pub enum Failure {
     /// `file --path` named a path the diff does not have.
     NotInDiff(String),
     NoStateDir,
+    /// `message --json` or `message send` could not read the agent or deliver. The text says why.
+    Message(String),
 }
 
 impl Failure {
@@ -573,6 +626,7 @@ impl Failure {
                 "cannot find a state directory, set HOME or XDG_STATE_HOME".to_owned(),
                 1,
             ),
+            Self::Message(message) => (message.clone(), 1),
         };
         Output {
             stderr: format!("{message}\n"),
@@ -917,6 +971,30 @@ mod tests {
         assert_eq!(parse(&args("message")), Ok(Command::Message));
         assert!(parse(&args("message --repo /r")).is_err());
         assert_eq!(parse(&args("message-tui")), Ok(Command::MessageTui));
+        assert_eq!(
+            parse(&args("message --json --pane w1:p2")),
+            Ok(Command::MessageRead {
+                target: MessageTarget::Pane("w1:p2".into())
+            })
+        );
+        assert_eq!(
+            parse(&args("message send --target t7 --file /f")),
+            Ok(Command::MessageSend {
+                target: MessageTarget::Terminal(TerminalAddress::parse("t7").unwrap()),
+                file: PathBuf::from("/f")
+            })
+        );
+        for bad in [
+            "message --json",
+            "message --pane w1:p2",
+            "message --json --pane w1:p2 --target t7",
+            "message --json --target nope",
+            "message send --pane w1:p2",
+            "message send --file /f",
+            "message send --pane w1:p2 --file /f --json",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
+        }
         assert_eq!(
             comment_action("comment apply --stdin --name codex"),
             CommentAction::Apply {

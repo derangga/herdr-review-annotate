@@ -9,6 +9,8 @@ herdr-review send   [--repo <root>] [--all-open] [--backend herdr|hc] [--target 
 herdr-review state  [--repo <root>] [--spec worktree|branch] [--base <ref>] --json
 herdr-review file   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --json
 herdr-review archive [--repo <root>] [--json]
+herdr-review message --json (--pane <herdr pane> | --target <t7>)
+herdr-review message send (--pane <herdr pane> | --target <t7>) --file <f>
 herdr-review view   [--repo <root>] [--spec ..] [--base ..] --path <p> --set | --unset
 herdr-review comment apply   [--repo <root>] [--name <agent>] [--spec worktree|branch] [--base <ref>] --stdin
 herdr-review comment apply   --as user [--repo <root>] [--spec ..] [--base ..] --file <f>
@@ -122,7 +124,32 @@ does not. The herdr backend is the one the TUI plugin uses in plain Herdr, and i
   was nothing to send, and 1 when it failed: `ambiguous` (with the candidates), `no_agent`, `blocked`,
   `not_ready`, `agent_gone`, `busy`, `backend`. A usage error still exits 2 with a line on stderr.
 
-`open`:
+### The panel's message commands
+
+`message` with no flag is the Herdr action that opens the message pane ([message-review](message-review.md)). With
+the flags below it is what the panel's agent-message view runs ([gui](gui.md), [gui-message](graphs/gui-message.md)).
+Neither writes to the store, and neither needs git or a repository.
+
+- The agent is `--pane <id>`, a Herdr pane, or `--target <t7>`, an hc address, one of them. The panel passes
+  `--target`, since it knows the hc address of the terminal it sends to and no Herdr pane.
+- `message --json` prints the newest message of the agent's Claude Code transcript, found by the code the pane uses
+  ([shapes](shapes.md)). `--json` is required. Under `--pane` the session comes from `herdr agent get`. An hc terminal
+  names no session, so under `--target` the transcript is the newest `*.jsonl` in the folder the terminal started
+  in (`projects/<folder with every character but a letter or digit written as -`>`), under each config root as in
+  [message-review](message-review.md). Under hc the agent is `claude-code`, and another is `Unsupported`.
+- Every way the message cannot be read (not an agent, not Claude, no session, no transcript, no message, Herdr or hc
+  failing) exits 1 with the reason on stderr.
+- `message send --file <f>` reads `{ "id"?: string, "comments": [{ "start", "end", "body" }] }`, with the file rules of
+  `--file` above (opened, deleted, 256 KiB). Lines count from 1 and both ends are included. It finds the message
+  again, builds the prompt with `format_prompt` as the pane does (line comments only), and delivers it with
+  `deliver_to_agent` under `--pane` and with `hc send` under `--target`, so it refuses what the pane refuses (a blocked
+  agent, one not ready, one gone) and types nothing then. It prints `{ "schema": 1, "sent": N }`.
+- A file that is not JSON, has no comments, names a line the message does not have, has an empty body, or has an `id` that is
+  not the newest message's (the agent wrote since the panel read) exits 2 and nothing is delivered. A delivery that
+  is refused exits 1 with the reason, and the panel keeps its comments.
+- A binary that has neither flag says `unknown option`, so the panel reads it as too old.
+
+### `open`
 
 1. Find the root. From an action, use `focused_pane_cwd` in `HERDR_PLUGIN_CONTEXT_JSON`. From an
    agent's shell, use the current directory.

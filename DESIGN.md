@@ -59,7 +59,9 @@ One file per group of operations. An `E:` line in a graph is one test.
 | [gui-stream](design/graphs/gui-stream.md) | The panel's stream of every file: items and heights, fetching the files as they show, the selected file, scrolling, folding |
 | [gui-comment](design/graphs/gui-comment.md) | The panel hovers a line for its [+], drags a range, comments from a [+], and writes the comment |
 | [gui-thread](design/graphs/gui-thread.md) | The panel replies, resolves, reopens, edits, deletes, marks seen |
+| [gui-keys](design/graphs/gui-keys.md) | The panel's keyboard: a cursor on the code rows (`j k`, `[ ]`, `h l`), `v` for a range, `c` to comment, `r e d x` on a thread |
 | [gui-send](design/graphs/gui-send.md) | The panel sends, resends one thread, and picks among agents |
+| [gui-message](design/graphs/gui-message.md) | The panel shows the agent's last message, comments on its lines, and sends them |
 | [gui-archive](design/graphs/gui-archive.md) | The panel archives resolved threads and marks a file viewed |
 
 The graphs of message review are in [message-review](design/message-review.md).

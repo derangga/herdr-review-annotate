@@ -1,8 +1,8 @@
 // ReviewCli: builds argv, runs the binary through Host.exec, maps exit codes to the error list in
 // design/gui.md and decodes stdout. Inner functions throw tagged objects.
-import { decodeArchive, decodeFile, decodeSend, decodeState, parseJson } from "./decode.ts";
+import { decodeArchive, decodeFile, decodeMessage, decodeMessageSent, decodeSend, decodeState, parseJson } from "./decode.ts";
 import type { ExecResult, Host } from "./host.ts";
-import type { ArchiveReply, FileView, ReviewError, SendReply, Spec, State } from "./types.ts";
+import type { ArchiveReply, FileView, MessageReply, MessageSentReply, ReviewError, SendReply, Spec, State } from "./types.ts";
 
 const READ_TIMEOUT = 60_000;
 const WRITE_TIMEOUT = 30_000;
@@ -21,6 +21,10 @@ export type ReviewCli = {
   // Send the unsent threads, or only `threads`. With a target it goes there, without one the CLI finds the agent by folder under hc.
   send(root: string, target: string | null, threads: string[]): Promise<SendReply>;
   archive(root: string): Promise<ArchiveReply>;
+  // The agent's newest message, and comments on its lines sent back as the agent's next prompt (`message send --file`). The
+  // target is the hc address the panel knows. The file is the panel's draft: the CLI reads and deletes it.
+  message(target: string): Promise<MessageReply>;
+  messageSend(target: string, file: string): Promise<MessageSentReply>;
   view(root: string, spec: Spec | null, path: string, set: boolean): Promise<void>;
 };
 
@@ -92,6 +96,12 @@ export function makeCli(host: Host, bin: string | null): ReviewCli {
     },
     async archive(root) {
       return decodeArchive(parseJson(await exec(["archive", "--repo", root, "--json"], WRITE_TIMEOUT)));
+    },
+    async message(target) {
+      return decodeMessage(parseJson(await exec(["message", "--json", "--target", target], READ_TIMEOUT)));
+    },
+    async messageSend(target, file) {
+      return decodeMessageSent(parseJson(await exec(["message", "send", "--target", target, "--file", file], WRITE_TIMEOUT)));
     },
     view: (root, spec, path, set) => write(["view", "--repo", root, "--path", path, set ? "--set" : "--unset", ...specArgs(spec)]),
   };

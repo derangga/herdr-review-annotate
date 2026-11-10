@@ -49,7 +49,8 @@ test("the file fixture decodes, rows and threads with their row indexes", () => 
   const f = decodeFile(file());
   assert.equal(f.path, "src/a.rs");
   assert.equal(f.rows.length, 7);
-  assert.deepEqual(f.rows[2], { kind: "del", old: 2, new: null, text: "    old();", tokens: [{ from: 4, to: 7, kind: "function" }] });
+  assert.deepEqual(f.rows[2], { kind: "del", old: 2, new: null, text: "    old();", tokens: [{ from: 4, to: 7, kind: "function" }], marks: [{ from: 4, to: 7 }] });
+  assert.deepEqual(f.rows[4]?.marks, []);
   assert.equal(f.threads.length, 5);
   assert.deepEqual(f.threads[1]?.placement, { kind: "matched", row: 4, start_row: 3 });
   assert.equal(f.threads[1]?.comments[1]?.parent, "u2");
@@ -117,6 +118,41 @@ test("E: a token that is malformed, out of order, overlapping, past the text or 
     { from: 0, to: 2, kind: "keyword" },
     { from: 3, to: 7, kind: "function" },
     { from: 8, to: 11, kind: "operator" },
+  ]);
+});
+
+test("E: marks are read as UTF-16 offsets, a missing or odd field is none, and a bad mark is dropped, the rest stay", () => {
+  const raw = file();
+  const text = "fn main() {";
+  raw.rows[1].text = text;
+  raw.rows[1].marks = [{ from: 3, to: 7 }];
+  assert.deepEqual(decodeFile(raw).rows[1]?.marks, [{ from: 3, to: 7 }]);
+  delete raw.rows[1].marks;
+  assert.deepEqual(decodeFile(raw).rows[1]?.marks, []);
+  for (const odd of [null, "main", 7, { from: 3, to: 7 }]) {
+    raw.rows[1].marks = odd;
+    assert.deepEqual(decodeFile(raw).rows[1]?.marks, [], String(odd));
+  }
+  raw.rows[1].marks = [
+    { from: 0, to: 2 },
+    "x",
+    null,
+    [3, 7],
+    { from: 3 },
+    { from: 1.5, to: 4 },
+    { from: "3", to: 7 },
+    { from: 1, to: 5 }, // starts inside the one before
+    { from: 5, to: 5 }, // empty
+    { from: 7, to: 6 }, // backwards
+    { from: -1, to: 2 },
+    { from: 3, to: text.length + 1 }, // past the end
+    { from: 3, to: 7 },
+    { from: 8, to: text.length },
+  ];
+  assert.deepEqual(decodeFile(raw).rows[1]?.marks, [
+    { from: 0, to: 2 },
+    { from: 3, to: 7 },
+    { from: 8, to: 11 },
   ]);
 });
 

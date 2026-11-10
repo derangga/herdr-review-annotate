@@ -85,6 +85,12 @@ Cardinality: one-shot, called once per load of the panel.
                                                          changed since the diff) -> that row has no tokens
                                                       a file with a note is not read
                                                       `tokens` are kinds with UTF-16 offsets, in `rows`
+-> mark the changed words                 (pure)      `words::changed` on each removed row and the added row
+                                                      paired with it, as the TUI pairs them, in `rows`
+                                                      E: a pair `changed` gives no marks (rewritten, over
+                                                         200 tokens), a row with no partner, a context or
+                                                         hunk row -> `marks: []`, no error
+                                                      `marks` are `{from, to}` with UTF-16 offsets
 -> threads of this path, with row indexes  (pure)     Matched and Outdated only. `row` and `start_row`
                                                       index into `rows`
 -> print the JSON with schema              R: stdout
@@ -109,6 +115,11 @@ Each `E:` line is one test. The rest are in [tests](../tests.md):
   the line budget has plain rows past it. A build without the `syntax` feature prints no `tokens` at all.
   The golden `file.json` has tokens and is compared only with the feature on, and the other build has its own test.
   On the mod side: a missing or odd `tokens` is none, and each kind of bad part is dropped.
+- Marks: a pair of a removed and an added row that differ in a word marks that word on both, a rewritten pair and a
+  row with no partner have none, and a row with a non-ASCII character (an e acute and an emoji before the word) has
+  offsets in UTF-16 units. Every row has a `marks` key, `[]` when there are none. The golden `file.json` has a pair
+  with marks. On the mod side: a missing or odd `marks` is none, each kind of bad mark is dropped, and the runs of a
+  row are cut at the marks.
 - Archivable: over a review with an open thread, a thread the user resolved, an agent's resolve nobody has
   seen, an agent's resolve the user has seen, and a resolved orphan, `state` says 3. A review with nothing says 0.
   `unread_resolved` says 1 for that review (the agent's resolve nobody has seen), 0 for a review with nothing, and

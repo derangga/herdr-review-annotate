@@ -8,6 +8,7 @@ use herdr_review::diff::{run_git, run_git_bytes};
 use herdr_review::env::Env;
 use herdr_review::hc::run_hc;
 use herdr_review::herdr::run_herdr_output;
+use herdr_review::message_json;
 use herdr_review::{message_action, message_tui, open, send, state, tui, user};
 
 #[allow(
@@ -61,6 +62,14 @@ fn main() -> ExitCode {
         ),
         Ok(Command::Message) => message_action::run(&env),
         Ok(Command::MessageTui) => message_tui::run(&env),
+        Ok(Command::MessageRead { target }) => finish(
+            &message_json::read(&target, &env, run_herdr_output, run_hc)
+                .unwrap_or_else(|f| f.output()),
+        ),
+        Ok(Command::MessageSend { target, file }) => finish(
+            &message_json::send(&target, &file, &env, run_herdr_output, run_hc)
+                .unwrap_or_else(|f| f.output()),
+        ),
         Ok(Command::Comment { repo, action }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             let output = run_comment(

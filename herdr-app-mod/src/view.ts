@@ -4,9 +4,10 @@ import { div, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
-import type { BodyItem, DockButton, FileItem, HeadItem, RowItem, SideRow, SplitItem, Stream, StreamItem } from "./rows.ts";
+import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, cursorOn, dock, EDITOR_H, EDITOR_TEXT, editorKey, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
+import type { BodyItem, DockButton, EditorItem, FileItem, HeadItem, RowItem, SideRow, Side, SplitItem, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
+import { drawMessage } from "./message-view.ts";
 
 export type Theme = Record<string, `#${string}`>;
 type Dispatch = (msg: Msg) => void;
@@ -20,7 +21,7 @@ const tint = (color: `#${string}`, alpha: string): `#${string}` => `${color}${al
 const CLEAR = "#00000000";
 
 // danger is a button that destroys something: the red of a removed line.
-function button(id: string, label: string, on: boolean, t: Theme, click: (() => void) | null, danger = false): Element {
+export function button(id: string, label: string, on: boolean, t: Theme, click: (() => void) | null, danger = false): Element {
   return div()
     .id(id)
     .h(24)
@@ -34,7 +35,11 @@ function button(id: string, label: string, on: boolean, t: Theme, click: (() => 
     .text_color(on || danger ? t.foreground : t.muted)
     .when(on && !danger, (e) => e.bg(t.selected))
     .when(danger, (e) => e.bg(tint(t.ansi1, "30")))
-    .when(click !== null, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => click?.()))
+    // The press is the button's own: a button on a card must not also fire the card's click behind it.
+    .when(click !== null, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
+      cx.stop_propagation();
+      click?.();
+    }))
     .when(click === null, (e) => e.opacity(0.4))
     .child(label);
 }
@@ -42,16 +47,22 @@ function button(id: string, label: string, on: boolean, t: Theme, click: (() => 
 // A theme colour by the name rows.ts chose; a name the theme lacks is the plain foreground.
 const pick = (name: string, t: Theme): `#${string}` => t[name] ?? t.foreground;
 
+// Where a card or the editor stands: the whole stream's width, 48 px in, or one half of a side-by-side stream, 28 px in from the
+// half's edge, with the other half left empty and the rule between them drawn as a code row's is. `heightOf` counts the width
+// each takes (`cardWidth`, `halfCardWidth`).
+function slot(half: Side, t: Theme, box: (e: ReturnType<typeof v_flex>) => Element): Element {
+  const one = box(v_flex().h_full().pr(12).pl(half === null ? 48 : 28).w_full().flex_none());
+  if (half === null) return one;
+  // Each half is a bare flex_1 box, as a code row's halves are: padding on a flex_1 item counts toward its size, so the padded
+  // card half would come out wider than the empty one and move the rule off the code rows' rule. The padding goes inside.
+  const cell = (child: Element | null): Element => div().flex_1().min_w(0).h_full().overflow_hidden().when(child !== null, (e) => e.child(child as Element));
+  return h_flex().w_full().h_full().child(cell(half === "old" ? one : null)).child(div().w(1).h_full().flex_none().bg(t.border)).child(cell(half === "new" ? one : null));
+}
+
 function head(item: HeadItem, t: Theme): Element {
   const color = pick(toneColor(item.tone), t);
-  return v_flex()
-    .w_full()
-    .h_full()
-    .flex_none()
-    .pl(48)
-    .pr(12)
-    .pt(6)
-    .child(
+  return slot(item.half, t, (e) =>
+    e.pt(6).child(
       v_flex()
         .flex_1()
         .max_w(CARD_W)
@@ -70,19 +81,13 @@ function head(item: HeadItem, t: Theme): Element {
             .children(item.badges.map((b) => div().flex_none().text_size(10).text_color(pick(tagColor(b), t)).child(`[${b}]`))),
         )
         .when(item.quote !== null, (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(item.quote ?? ""))),
-    );
+    ));
 }
 
-function body(item: BodyItem, t: Theme): Element {
+function body(item: BodyItem, t: Theme, dispatch: Dispatch): Element {
   const color = pick(toneColor(item.tone), t);
-  return v_flex()
-    .w_full()
-    .h_full()
-    .flex_none()
-    .pl(48)
-    .pr(12)
-    .when(item.last, (e) => e.pb(6))
-    .child(
+  return slot(item.half, t, (e) =>
+    e.when(item.last, (x) => x.pb(6)).child(
       v_flex()
         .flex_1()
         .max_w(CARD_W)
@@ -93,8 +98,57 @@ function body(item: BodyItem, t: Theme): Element {
         .border_color(color)
         .bg(item.focused ? t.selected : tint(color, "14"))
         .when(item.meta !== null, (e) => e.child(div().text_size(10).text_color(t.dim).child(item.meta ?? "")))
-        .children(item.lines.map((line) => div().min_h(16).text_size(12).text_color(t.foreground).child(line === "" ? " " : line))),
-    );
+        .children(item.lines.map((line) => div().min_h(16).text_size(12).text_color(t.foreground).child(line === "" ? " " : line)))
+        // heightOf counts this row: 4 above, 24 a button, 6 between rows when it wraps.
+        .when(item.buttons.length > 0, (e) =>
+          e.child(h_flex().flex_wrap().gap(6).pt(4).children(item.buttons.map((b) => button(`card-${item.id}-${b.id}`, b.label, false, t, () => dispatch(b.msg), b.danger)))),
+        ),
+    ));
+}
+
+// The editor, in the stream under what it comments on: the title, the text box, a line for the status (red, kept free so the
+// height is fixed) and the buttons. The keys of the box (Ctrl+S, Esc) are the box's own, as the dock's were. EDITOR_H counts it: 6 px
+// above and below, the box with 6 px of padding and 4 px between its four parts.
+function editorBox(item: EditorItem, m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
+  const ta = ui.textarea;
+  // The state is made as the editor opens, so a draw without it is one that came before.
+  if (ta === null) return div();
+  return slot(item.half, t, (e) =>
+    e.pt(6).pb(6).child(
+      v_flex()
+        .id("review-editor")
+        .h(EDITOR_H - 12)
+        .flex_none()
+        .overflow_hidden()
+        .px(10)
+        .py(6)
+        .gap(4)
+        .border_l(2)
+        .border_color(t.accent)
+        .bg(tint(t.accent, "14"))
+        .track_focus(ui.handle)
+        .on_key_down((ev, cx) => {
+          const msg = editorKey(ev.keystroke, ta.value());
+          if (msg !== null) {
+            dispatch(msg);
+            cx.stop_propagation();
+          }
+        })
+        .child(div().h(16).flex_none().truncate().text_size(11).font_semibold().text_color(pick(toneColor("user"), t)).child(item.title))
+        .child(div().h(EDITOR_TEXT).flex_none().child(Textarea.new(ta).w_full().h(EDITOR_TEXT).px(8).py(6).rounded(6).border_1().border_color(t.accent).bg(t.background).text_size(12).text_color(t.foreground)))
+        .child(div().h(16).flex_none().truncate().text_size(11).text_color(t.ansi1).child(m.status ?? ""))
+        .child(
+          h_flex()
+            .h(24)
+            .flex_none()
+            .gap(8)
+            .items_center()
+            .child(button("editor-save", m.saving ? "Saving..." : "Save", true, t, () => dispatch({ _tag: "EditorSaved", text: ta.value() })))
+            .child(button("editor-cancel", "Cancel", false, t, () => dispatch({ _tag: "EditorCancelled" })))
+            .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child("Ctrl+S save, Esc cancel")),
+        ),
+    ),
+  );
 }
 
 function fileHead(item: FileItem, t: Theme): Element {
@@ -117,7 +171,7 @@ function fileHead(item: FileItem, t: Theme): Element {
 
 // One item of the stream, in a box of the height the stream counted for it. A header, a card and a thread take a click of
 // their own; a code row takes the hover, the press and the [+], on the row itself.
-function item(i: StreamItem, size: number, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
+function item(i: StreamItem, size: number, shift: number, m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   const click = itemClick(i.key);
   return div()
     .id(`s-${i.key}`)
@@ -128,12 +182,13 @@ function item(i: StreamItem, size: number, shift: number, m: Model, t: Theme, di
     .when(click !== null, (e) => e.cursor_pointer().on_click(() => {
       if (click !== null) dispatch(click);
     }))
-    .child(inner(i, shift, m, t, dispatch));
+    .child(inner(i, shift, m, t, dispatch, ui));
 }
 
-function inner(i: StreamItem, shift: number, m: Model, t: Theme, dispatch: Dispatch): Element {
+function inner(i: StreamItem, shift: number, m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   if (i.kind === "head") return head(i, t);
-  if (i.kind === "body") return body(i, t);
+  if (i.kind === "body") return body(i, t, dispatch);
+  if (i.kind === "editor") return editorBox(i, m, t, dispatch, ui);
   if (i.kind === "file") return fileHead(i, t);
   if (i.kind === "wait") return div().w_full().pl(48).pt(8).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "note") return div().w_full().pl(48).pt(4).text_size(11).text_color(t.dim).child(i.text);
@@ -155,6 +210,7 @@ function diffRow(item: RowItem, side: "old" | "new" | null, shift: number, m: Mo
     return div().id(`row-${key}`).w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).on_hover((on) => over(on)).on_mouse_move(() => over(true)).child(item.text);
   }
   const { selected, hovered } = rowState(m, item, side);
+  const cursor = cursorOn(m, item, side);
   const sign = item.kind === "add" ? "+" : item.kind === "del" ? "-" : " ";
   const num = (n: string): Element => div().w(36).flex_none().text_right().text_color(t.dim).child(n);
   return h_flex()
@@ -167,6 +223,8 @@ function diffRow(item: RowItem, side: "old" | "new" | null, shift: number, m: Mo
     .when(item.kind === "add", (e) => e.bg(tint(t.ansi2, "18")))
     .when(item.kind === "del", (e) => e.bg(tint(t.ansi1, "18")))
     .when(selected, (e) => e.bg(tint(t.accent, "30")))
+    // The keyboard's row: a neutral tint over the rest, so it reads apart from the accent of a selection.
+    .when(cursor, (e) => e.bg(tint(t.foreground, "30")))
     .on_hover((on) => over(on))
     .on_mouse_move(() => over(true))
     .on_mouse_down("left", () => dispatch({ _tag: "RowPressed", path, row: item.index, side }))
@@ -200,7 +258,17 @@ function diffRow(item: RowItem, side: "old" | "new" | null, shift: number, m: Mo
         .child(
           h_flex()
             .when(side !== null, (e) => e.ml(-shift))
-            .children(item.runs.map((r) => div().flex_none().whitespace_nowrap().text_color(t[r.color] ?? t.foreground).child(r.text))),
+            .children(
+              // A changed word has its own, stronger background, drawn over the row's tint and the selection's alike.
+              item.runs.map((r) =>
+                div()
+                  .flex_none()
+                  .whitespace_nowrap()
+                  .text_color(t[r.color] ?? t.foreground)
+                  .when(r.marked === true, (e) => e.bg(tint(item.kind === "add" ? t.ansi2 : t.ansi1, "48")))
+                  .child(r.text),
+              ),
+            ),
         ),
     );
 }
@@ -219,32 +287,10 @@ function splitRow(i: SplitItem, shift: number, m: Model, t: Theme, dispatch: Dis
     .child(half(i.right, "new"));
 }
 
-function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
-  const e = m.editor;
+// The bar under the diff: what is selected or focused, the review-wide buttons, a question or the picker. The editor is not here, it is
+// in the stream (`editorBox`).
+export function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
   const wrap = v_flex().id("review-dock").flex_none().border_t(1).border_color(t.border).px(12).py(8).gap(6).text_size(11);
-  if (e !== null && ui.textarea !== null) {
-    const ta = ui.textarea;
-    return wrap
-      .track_focus(ui.handle)
-      .on_key_down((ev, cx) => {
-        const msg = editorKey(ev.keystroke, ta.value());
-        if (msg !== null) {
-          dispatch(msg);
-          cx.stop_propagation();
-        }
-      })
-      .child(div().font_semibold().text_color(pick(toneColor("user"), t)).child(editorTitle(e)))
-      .child(Textarea.new(ta).w_full().px(8).py(6).rounded(6).border_1().border_color(t.accent).bg(t.background).text_size(12).text_color(t.foreground))
-      .when(m.status !== null, (x) => x.child(div().text_color(t.ansi1).child(m.status ?? "")))
-      .child(
-        h_flex()
-          .gap(8)
-          .items_center()
-          .child(button("editor-save", m.saving ? "Saving..." : "Save", true, t, () => dispatch({ _tag: "EditorSaved", text: ta.value() })))
-          .child(button("editor-cancel", "Cancel", false, t, () => dispatch({ _tag: "EditorCancelled" })))
-          .child(div().text_color(t.dim).child("Ctrl+S save, Esc cancel")),
-      );
-  }
   if (m.picker !== null) {
     return wrap
       .child(div().font_semibold().text_color(pick(WARN, t)).child("Several agents match this folder. Send to which?"))
@@ -361,7 +407,7 @@ function sidebar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui, empty: string):
     );
 }
 
-// The stream of every file's diff, and under it the bar that holds the selection, the thread buttons or the editor.
+// The stream of every file's diff, and under it the bar that holds the selection, the review-wide buttons or the editor.
 // The mod scrolls the stream itself: it draws only the items that overlap the screen, as plain children of a clipped box, the
 // first one shifted up by the part of it above the top, and its own scrollbar beside them.
 function diffPane(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui): Element {
@@ -372,7 +418,7 @@ function diffPane(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui
   const max = maxShift(codeWidth(stream.items.slice(first, end)), m.width);
   for (let i = first; i < end; i++) {
     const it = stream.items[i];
-    if (it !== undefined) kids.push(item(it, stream.sizes[i] ?? ROW, m.shift, m, t, dispatch));
+    if (it !== undefined) kids.push(item(it, stream.sizes[i] ?? ROW, m.shift, m, t, dispatch, ui));
   }
   // A mostly sideways event is left to the box's own sideways scroll, or side by side shifts the halves' code. Any other
   // is the stream's, and must not also move that box sideways, which a vertical wheel over it would.
@@ -459,6 +505,7 @@ function diffPane(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui
 }
 
 export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui: Ui): Element {
+  if (m.view === "message") return drawMessage(m, t, dispatch, ui);
   const sum = totals(m.state);
   const base = m.state === null ? null : m.state.base;
   const notices = m.state === null ? [] : [...m.state.notices, ...m.state.warnings];
@@ -505,6 +552,7 @@ export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui:
         .child(
           button("spec-branch", base === null ? "Branch" : `Branch ${base}`, m.spec !== null && m.spec.kind === "branch", t, base === null ? null : () => dispatch({ _tag: "SpecChosen", spec: { kind: "branch", base } })),
         )
+        .child(button("view-message", "Agent message", false, t, () => dispatch({ _tag: "ViewChosen", view: "message" })))
         .child(button("refresh", "Refresh", false, t, () => dispatch({ _tag: "Triggered", source: "refresh" }))),
     )
     .when(m.banner !== null, (e) => e.child(div().px(12).py(6).text_size(12).text_color(t.ansi1).child(m.banner ?? "")))

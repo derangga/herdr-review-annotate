@@ -58,6 +58,17 @@ export function run(env: Env, cmd: Cmd): Promise<Msg | null> {
         await env.cli.view(cmd.root, cmd.spec, cmd.path, cmd.viewed);
         return { _tag: "Wrote", kind: "viewed" };
       });
+    case "ReadMessage":
+      return withRecovery("message", async () => ({ _tag: "MessageLoaded", reply: await env.cli.message(cmd.target) }));
+    case "SendMessage":
+      // The comments are a draft in a file the CLI reads and deletes, as a body is: they are the user's text.
+      return withRecovery("message-send", async () => {
+        let sent = 0;
+        await withBodyFile(env, JSON.stringify({ id: cmd.id, comments: cmd.comments }), async (file) => {
+          sent = (await env.cli.messageSend(cmd.target, file)).sent;
+        });
+        return { _tag: "MessageSent", sent };
+      });
     case "ReadPanel":
       return withRecovery("panel", async () => {
         // A missing or unreadable file is the defaults, so a read never fails.

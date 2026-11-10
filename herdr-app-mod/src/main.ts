@@ -90,14 +90,13 @@ export default class ReviewView extends View {
   }
 
   // The editor's text lives in a textarea state the view owns: made when an editor opens, released when it
-  // closes. Dispatch runs in click handlers when an editor opens, where creating state is allowed.
+  // closes. Its box in the stream has a fixed height (EDITOR_TEXT), so it does not grow with the text. Dispatch runs in click handlers when an editor opens, where creating state is allowed.
   syncEditor(): void {
     this.textarea?.release();
     this.textarea = null;
     const e = this.model.editor;
     if (e === null) return;
-    const ta = TextareaState.new({ placeholder: "Write a note...", value: e.initial, rows: 4 });
-    ta.set_auto_grow(3, 10);
+    const ta = TextareaState.new({ placeholder: "Write a note...", value: e.initial, rows: 5 });
     ta.focus();
     this.cx.timer.after(600, () => {
       if (this.textarea === ta) ta.focus();

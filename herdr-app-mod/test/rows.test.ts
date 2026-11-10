@@ -61,6 +61,36 @@ test("E: a row with a non-ASCII character is cut where Rust cut it", () => {
   assert.equal(cut[2]?.color, tokenColor("string"));
 });
 
+test("E: runs are cut again at the marks, a marked piece keeps its syntax colour, and a row with none has no marked run", () => {
+  const plain = "foreground";
+  const kw = tokenColor("keyword");
+  // `fn old_name() {` with `old_name` marked, and the `fn` token and the plain text on either side untouched.
+  assert.deepEqual(runs("fn old_name() {", [{ from: 0, to: 2, kind: "keyword" }], [{ from: 3, to: 11 }]), [
+    { text: "fn", color: kw },
+    { text: " ", color: plain },
+    { text: "old_name", color: plain, marked: true },
+    { text: "() {", color: plain },
+  ]);
+  // A mark across a token edge splits the token: the marked part keeps the token's colour.
+  assert.deepEqual(runs("let abc", [{ from: 0, to: 5, kind: "keyword" }], [{ from: 3, to: 7 }]), [
+    { text: "let", color: kw },
+    { text: " a", color: kw, marked: true },
+    { text: "bc", color: plain, marked: true },
+  ]);
+  // Two marks in one piece, one at the start and one at the end.
+  assert.deepEqual(runs("abcdef", [], [{ from: 0, to: 1 }, { from: 5, to: 6 }]), [
+    { text: "a", color: plain, marked: true },
+    { text: "bcde", color: plain },
+    { text: "f", color: plain, marked: true },
+  ]);
+  // Offsets are UTF-16 units: the grinning face is two.
+  assert.deepEqual(runs("\u{1f600}x", [], [{ from: 2, to: 3 }]), [
+    { text: "\u{1f600}", color: plain },
+    { text: "x", color: plain, marked: true },
+  ]);
+  assert.ok(!runs("abc", [], []).some((r) => "marked" in r));
+});
+
 test("every token kind has a colour from the theme, and no two of the TUI's kinds share one", () => {
   // The names herdr.d.ts lists for theme().
   const names = new Set(["background", "surface", "canvas", "chrome", "popover", "raised", "hover", "selected", "border", "input", "foreground", "muted", "dim", "accent", "accent_foreground", "solid", "solid_foreground", "selection", "working", "blocked", "done", "idle", "unknown", ...Array.from({ length: 16 }, (_, i) => `ansi${i}`)]);

@@ -9,6 +9,8 @@ import type {
   Focus,
   FileSummary,
   FileView,
+  MessageReply,
+  MessageSentReply,
   PaneEntry,
   Panel,
   Placement,
@@ -19,6 +21,7 @@ import type {
   Spec,
   State,
   Thread,
+  Mark,
   Token,
   TokenKind,
 } from "./types.ts";
@@ -124,6 +127,23 @@ function tokens(o: Obj, text: string): Token[] {
   return out;
 }
 
+// The changed words of a row, `{from, to}` each, read as loosely as tokens and dropped on the same grounds.
+function marks(o: Obj, text: string): Mark[] {
+  const v = o["marks"];
+  if (!Array.isArray(v)) return [];
+  const out: Mark[] = [];
+  let end = 0;
+  for (const m of v) {
+    if (typeof m !== "object" || m === null) continue;
+    const { from, to } = m as Record<string, unknown>;
+    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) continue;
+    if (from < end || from >= to || to > text.length) continue;
+    out.push({ from, to });
+    end = to;
+  }
+  return out;
+}
+
 function row(v: unknown, path: string): Row {
   const o = obj(v, path);
   const text = str(o, "text", path);
@@ -133,6 +153,7 @@ function row(v: unknown, path: string): Row {
     new: intOrNull(o, "new", path),
     text,
     tokens: tokens(o, text),
+    marks: marks(o, text),
   };
 }
 
@@ -261,6 +282,19 @@ export function decodeSend(raw: unknown): SendReply {
     throw error;
   }
   return { schema: SCHEMA, sent: int(o, "sent", "$"), queued: bool(o, "queued", "$"), agent: strOrNull(o, "agent", "$"), warnings: list(o, "warnings", "$", strings) };
+}
+
+// `message --json`: the agent's newest message. A failure is not this reply: the CLI exits non-zero with the reason on stderr.
+export function decodeMessage(raw: unknown): MessageReply {
+  const o = obj(raw, "$");
+  schema(o);
+  return { schema: SCHEMA, agent: str(o, "agent", "$"), status: str(o, "status", "$"), id: str(o, "id", "$"), lines: list(o, "lines", "$", strings) };
+}
+
+export function decodeMessageSent(raw: unknown): MessageSentReply {
+  const o = obj(raw, "$");
+  schema(o);
+  return { schema: SCHEMA, sent: int(o, "sent", "$") };
 }
 
 export function decodeArchive(raw: unknown): ArchiveReply {

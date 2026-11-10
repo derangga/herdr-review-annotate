@@ -34,6 +34,17 @@ impl AgentStatus {
             _ => Self::Unknown,
         }
     }
+
+    /// The word Herdr uses, which `message --json` prints.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// How `agent_session` names the transcript.
@@ -103,9 +114,20 @@ pub enum MessageError {
     NotAnAgent,
     Unsupported(String),
     NoSession,
-    NoTranscript { id: String },
-    NoMessage { path: PathBuf },
-    Io { path: PathBuf, kind: ErrorKind },
+    NoTranscript {
+        id: String,
+    },
+    /// An hc terminal names no session, so its folder is searched, and no transcript was in it.
+    NoFolderTranscript {
+        cwd: PathBuf,
+    },
+    NoMessage {
+        path: PathBuf,
+    },
+    Io {
+        path: PathBuf,
+        kind: ErrorKind,
+    },
     Herdr(HerdrError),
 }
 
@@ -118,6 +140,13 @@ impl fmt::Display for MessageError {
             }
             Self::NoSession => f.write_str("Herdr has no session for this agent yet."),
             Self::NoTranscript { id } => write!(f, "Cannot find the transcript of session {id}."),
+            Self::NoFolderTranscript { cwd } => {
+                write!(
+                    f,
+                    "Cannot find a Claude Code session for {}.",
+                    cwd.display()
+                )
+            }
             Self::NoMessage { .. } => f.write_str("The session has no message yet."),
             Self::Io { path, kind } => write!(f, "Cannot read {}: {kind}.", path.display()),
             Self::Herdr(error) => write!(f, "Herdr failed: {}", error.message),
@@ -176,7 +205,7 @@ pub fn parse_agent(agent_get: &Result<String, String>) -> Result<MessageAgent, M
 
 /// Where Claude Code may keep sessions: `$CLAUDE_CONFIG_DIR`, `~/.claude`, then every other
 /// `~/.claude*` directory in name order.
-fn config_roots(env: &Env) -> Vec<PathBuf> {
+pub(crate) fn config_roots(env: &Env) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut add = |path: PathBuf| {
         if !roots.contains(&path) {
@@ -228,6 +257,33 @@ pub fn find_transcript(agent: &MessageAgent, env: &Env) -> Result<PathBuf, Messa
         })
     });
     found.flatten().ok_or(MessageError::NoTranscript { id })
+}
+
+/// The newest transcript of the agent started in `cwd`, for an agent that names no session (an hc
+/// terminal). Claude Code keeps a folder's sessions in `projects/<the folder with every character
+/// that is not a letter or digit written as "-">/`.
+///
+/// shortcut: two sessions started in one folder give the newer file, which is not always the one in
+/// the terminal. Upgrade when hc reports the session.
+pub fn find_transcript_in_folder(cwd: &Path, env: &Env) -> Result<PathBuf, MessageError> {
+    let name = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    config_roots(env)
+        .into_iter()
+        .filter_map(|root| std::fs::read_dir(root.join("projects").join(&name)).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
+        .max()
+        .map(|(_, path)| path)
+        .ok_or_else(|| MessageError::NoFolderTranscript {
+            cwd: cwd.to_owned(),
+        })
 }
 
 #[derive(Deserialize)]

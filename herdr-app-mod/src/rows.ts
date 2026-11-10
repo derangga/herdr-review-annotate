@@ -1,6 +1,6 @@
 // Pure helpers for drawing: the diff rows in order, the text cleaned for the screen, the file list lines.
 import { fileIcon } from "./icons.ts";
-import type { Candidate, Change, Comment, Editor, FileSummary, FileView, Model, Msg, NewAnchor, Row, Selection, State, Thread, Token, TokenKind } from "./types.ts";
+import type { Candidate, Change, Comment, Cursor, Editor, FileSummary, FileView, Mark, Model, Msg, NewAnchor, Reveal, Row, Selection, State, Thread, Token, TokenKind } from "./types.ts";
 
 // Control characters become nothing and a tab becomes spaces, as in the TUI. The text is the agent's or
 // the file's, so it is never trusted to be printable.
@@ -14,7 +14,8 @@ export function bodyLines(text: string): string[] {
 }
 
 // A stretch of a code row drawn in one colour, named as `theme()` names it.
-export type Run = { text: string; color: string };
+// `marked` is set, to true, only on a piece of a changed word: the view gives it a stronger background.
+export type Run = { text: string; color: string; marked?: true };
 
 // The theme colour each kind is drawn in, by the name `theme()` gives it. The TUI's choices, as near as the
 // terminal palette goes: green strings, blue functions, pink keywords, yellow numbers, teal types, a comment as dim
@@ -34,12 +35,26 @@ const PLAIN = "foreground";
 
 // The row's text cut where its tokens begin and end, each piece cleaned for the screen. Cleaning cuts piece by
 // piece and gives what cleaning the whole would, since it works one character at a time. Offsets are UTF-16 code
-// units, as `slice` counts them. Text between tokens is the plain foreground, and a row with no tokens is one run.
-export function runs(text: string, tokens: Token[]): Run[] {
+// units, as `slice` counts them. Text between tokens is the plain foreground, and a row with no tokens is one run. Each
+// piece is cut again at the edges of the marks, so a run is wholly marked or not, and keeps its syntax colour.
+export function runs(text: string, tokens: Token[], marks: Mark[] = []): Run[] {
   const out: Run[] = [];
-  const push = (from: number, to: number, color: string): void => {
+  const emit = (from: number, to: number, color: string, marked: boolean): void => {
     const piece = cleanText(text.slice(from, to));
-    if (piece !== "") out.push({ text: piece, color });
+    if (piece !== "") out.push(marked ? { text: piece, color, marked: true } : { text: piece, color });
+  };
+  const push = (from: number, to: number, color: string): void => {
+    let at = from;
+    for (const k of marks) {
+      if (k.to <= at) continue;
+      if (k.from >= to) break;
+      const start = Math.max(at, k.from);
+      const stop = Math.min(to, k.to);
+      emit(at, start, color, false);
+      emit(start, stop, color, true);
+      at = stop;
+    }
+    emit(at, to, color, false);
   };
   let at = 0;
   for (const t of tokens) {
@@ -61,9 +76,15 @@ export const toneColor = (tone: Tone): string => (tone === "user" ? "accent" : t
 export const tagColor = (tag: string): string => (tag === "unsent" || tag === "new" ? WARN : "dim");
 export const letterColor = (letter: string): string => (letter === "A" || letter === "?" ? "ansi2" : letter === "D" ? "ansi1" : WARN);
 export type RowItem = { kind: "hunk" | "ctx" | "add" | "del"; key: string; index: number; old: string; new: string; text: string; runs: Run[] };
-// A thread card is a head, then one body per comment while it is open. The last item of a card closes the box.
-export type HeadItem = { kind: "head"; key: string; id: string; tone: Tone; title: string; badges: string[]; quote: string | null; collapsible: boolean; open: boolean; focused: boolean; last: boolean };
-export type BodyItem = { kind: "body"; key: string; id: string; tone: Tone; meta: string | null; lines: string[]; focused: boolean; last: boolean };
+// A thread card is a head, then one body per comment while it is open. The last item of a card closes the box. `half` is the half
+// of a side-by-side stream the card sits in (the side its comment is on), null for the whole width: in the unified layout, for
+// a file comment and for the threads not in the diff.
+export type HeadItem = { kind: "head"; key: string; id: string; tone: Tone; title: string; badges: string[]; quote: string | null; collapsible: boolean; open: boolean; focused: boolean; last: boolean; half: Side };
+// `buttons` are the card's own, at the bottom of the comment (`cardButtons`).
+export type BodyItem = { kind: "body"; key: string; id: string; tone: Tone; meta: string | null; lines: string[]; buttons: DockButton[]; focused: boolean; last: boolean; half: Side };
+// The comment editor of the diff, drawn in the stream where its comment will hang: a fixed height (EDITOR_H) that holds the title, the
+// text box, a line for the status and the buttons. The text itself is the view's (`Ui.textarea`), so the item holds only the title.
+export type EditorItem = { kind: "editor"; key: string; title: string; half: Side };
 export type LabelItem = { kind: "label"; key: string; text: string };
 // The row that starts a file in the stream. A folded file is this row alone. `hides` says what a fold covers.
 export type FileItem = { kind: "file"; key: string; path: string; title: string; letter: string; add: number; del: number; viewed: boolean; folded: boolean; hides: string };
@@ -73,16 +94,16 @@ export type NoteItem = { kind: "note"; key: string; text: string };
 // A row of the side-by-side layout: the old half and the new half. A context row is on both halves (the same item), a
 // removed row faces the added row paired with it, and a half with no partner is null. A hunk header is not one of these.
 export type SplitItem = { kind: "split"; key: string; left: RowItem | null; right: RowItem | null };
-export type StreamItem = RowItem | HeadItem | BodyItem | LabelItem | FileItem | WaitItem | NoteItem | SplitItem;
+export type StreamItem = RowItem | HeadItem | BodyItem | LabelItem | FileItem | WaitItem | NoteItem | SplitItem | EditorItem;
 
 // The side a code row's half is on, null in the unified layout.
-type Side = "old" | "new" | null;
+export type Side = "old" | "new" | null;
 
 // The stream is this wide, in pixels, or wider: side by side, unless the user forced a layout.
 export const SPLIT_W = 900;
 export const isSplit = (m: Model): boolean => m.split ?? m.width >= SPLIT_W;
 
-const sideOf = (row: Row): "old" | "new" => (row.kind === "del" ? "old" : "new");
+export const sideOf = (row: Row): "old" | "new" => (row.kind === "del" ? "old" : "new");
 const lineOn = (row: Row, side: "old" | "new"): number | null => (side === "old" ? row.old : row.new);
 
 // One row picked: a one-row selection on `side` (the half clicked), else on the side the row lives on. Nothing for a hunk
@@ -240,17 +261,150 @@ export function jumpStop(m: Model, forward: boolean): Stop | null {
 }
 
 // What a key pressed on the panel means: n is the next comment and shift+n the previous, / goes to the filter
-// box and Esc clears the selection, else the filter. Not while the editor holds the keyboard, so a note can say "n", and not while
+// box and Esc clears the selection, else the filter, and the cursor's keys come after (`cursorKey`). Not while the editor holds the keyboard, so a note can say "n", and not while
 // a question or the picker is up.
 export function panelKey(m: Model, keystroke: string): Msg | null {
   if (m.editor !== null || m.picker !== null || m.confirm !== null || m.confirmArchive) return null;
+  // The diff's keys act on the diff: in the agent-message view they would move a hidden cursor or open a diff editor.
+  if (m.view === "message") return null;
   // In the box a key types: only Esc is a command (Enter reaches the model as the box's own submit).
   if (m.filtering) return keystroke === "escape" ? { _tag: "FilterCleared" } : null;
   if (keystroke === "/") return { _tag: "FilterOpened" };
   if (keystroke === "escape") return m.selection !== null ? { _tag: "SelectionCleared" } : m.filter === "" ? null : { _tag: "FilterCleared" };
   if (keystroke === "n") return { _tag: "ThreadJumped", forward: true };
   if (keystroke === "shift-n" || keystroke === "N") return { _tag: "ThreadJumped", forward: false };
-  return null;
+  return cursorKey(m, keystroke);
+}
+
+// --- the keyboard cursor ---
+
+// A place the cursor can stand: a code row of a loaded, unfolded file, in the order the stream draws them. In the side-by-side
+// layout a pair gives a spot for each half that has a row (a context row has both), left then right. `first` marks the first
+// spot of each side after a hunk header, which is where [ and ] land.
+export type Spot = { path: string; row: number; side: Side; first: boolean };
+
+export function spots(m: Model): Spot[] {
+  const out: Spot[] = [];
+  const split = isSplit(m);
+  for (const f of m.state === null ? [] : m.state.files) {
+    const file = m.files.get(f.path);
+    if (file === undefined || isFolded(m, f)) continue;
+    let seen = new Set<Side>();
+    const put = (row: number, side: Side): void => {
+      out.push({ path: f.path, row, side, first: !seen.has(side) });
+      seen.add(side);
+    };
+    const kind = (i: number): string | undefined => file.rows[i]?.kind;
+    // The pairing of fileStream: a run of removed rows faces the run of added rows right after it.
+    for (let i = 0; i < file.rows.length; ) {
+      if (kind(i) === "hunk") {
+        seen = new Set();
+        i++;
+      } else if (!split) {
+        put(i++, null);
+      } else if (kind(i) === "ctx") {
+        put(i, "old");
+        put(i++, "new");
+      } else {
+        let mid = i;
+        while (kind(mid) === "del") mid++;
+        let end = mid;
+        while (kind(end) === "add") end++;
+        for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
+          if (i + p < mid) put(i + p, "old");
+          if (mid + p < end) put(mid + p, "new");
+        }
+        i = end;
+      }
+    }
+  }
+  return out;
+}
+
+export const sameSpot = (s: Spot, c: Cursor): boolean => s.path === c.path && s.row === c.row && s.side === c.side;
+
+// Whether the keyboard's cursor is on this row, on this half of it (null in unified): the row the view tints.
+export const cursorOn = (m: Model, item: RowItem, side: Side = null): boolean =>
+  m.cursor !== null && item.kind !== "hunk" && m.cursor.path === keyPath(item.key) && m.cursor.row === item.index && m.cursor.side === side;
+
+// The cursor's spot, or null when it has none or it no longer stands on a drawn code row (its file folded, replaced or gone).
+export function cursorSpot(m: Model): Spot | null {
+  const c = m.cursor;
+  return c === null ? null : (spots(m).find((s) => sameSpot(s, c)) ?? null);
+}
+
+// v's range is open and the cursor is on its file, so a motion grows it.
+export const visualOn = (m: Model): boolean => m.visual && m.selection !== null && m.cursor !== null && m.selection.path === m.cursor.path;
+
+// The spots a motion walks: the cursor's half of the side-by-side layout (all of them in unified), and while a range is open
+// only its own file, since a range never crosses files.
+export function lane(m: Model, all: Spot[]): Spot[] {
+  const c = m.cursor;
+  const own = visualOn(m);
+  return c === null ? all : all.filter((s) => s.side === c.side && (!own || s.path === c.path));
+}
+
+// Where the first motion key puts the cursor: the first code row at or below the item on top of the screen (a card on top
+// counts as its file's header), else the first one of a file on screen, else the first of all. A context row is on its
+// new half.
+export function topSpot(m: Model, all: Spot[]): Spot | null {
+  const home = all.filter((s) => s.side !== "old" || m.files.get(s.path)?.rows[s.row]?.kind === "del");
+  const path = m.top === null ? "" : keyPath(m.top);
+  const at = m.top === null ? null : /^[rp](\d+)$/.exec(keyLocal(m.top));
+  const row = at === null ? 0 : Number(at[1]);
+  return home.find((s) => s.path === path && s.row >= row) ?? home.find((s) => m.visible.includes(s.path)) ?? home[0] ?? null;
+}
+
+const THREAD_KEYS: Record<string, string[]> = { r: ["reply"], e: ["edit"], d: ["delete"], x: ["resolve", "reopen"] };
+
+// The keys of the cursor and of the focused thread, as the TUI's keymap has them: j k and the arrows move a row, ctrl+d and
+// ctrl+u half a screen, [ and ] a hunk, h and l the half of a side-by-side pair, v a range, c a comment. r e d x are the
+// buttons of the focused comment's card, so they do what those do and nothing where the card offers none.
+function cursorKey(m: Model, key: string): Msg | null {
+  const half = Math.max(1, Math.floor(m.height / ROW / 2));
+  switch (key) {
+    case "j":
+    case "down":
+      return { _tag: "CursorMoved", by: 1 };
+    case "k":
+    case "up":
+      return { _tag: "CursorMoved", by: -1 };
+    case "ctrl-d":
+    case "pagedown":
+      return { _tag: "CursorMoved", by: half };
+    case "ctrl-u":
+    case "pageup":
+      return { _tag: "CursorMoved", by: -half };
+    case "]":
+      return { _tag: "CursorHunk", forward: true };
+    case "[":
+      return { _tag: "CursorHunk", forward: false };
+    case "h":
+    case "left":
+      return isSplit(m) ? { _tag: "CursorSide", side: "old" } : null;
+    case "l":
+    case "right":
+      return isSplit(m) ? { _tag: "CursorSide", side: "new" } : null;
+    case "v":
+      return { _tag: "VisualToggled" };
+    case "c": {
+      // What a [+] on the cursor's row does. With no cursor yet the key only shows it.
+      const at = cursorSpot(m);
+      return at === null ? { _tag: "CursorMoved", by: 0 } : { _tag: "PlusClicked", path: at.path, row: at.row, side: at.side };
+    }
+    case "r":
+    case "e":
+    case "d":
+    case "x":
+    {
+      // The buttons the focused comment's card offers, taken as the thread's last comment so x resolves from any of its
+      // comments. Not while a range is selected: the keys then belong to the range, as the bar's did.
+      const hit = m.selection === null ? findComment(m.files, m.state, m.focus) : null;
+      return hit === null ? null : (cardButtons(hit.thread, hit.comment, true).find((b) => (THREAD_KEYS[key] ?? []).includes(b.id))?.msg ?? null);
+    }
+    default:
+      return null;
+  }
 }
 
 // `now` under a minute, then 2m, 3h, 2d. A time that does not parse has no age.
@@ -263,7 +417,65 @@ export function ageText(at: string, now: number): string | null {
 
 const who = (author: string, you: string): string => (author === "user" ? you : author.startsWith("agent:") ? cleanText(author.slice(6)) : "agent");
 
-function cardItems(out: StreamItem[], path: string, thread: Thread, m: Model, now: number): void {
+// The buttons at the bottom of a comment. Reply is on every one. Resolve or Reopen and Resend act on the thread, so only the
+// last comment has them; Edit and Delete only the user's own comment.
+function cardButtons(thread: Thread, comment: Comment, last: boolean): DockButton[] {
+  const out: DockButton[] = [];
+  const add = (id: string, label: string, msg: Msg, danger = false): void => void out.push({ id, label, msg, danger, off: false });
+  add("reply", "Reply", { _tag: "ThreadAction", id: comment.id, action: "reply" });
+  if (last) {
+    if (thread.status === "open") add("resolve", "Resolve", { _tag: "ThreadAction", id: comment.id, action: "resolve" });
+    else add("reopen", "Reopen", { _tag: "ThreadAction", id: comment.id, action: "reopen" });
+    if (thread.status === "open" && !thread.unsent) add("resend", "Resend", { _tag: "SendClicked", threads: [thread.id] });
+  }
+  if (comment.author === "user") {
+    add("edit", "Edit", { _tag: "ThreadAction", id: comment.id, action: "edit" });
+    add("delete", "Delete", { _tag: "ThreadAction", id: comment.id, action: "delete" }, true);
+  }
+  return out;
+}
+
+// The editor item of a reply or an edit of this thread, which hangs under its card, in the card's half. A new comment is not
+// here: fileStream puts it under its row, or at the top of its file. Not while the draft is being saved: its card shows it.
+function threadEditor(out: StreamItem[], path: string, thread: Thread, m: Model, half: Side): void {
+  const e = m.editor;
+  if (m.view !== "message" && m.draft === null && e !== null && e.kind !== "comment" && e.thread === thread.id) out.push(editorItem(path, e, half));
+}
+
+// A draft being saved is drawn as the card it will be, built by cardItems from the same fields, so the real card that replaces
+// it is the same height and nothing moves. Its id is "draft", which no click finds.
+const DRAFT = "draft";
+const draftComment = (m: Model, now: number, parent: string | null): Comment => ({ id: DRAFT, parent, author: "user", at: new Date(now).toISOString(), body: m.draft ?? "", sent: false, edited_since_sent: false });
+
+// A new comment's thread as the store will write it: open, unsent, on the anchor's rows.
+function draftThread(m: Model, a: NewAnchor, row: number | null, now: number): Thread {
+  const kind = a.line === null ? "file" : a.end_line !== null ? "range" : "line";
+  return {
+    id: DRAFT,
+    status: "open",
+    resolved_by: null,
+    is_new: false,
+    unsent: true,
+    placement: { kind: "matched", row, start_row: null },
+    anchor: { path: a.path, old_path: a.old_path, kind, side: a.side, line: a.line, end_line: a.end_line, text: null, spec: m.spec ?? { kind: "worktree" } },
+    comments: [draftComment(m, now, null)],
+  } as Thread;
+}
+
+// The thread with a reply or an edit being saved already in it: a reply is a last comment of the user's, which makes the thread
+// unsent; an edit is the comment's new text.
+function withDraft(thread: Thread, m: Model, now: number): Thread {
+  const e = m.editor;
+  if (m.draft === null || m.view === "message" || e === null || e.thread !== thread.id) return thread;
+  if (e.kind === "reply") return { ...thread, unsent: true, comments: [...thread.comments, draftComment(m, now, thread.id)] };
+  if (e.kind === "edit") return { ...thread, comments: thread.comments.map((c) => (c.id === e.comment ? { ...c, body: m.draft ?? c.body, edited_since_sent: c.sent || c.edited_since_sent } : c)) };
+  return thread;
+}
+
+const editorItem = (path: string, e: Editor, half: Side): EditorItem => ({ kind: "editor", key: itemKey(path, "editor"), title: editorTitle(e), half });
+
+function cardItems(out: StreamItem[], path: string, given: Thread, m: Model, now: number, half: Side = null): void {
+  const thread = withDraft(given, m, now);
   const root = thread.comments[0];
   if (root === undefined) throw new Error(`thread ${thread.id} has no comments`);
   const resolved = thread.status === "resolved";
@@ -289,9 +501,9 @@ function cardItems(out: StreamItem[], path: string, thread: Thread, m: Model, no
     open,
     focused: m.focus === thread.id,
     last: !open,
+    half,
   });
-  if (!open) return;
-  thread.comments.forEach((c, i) => {
+  if (open) thread.comments.forEach((c, i) => {
     const when = ageText(c.at, now);
     out.push({
       kind: "body",
@@ -300,10 +512,13 @@ function cardItems(out: StreamItem[], path: string, thread: Thread, m: Model, no
       tone,
       meta: c.parent === null ? null : `${who(c.author, "You")}${when === null ? "" : ` \u00b7 ${when}`}`,
       lines: bodyLines(c.body),
+      buttons: cardButtons(thread, c, i === thread.comments.length - 1),
       focused: m.focus === c.id,
       last: i === thread.comments.length - 1,
+      half,
     });
   });
+  threadEditor(out, path, thread, m, half);
 }
 
 // An item's key is its file's path and what it is in the file, so a click names the file it belongs to. The path of
@@ -323,9 +538,34 @@ const LABEL_H = 30;
 const NOTE_H = 24;
 const CHAR_W = 7.5;
 const TEXT_H = 18;
+// A card button is BTN_H tall and 8 px of padding and a border wide each side, with BTN_GAP between, in a row that wraps, 4 px under the text.
+const BTN_H = 24;
+const BTN_GAP = 6;
+// The diff's editor: the title, the text box and a status line, each 4 px under the last, and the button row, in a box
+// with 6 px of padding top and bottom, 6 px of margin each side of it. The text box is EDITOR_TEXT tall and scrolls inside.
+export const EDITOR_TEXT = 108;
+export const EDITOR_H = 12 + 12 + 16 + 4 + EDITOR_TEXT + 4 + 16 + 4 + 24;
+
+// The height of a comment's button row when the card's text is `avail` wide: the buttons' estimated widths, wrapped.
+function buttonsHeight(buttons: DockButton[], avail: number): number {
+  if (buttons.length === 0) return 0;
+  // The rows a wrapping flex row makes: a button goes on the next row when it does not fit after the ones before it.
+  let rows = 1;
+  let used = 0;
+  for (const b of buttons) {
+    const w = b.label.length * CHAR_W + 18;
+    if (used > 0 && used + BTN_GAP + w > avail) {
+      rows++;
+      used = w;
+    } else used += (used > 0 ? BTN_GAP : 0) + w;
+  }
+  return 4 + rows * BTN_H + (rows - 1) * BTN_GAP;
+}
 
 // The card's width in a stream this wide: the view gives it 48 px on the left and 12 on the right, up to CARD_W.
 export const cardWidth = (width: number): number => Math.max(160, Math.min(CARD_W, width - 60));
+// A card in one half of a side-by-side stream (half of the width less the 1 px rule): 28 px in from the half's left edge, 12 on the right.
+export const halfCardWidth = (width: number): number => Math.max(160, Math.min(CARD_W, (width - 1) / 2 - 40));
 
 export function heightOf(i: StreamItem, width: number): number {
   switch (i.kind) {
@@ -343,12 +583,15 @@ export function heightOf(i: StreamItem, width: number): number {
       return NOTE_H;
     case "wait":
       return i.height;
+    case "editor":
+      return EDITOR_H;
     case "head":
       return 34 + (i.quote === null ? 0 : 18);
     case "body": {
-      const cols = Math.max(8, Math.floor((cardWidth(width) - (i.meta === null ? 22 : 34)) / CHAR_W));
+      const avail = (i.half === null ? cardWidth(width) : halfCardWidth(width)) - (i.meta === null ? 22 : 34);
+      const cols = Math.max(8, Math.floor(avail / CHAR_W));
       const wrapped = i.lines.reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0);
-      return 6 + (i.meta === null ? 0 : 16) + wrapped * TEXT_H + (i.last ? 6 : 0);
+      return 6 + (i.meta === null ? 0 : 16) + wrapped * TEXT_H + buttonsHeight(i.buttons, avail) + (i.last ? 6 : 0);
     }
     default: {
       const unhandled: never = i;
@@ -382,14 +625,27 @@ const rowMemo = new WeakMap<FileView, RowItem[]>();
 function rowsOf(file: FileView): RowItem[] {
   const kept = rowMemo.get(file);
   if (kept !== undefined) return kept;
-  const rows = file.rows.map((row, index): RowItem => ({ kind: row.kind, key: itemKey(file.path, `r${index}`), index, old: row.old === null ? "" : String(row.old), new: row.new === null ? "" : String(row.new), text: cleanText(row.text), runs: runs(row.text, row.tokens) }));
+  const rows = file.rows.map((row, index): RowItem => ({ kind: row.kind, key: itemKey(file.path, `r${index}`), index, old: row.old === null ? "" : String(row.old), new: row.new === null ? "" : String(row.new), text: cleanText(row.text), runs: runs(row.text, row.tokens, row.marks) }));
   rowMemo.set(file, rows);
   return rows;
 }
 
+// The row a new comment hangs under: the last one of its range, found by its line on the comment's side (a line number is
+// one row of a file). null when the file has no such row, and for a file comment.
+function editorRow(file: FileView, a: NewAnchor): number | null {
+  const line = a.end_line ?? a.line;
+  if (a.side === null || line === null) return null;
+  for (let i = 0; i < file.rows.length; i++) if (lineOn(file.rows[i] as Row, a.side) === line) return i;
+  return null;
+}
+
 function fileStream(m: Model, file: FileView, now: number): FileItems {
   const ids = new Set(file.threads.flatMap((t) => [t.id, ...t.comments.map((c) => c.id)]));
-  const dep = [file.threads.filter((t) => m.expanded.has(t.id)).map((t) => t.id).join(","), m.focus !== null && ids.has(m.focus) ? m.focus : "", Math.floor(now / 60000), m.width, isSplit(m)].join("|");
+  // A new comment's editor on this file, which the message view's editor is not. A reply or an edit is drawn by its card.
+  const ed = m.view !== "message" && m.editor !== null && m.editor.kind === "comment" && m.editor.anchor?.path === file.path ? m.editor : null;
+  const at = ed?.anchor == null ? null : editorRow(file, ed.anchor);
+  const split = isSplit(m);
+  const dep = [file.threads.filter((t) => m.expanded.has(t.id)).map((t) => t.id).join(","), m.focus !== null && ids.has(m.focus) ? m.focus : "", Math.floor(now / 60000), m.width, split, ed === null ? "" : `${editorTitle(ed)}|${at}`, m.view !== "message" && m.editor?.thread != null && ids.has(m.editor.thread) ? `${m.editor.kind}|${m.editor.thread}` : "", (ed !== null || (m.editor?.thread != null && ids.has(m.editor.thread))) && m.draft !== null ? m.draft : ""].join("|");
   const kept = memo.get(file);
   if (kept !== undefined && kept.dep === dep) return kept.stream;
   const items: StreamItem[] = [];
@@ -402,12 +658,23 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
     else under.set(row, [...(under.get(row) ?? []), t]);
   }
   if (file.note !== null) items.push({ kind: "note", key: itemKey(file.path, "note"), text: cleanText(file.note) });
+  // A file comment, or one whose row is gone, has its editor at the top of the file.
+  if (ed !== null && at === null && m.draft === null) items.push(editorItem(file.path, ed, null));
   for (const t of top) cardItems(items, file.path, t, m, now);
+  // Saving a file comment: its card is where the store's will be, after the file's other comments with no row.
+  if (ed !== null && at === null && m.draft !== null && ed.anchor !== null) cardItems(items, file.path, draftThread(m, ed.anchor, null, now), m, now);
   const base = rowsOf(file);
+  // The cards of the rows, each in the half its comment is on in the split layout; then the editor of a new comment when one of
+  // the rows is the last of its range, in the half the [+] was clicked on.
   const cards = (...rows: (RowItem | null)[]): void => {
-    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) for (const t of under.get(index) ?? []) cardItems(items, file.path, t, m, now);
+    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) for (const t of under.get(index) ?? []) cardItems(items, file.path, t, m, now, split ? t.anchor.side : null);
+    if (ed !== null && at !== null && rows.some((r) => r?.index === at)) {
+      const half = split ? (ed.anchor?.side ?? null) : null;
+      if (m.draft === null || ed.anchor === null) items.push(editorItem(file.path, ed, half));
+      else cardItems(items, file.path, draftThread(m, ed.anchor, at, now), m, now, half);
+    }
   };
-  if (!isSplit(m)) {
+  if (!split) {
     base.forEach((row) => {
       items.push(row);
       cards(row);
@@ -488,7 +755,7 @@ export function layoutCache(): (m: Model, now: number) => Stream {
   let deps: unknown[] = [];
   let kept: Stream | null = null;
   return (m, now) => {
-    const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, Math.floor(now / 60000)];
+    const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, m.editor, m.draft, m.view, Math.floor(now / 60000)];
     if (kept !== null && next.every((d, i) => d === deps[i])) return kept;
     deps = next;
     kept = streamLayout(m, now);
@@ -533,11 +800,22 @@ export const offsetOfKey = (stream: Stream, key: string, height: number): number
   return at < 0 ? null : clampOffset(stream.starts[at] as number, stream.total, height);
 };
 
+// Where a pending reveal scrolls to: its item's start, or with `near` the offset nearest the current one that has the whole
+// item on screen (the current offset when it already is). null when the item is not in the stream.
+export function revealOffset(stream: Stream, reveal: Reveal, offset: number, height: number): number | null {
+  const at = indexOfKey(stream.items, reveal.key);
+  if (at < 0) return null;
+  const top = stream.starts[at] as number;
+  const bottom = stream.starts[at + 1] as number;
+  const want = reveal.near !== true ? top : top < offset ? top : bottom > offset + height ? bottom - height : offset;
+  return clampOffset(want, stream.total, height);
+}
+
 // What the model must learn from the stream after any change: the offset (moved to a pending reveal, then clamped), the
 // stream's height, the key of the first item on screen and the files on screen. null when the model knows it all. This is
 // the one place `Scrolled` comes from, so the sidebar and the fetches follow every kind of scroll the same way.
 export function scrolled(m: Model, stream: Stream): Msg | null {
-  const target = m.reveal === null ? null : offsetOfKey(stream, m.reveal.key, m.height);
+  const target = m.reveal === null ? null : revealOffset(stream, m.reveal, m.offset, m.height);
   const offset = clampOffset(target ?? m.offset, stream.total, m.height);
   const { first, end } = visibleRange(stream, offset, m.height);
   const top = stream.items[first]?.key ?? null;
@@ -682,6 +960,7 @@ export function editorKey(keystroke: string, text: string): Msg | null {
 }
 
 export function editorTitle(e: Editor): string {
+  if (e.title !== undefined) return e.title;
   if (e.kind === "reply") return `Reply to ${e.thread ?? ""}`;
   if (e.kind === "edit") return `Edit ${e.comment ?? ""}`;
   return `Draft note - ${e.anchor === null ? "" : anchorLabel(e.anchor)}`;
@@ -757,14 +1036,6 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
   } else if (hit !== null) {
     const { thread, comment } = hit;
     label = `${thread.id}${comment.id === thread.id ? "" : ` / ${comment.id}`}`;
-    add("reply", "Reply", { _tag: "ThreadAction", id: comment.id, action: "reply" });
-    if (thread.status === "open") add("resolve", "Resolve", { _tag: "ThreadAction", id: comment.id, action: "resolve" });
-    else add("reopen", "Reopen", { _tag: "ThreadAction", id: comment.id, action: "reopen" });
-    if (thread.status === "open" && !thread.unsent) add("resend", "Resend", { _tag: "SendClicked", threads: [thread.id] });
-    if (comment.author === "user") {
-      add("edit", "Edit", { _tag: "ThreadAction", id: comment.id, action: "edit" });
-      add("delete", "Delete", { _tag: "ThreadAction", id: comment.id, action: "delete" }, true);
-    }
   }
   const shown = m.selected === null ? undefined : summaryOf(m, m.selected);
   if (shown !== undefined) add("file", "Comment on file", { _tag: "FileCommentClicked" });

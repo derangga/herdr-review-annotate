@@ -98,6 +98,18 @@ pub struct RowJson {
     /// without the `syntax` feature, a language the highlighter does not know, a hunk header.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tokens: Vec<TokenJson>,
+    /// The words of `text` that changed, on a removed row and the added row paired with it. Always
+    /// written, `[]` when there are none.
+    #[serde(default)]
+    pub marks: Vec<MarkJson>,
+}
+
+/// One marked part of a row's `text`, `text.slice(from, to)` in UTF-16 code units like `tokens`. The
+/// marks of a row come in order, do not overlap, and are not empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkJson {
+    pub from: usize,
+    pub to: usize,
 }
 
 /// What a piece of code is, as far as its colour goes: the kinds of `theme::Token`.
@@ -244,4 +256,22 @@ pub struct SendErrorJson {
     pub error: SendErrorKind,
     pub message: String,
     pub candidates: Vec<CandidateJson>,
+}
+
+/// What `message --json` prints: the agent's newest message, one string per source line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageJson {
+    pub schema: u32,
+    pub agent: String,
+    /// What the agent reports: `idle`, `working`, `blocked`, `done` or `unknown`.
+    pub status: String,
+    pub id: String,
+    pub lines: Vec<String>,
+}
+
+/// What `message send` prints when Herdr or hc took the prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSentJson {
+    pub schema: u32,
+    pub sent: usize,
 }

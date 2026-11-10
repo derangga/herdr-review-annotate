@@ -35,7 +35,11 @@ export type TokenKind = "comment" | "string" | "number" | "keyword" | "operator"
 // do not overlap and are not empty; decode.ts drops any that are not.
 export type Token = { from: number; to: number; kind: TokenKind };
 
-export type Row = { kind: "hunk" | "ctx" | "add" | "del"; old: number | null; new: number | null; text: string; tokens: Token[] };
+// A changed word of a row's text, in the same units. Only a removed row and the added row paired with it have any; the
+// panel draws them with a stronger background. Like tokens, in order, not overlapping, not empty.
+export type Mark = { from: number; to: number };
+
+export type Row = { kind: "hunk" | "ctx" | "add" | "del"; old: number | null; new: number | null; text: string; tokens: Token[]; marks: Mark[] };
 
 export type Placement = { kind: "matched" | "outdated" | "not_in_diff"; row: number | null; start_row: number | null };
 
@@ -106,6 +110,12 @@ export type SendReply = { schema: 1; sent: number; queued: boolean; agent: strin
 
 export type ArchiveReply = { schema: 1; archived: number; unsent: number };
 
+// What `message --json` printed: the agent's newest message, one string per source line.
+export type MessageReply = { schema: 1; agent: string; status: string; id: string; lines: string[] };
+
+// What `message send` printed when the agent took the prompt.
+export type MessageSentReply = { schema: 1; sent: number };
+
 export type Props = { root: string | null; target: string | null; bin: string | null };
 
 // What the host says about the focused terminal and the panes, after decoding.
@@ -134,7 +144,8 @@ export type NewAnchor = { path: string; old_path: string | null; side: "old" | "
 
 // The text lives in the textarea state the view owns. `initial` is what the state starts with: the comment's
 // own text for an edit, empty otherwise. `thread` is the root id a reply goes to, `comment` the id an edit changes.
-export type Editor = { kind: "comment" | "reply" | "edit"; anchor: NewAnchor | null; thread: string | null; comment: string | null; initial: string };
+// `title` is set by the message view, whose comments have no anchor to name.
+export type Editor = { kind: "comment" | "reply" | "edit"; anchor: NewAnchor | null; thread: string | null; comment: string | null; initial: string; title?: string };
 
 // The panel's own settings, kept in a file under appHome(): which side the sidebar is on, and whether it shows.
 export type Panel = { side: "left" | "right"; open: boolean };
@@ -143,8 +154,13 @@ export type Panel = { side: "left" | "right"; open: boolean };
 // threads to land on.
 export type Jump = { path: string; edge: "first" | "last" };
 
-// A request to scroll the stream so the item with this key is at the top. A new object is a new request.
-export type Reveal = { key: string };
+// A request to scroll the stream so the item with this key is at the top, or with `near`, only as far as it takes to bring
+// the item on screen (not at all when it is). A new object is a new request.
+export type Reveal = { key: string; near?: boolean };
+
+// The keyboard's place in the diff: a code row of a loaded, unfolded file, and in the side-by-side layout the half it is on
+// (null in the unified layout). The model has none until the first motion key, or a press on a row.
+export type Cursor = { path: string; row: number; side: "old" | "new" | null };
 
 // The row the pointer is over, if it is a row of a file's diff. `side` is the half of a side-by-side row it is over, null
 // in the unified layout.
@@ -157,6 +173,22 @@ export type Drag = { path: string; row: number; head: number; moved: boolean; si
 
 // A grip on the scrollbar's thumb: where the pointer was and where the stream was.
 export type Grip = { y: number; offset: number };
+
+// A comment on lines of the agent's message, kept in the model only. `start` and `end` are lines from 1, both included.
+export type MessageComment = { id: number; start: number; end: number; body: string };
+
+// The agent-message view (design/gui.md). `selection` and `drag` count lines from 1.
+export type MessageView = {
+  data: MessageReply | null; // the message as the last read gave it
+  loading: boolean;
+  sending: boolean; // a send runs, so a second click does nothing
+  comments: MessageComment[];
+  next: number; // the id of the next comment
+  selection: { from: number; to: number } | null;
+  drag: { line: number; head: number; moved: boolean } | null; // a press on a line that has not been released
+  hover: number | null;
+  status: string | null;
+};
 
 export type Model = {
   root: string | null;
@@ -187,13 +219,19 @@ export type Model = {
   batch: readonly string[]; // the files the running fetch is for
   expanded: ReadonlySet<string>;
   selection: Selection | null;
-  focus: string | null; // the comment the thread buttons act on
+  cursor: Cursor | null; // the keyboard's row: j, k and the other motions move it
+  visual: boolean; // v began the selection, so a motion extends it to the cursor
+  focus: string | null; // the comment last clicked, which the keys act on and the card is tinted for
   confirm: string | null; // the comment a click on delete asked about, until Delete or Cancel answers
   jump: Jump | null; // a next or previous comment that waits for its file to load
   editor: Editor | null;
   saving: boolean; // a draft is being written, so a second save does nothing
+  draft: string | null; // the text of a draft being saved: its card is drawn at once, in the editor's place, until the real one arrives
+  landing: string | null; // a saved draft's file: the editor stays in its place until that file's reply draws the card ("" for none)
   picker: Candidate[] | null;
   sending: boolean; // a send is running, so a second click does nothing
+  view: "diff" | "message"; // what the main area shows: the diff stream, or the agent's last message
+  message: MessageView;
   sendThreads: string[]; // the threads of the send the picker interrupted, empty for "all unsent"
   confirmArchive: boolean; // a click on archive asked, until Archive or Cancel answers
   sticky: boolean; // status is a result (sent, archived) that a reload must not clear
@@ -234,6 +272,10 @@ export type Msg =
   | { _tag: "EditorCancelled" }
   | { _tag: "PlusClicked"; path: string; row: number; side: "old" | "new" | null }
   | { _tag: "SelectionCleared" }
+  | { _tag: "CursorMoved"; by: number }
+  | { _tag: "CursorHunk"; forward: boolean }
+  | { _tag: "CursorSide"; side: "old" | "new" }
+  | { _tag: "VisualToggled" }
   | { _tag: "FileCommentClicked" }
   | { _tag: "EditorSaved"; text: string }
   | { _tag: "ThreadAction"; id: string; action: ThreadActionKind }
@@ -258,7 +300,17 @@ export type Msg =
   | { _tag: "FilterOpened" }
   | { _tag: "FilterEntered" }
   | { _tag: "FilterCleared" }
-  | { _tag: "PanelLoaded"; panel: Panel };
+  | { _tag: "PanelLoaded"; panel: Panel }
+  | { _tag: "ViewChosen"; view: "diff" | "message" }
+  | { _tag: "MessageLoaded"; reply: MessageReply }
+  | { _tag: "MessageRefreshed" }
+  | { _tag: "MessageHovered"; line: number; on: boolean }
+  | { _tag: "MessagePressed"; line: number }
+  | { _tag: "MessageReleased" }
+  | { _tag: "MessagePlusClicked"; line: number }
+  | { _tag: "MessageCommentAction"; id: number; action: "edit" | "delete" }
+  | { _tag: "MessageSendClicked" }
+  | { _tag: "MessageSent"; sent: number };
 
 // An id is a comment id. reply, resolve and reopen act on the thread that comment is in, edit and delete on
 // the comment. delete asks, DeleteConfirmed writes. focus selects a comment, toggle selects a thread and opens or closes a resolved one.
@@ -274,7 +326,7 @@ export type WriteOp =
   | { kind: "seen"; id: string };
 export type WriteKind = WriteOp["kind"] | "viewed";
 
-export type Op = "load" | "files" | "watch-root" | "watch-store" | "write" | "seen" | "send" | "archive" | "viewed" | "panel";
+export type Op = "load" | "files" | "watch-root" | "watch-store" | "write" | "seen" | "send" | "archive" | "viewed" | "panel" | "message" | "message-send";
 
 // What to do next.
 export type Cmd =
@@ -287,4 +339,6 @@ export type Cmd =
   | { _tag: "Archive"; root: string }
   | { _tag: "SetViewed"; root: string; spec: Spec | null; path: string; viewed: boolean }
   | { _tag: "ReadPanel" }
-  | { _tag: "SavePanel"; panel: Panel };
+  | { _tag: "SavePanel"; panel: Panel }
+  | { _tag: "ReadMessage"; target: string }
+  | { _tag: "SendMessage"; target: string; id: string; comments: { start: number; end: number; body: string }[] };

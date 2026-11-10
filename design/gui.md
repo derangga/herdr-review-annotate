@@ -27,7 +27,32 @@ In v1:
 - Comments on a line, a range or a whole file, as in the TUI. The `[+]` shows only on the code line under the mouse; a plain click on a
   line highlights nothing and clears a range; holding the mouse on a line and dragging over others selects the lines between, tinted;
   the `[+]` opens the editor on the line, or on the whole range when the line is inside it; Esc clears the selection. There is no
-  cursor and no shift-click. Threads with reply, resolve, reopen, edit and delete.
+  shift-click. Threads with reply, resolve, reopen, edit and delete, as buttons on the cards themselves.
+- A card's buttons (`rows.cardButtons`, on each body item as `buttons`, drawn by `view.ts` in a wrapping row at the bottom of the
+  comment). Every comment of an open card has `Reply`. The last comment of the thread also has `Resolve` (thread open) or `Reopen`
+  (thread resolved, expanded) and, when the thread is open and not unsent, `Resend`. A comment the user wrote has `Edit` and a red
+  `Delete`. They are the messages the bar under the stream used to send (`ThreadAction` with the comment's id, `SendClicked { threads }`).
+  A press on one is its own: `view.button` calls `cx.stop_propagation()` so the card's click (focus) does not also fire. A resolved
+  card that is collapsed is its head alone and has no buttons; expanding it shows them. The bar under the stream no longer has any of
+  them (`rows.dock`): it keeps `Comment on file` and the review-wide buttons.
+- The editor of the diff is in the stream, as the TUI's (`note_box` in `view.rs`), and not in the bar. `rows.ts` builds it as an `editor` item
+  (key `<path>|editor`, the path of the threads not in the diff is empty; `title`, `half`) of a fixed height `EDITOR_H` (200 px: 6 px above and
+  below, a box with 6 px of padding holding the title 16, the text box `EDITOR_TEXT` 108, a status line 16 that is kept free so the
+  height does not depend on `status`, and a button row 24, 4 px between the four), which `view.editorBox` draws exactly. Where it hangs:
+  a new comment right after the cards under the last row of its range (found by its line on its side; a row no longer in the file puts it at
+  the top of the file), a reply or an edit right after the thread's card, a file comment at the top of the file, after the note and before the
+  cards with no row. In side by side it is in the half of the side the `[+]` was clicked on (the anchor's `side`), or the half of the thread's
+  card; for a file comment it is the whole width. In the unified layout, and for a file comment, it starts 48 px in and runs to the stream's right
+  edge. The message view's editor (`view === "message"`) stays in its dock, and `fileStream` builds none for it. The text is the
+  `Ui.textarea` the view owns, which `main.ts` makes as before (5 rows and no auto-grow, since the box has a fixed height; it scrolls inside), and
+  Ctrl+S, Esc, Save and Cancel are the box's own (`track_focus(ui.handle)` and `editorKey`). Opening it sets a `near` reveal of its key
+  (`plusClicked`, a reply or an edit, `FileCommentClicked`; the `c` key is a `PlusClicked`), so the stream scrolls only as far as it takes to
+  show it. A thread's card and the editor are items of the same file, so the file's memo and the layout cache take the editor (its title and its
+  row, and `Model.editor`) as inputs.
+- The Delete question stays in the bar under the stream (`confirmRow`), not on the card: its Esc is a key down on the bar's own focus
+  handle, which a card has none of, and it names what Delete removes, with `Delete` and `Cancel`.
+- The keyboard: a cursor on a code row moves with `j` `k`, `ctrl+d` `ctrl+u`, `[` `]` and, side by side, `h` `l`; `v` starts a
+  range that the motions grow; `c` comments on the range or the row; `r` `e` `d` `x` act on the focused thread ("The keyboard" below).
 - Next and previous comment, by two buttons in the bar under the stream and by the keys `n` and `shift+n`, across
   files, as the TUI's `next_thread` and `prev_thread`.
 - Unsent and new markers, send, resend of one thread, archive of resolved threads, a file marked viewed (which folds it
@@ -37,9 +62,16 @@ In v1:
 - Syntax colours in the code rows, from the same highlighter as the TUI: Rust sends token kinds in `file --json`
   and the mod colours them from `theme()`. No highlighter runs in the mod. A build
   of the binary without the `syntax` feature, or one older than the mod, sends none and the rows draw plain.
+- Changed words inside a line, as the TUI marks them: a removed line and the added line that replaced it show
+  which words differ with a stronger red or green behind the words. Rust pairs the rows and compares them and sends
+  `marks` in `file --json`; the mod only draws them.
+- The agent-message review: a header button "Agent message" switches the main area to the agent's last message, with
+  line numbers. The user comments on lines of it and sends the comments back as the agent's next prompt ("The
+  agent-message view" below, [gui-message](graphs/gui-message.md)).
 
-Left out on purpose, each a follow-up: changed words inside a line, the
-agent-message review, vim motions, the whole-file view, a key for the sidebar and a key to fold.
+Left out on purpose, each a follow-up: comments on a few words of the agent's message, the whole-file view, a key for the
+sidebar and a key to fold, and the vim keys of the TUI that the cursor does not need (`g` and `shift+g` to the top and bottom,
+a count before a motion, `0` and the sideways scroll keys).
 
 ## Method: how Effect maps onto plain TypeScript
 
@@ -64,15 +96,15 @@ objects are `type` unions, and `import type` is used for types.
 ```
 ids        CommentId ("u7", "a2")   TerminalAddress ("t7")   RepoRoot (absolute)   RelPath
 records    State, FileSummary, FileView, Row, Thread, Comment, Anchor, Placement, Candidate
-           Model, Editor, Selection, Hover, Drag, Grip, Panel
+           Model, Editor, Selection, Cursor, Hover, Drag, Grip, Panel
 variants   Spec          WorkTree | Branch { base }
            Change        modified | added | deleted | renamed | untracked | binary | submodule
                          | too_large | unparsed
            Placement     matched | outdated | not_in_diff, with a row index or null
-           Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked (these three carry `side`: `old`, `new` or null, null in the unified layout), SelectionCleared,
+           Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked (these three carry `side`: `old`, `new` or null, null in the unified layout), SelectionCleared, CursorMoved, CursorHunk, CursorSide, VisualToggled,
                          FileCommentClicked, EditorSaved, EditorCancelled, ThreadAction, SendClicked, PickerChosen, PickerCancelled, ArchiveClicked, ArchiveConfirmed, DeleteConfirmed, ConfirmCancelled, Archived, ViewedClicked,
-                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, LayoutToggled, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
-           Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel
+                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, LayoutToggled, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent, ViewChosen, MessageLoaded, MessageRefreshed, MessageHovered, MessagePressed, MessageReleased, MessagePlusClicked, MessageCommentAction, MessageSendClicked, MessageSent ...
+           Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel, ReadMessage, SendMessage
 errors     BinaryMissing | TooOld | ContractMismatch { path } | Busy | BackendFailed { code, stderr }
            BadRequest { stderr } | Refused { Blocked | NotReady | AgentGone }
            NoTarget | AmbiguousTarget { candidates } | WatchUnavailable
@@ -93,14 +125,15 @@ index in it counts into the `rows` of the same `file` reply.
   on the scrollbar's thumb that has not been released), `folds` (the files the
   user folded or opened, by path; a file not in it is folded when it is viewed), `dirty` (fetched files to fetch again),
   `fresh`, `glance` and `seenSent` (the new resolved cards on screen, as of the last scroll and the last tick, and the threads a seen was sent for), `skipped` (files whose last fetch failed) and `batch` (the files the running fetch is for), `expanded` (a set of root ids: the
-  resolved threads the user opened), `selection`,
-  `focus` (the comment the thread buttons act on), `confirm` (the comment a click on delete asked about, until Delete or Cancel answers), `jump` (a next or previous comment that waits for its file to be fetched: the path and `first` or `last`),
+  resolved threads the user opened), `selection`, `cursor` (the keyboard's row and half, or null; "The keyboard" below), `visual` (v began the selection, so a motion grows it),
+  `focus` (the comment last clicked, which the keys act on and the card is tinted for), `confirm` (the comment a click on delete asked about, until Delete or Cancel answers), `jump` (a next or previous comment that waits for its file to be fetched: the path and `first` or `last`),
   `editor`, `saving` (a draft is being written, so a second save does nothing), `picker` (candidates or null), `sending` (a send runs, so a second click does nothing), `sendThreads` (the threads of the send the picker interrupted), `confirmArchive` (a click on archive asked, until Archive or Cancel answers), `sticky` (the status is a result a reload must not clear), `banner`, `status`, `inFlight`, `pending`, `stopped` (after
   `BinaryMissing`, `TooOld` or `ContractMismatch`: only Refresh loads again), `storeWatch` (the store
   directory the watch loop runs on, or null), `retried` (a `BadRequest` already led to a reload that has
   not succeeded yet), and `panel` (`side`, `left` or `right`, and `open`, whether the sidebar shows; the defaults are
   left and shown, and "The panel's own settings" below says where they are kept), `filter` (the sidebar's query,
-  empty for no filter; it is not saved) and `filtering` (the query box holds the keyboard).
+  empty for no filter; it is not saved) and `filtering` (the query box holds the keyboard), and `view` and `message` (the
+  agent-message view, "The agent-message view" below).
 - A question is a bar, not a second click. While `confirm` or `confirmArchive` is set, the bar under the stream shows
   a sentence, a button named for the action (`Delete`, red; `Archive`, the accent) and `Cancel` in place of the other buttons,
   and only that button writes. `rows.ts` builds it (`confirmRow`) and `view.ts` draws it. Esc is a key down on that
@@ -131,7 +164,7 @@ index in it counts into the `rows` of the same `file` reply.
 - Next and previous comment. `ThreadJumped { forward }` comes from two buttons, `Previous comment` and `Next
   comment`, and from the keys. The buttons are the first two of the second row of the bar under the stream, with
   Send, Archive and Mark viewed: the header already wraps on a narrow panel, and the bar is where the other
-  thread buttons are. They are off when the review has no thread, and the bar is replaced by the editor or
+  review-wide buttons are. They are off when the review has no thread, and the bar is replaced by the editor or
   the question while those are up, so they are not there then. The row wraps when it is narrow.
   - The order is the TUI's. The threads not in the diff come first (they are drawn above every file), then
     the files in the sidebar's order, and in a file the cards as they are drawn: the ones with no row, then
@@ -143,8 +176,8 @@ index in it counts into the `rows` of the same `file` reply.
   - From the focused thread, next is the stop after it and previous the one before, and the ends wrap round:
     next from the last thread goes to the first, previous from the first to the last. A focus on a reply counts
     as a focus on its thread. With nothing focused, next is the first thread of the selected file, and previous
-    the last stop before that file (the threads not in the diff, or the file above). The row selection is
-    not used, because the panel has no cursor, and the top of the stream is what is on screen when
+    the last stop before that file (the threads not in the diff, or the file above). The row selection and
+    the cursor are not used, and the top of the stream is what is on screen when
     nothing is chosen. With no thread in the review the buttons are off and a key sets the status
     `no comments in this review`.
   - A stop that is a thread already drawn sets `focus` and `reveal` (the key of its card) at once and starts no
@@ -156,8 +189,8 @@ index in it counts into the `rows` of the same `file` reply.
   - Showing the thread. The mod scrolls the stream itself. `reveal` is the card's key, and `rows.scrolled` turns it into the item's
     start in pixels, the new `offset`; "The stream" below says how.
   - Keys. A key reaches `on_key_down` only along the focus path, so the root element tracks a focus handle
-    of its own (`nav`) and `rows.panelKey` says what a key means: `n` is next, `shift-n` or `N` previous, and
-    nothing else, and nothing at all while the editor, the question bar or the picker is up, so typing `n`
+    of its own (`nav`) and `rows.panelKey` says what a key means: `n` is next, `shift-n` or `N` previous, `/` and
+    Esc as below, the cursor's keys of "The keyboard", and nothing else, and nothing at all while the editor, the question bar or the picker is up, so typing `n`
     in a note types `n`. The root does not track the handle while the editor is open, so a click in the text
     box cannot take the keyboard. `main.ts` gives `nav` the keyboard after a jump, when the editor or a
     question closes, and when herdr-app sends the `focus` command to this copy (`runner.listen`, reading
@@ -170,7 +203,9 @@ index in it counts into the `rows` of the same `file` reply.
   file a header row, and under it the rows and cards of its diff. The mod scrolls it itself and draws only the items on screen.
   - `rows.streamLayout(model, now)` returns `{ items, sizes, starts, total, wide }`: a height for each item, the prefix sum of them
     (where each item begins), the stream's height and the width its longest line needs. Nothing is measured. Code rows and the header are exact.
-    A card is estimated from its text and the stream's width (`rows.heightOf`), a little tall so that text never clips. An item is drawn in a
+    A card is estimated from its text and the stream's width (`rows.heightOf`), a little tall so that text never clips. A comment's button
+    row is counted too (`buttonsHeight`: 4 px, then 24 px a row, 6 px between rows, the buttons' widths guessed from their labels and
+    wrapped to the card's text width), and `view.ts` draws it with exactly those numbers. An item is drawn in a
     box of its counted height, overflow hidden, and a card's background fills its box, so the extra height is padding inside the card and not
     a gap between its parts. A card is drawn at that fixed height and not at its natural one, because the prefix sums, the scrollbar, the
     hit test and a scroll to an item all use the same numbers. `rows.layoutCache` keeps the stream while nothing it is built from changes (the
@@ -178,7 +213,7 @@ index in it counts into the `rows` of the same `file` reply.
     do not rebuild it. A fetched file's items are kept per reply (`rows.fileStream`), and the code rows' runs per reply (`rowsOf`).
   - A key is the file's path, `|`, and the item: `src/a.rs|r12`, `src/a.rs|h:u3`, `src/a.rs|file`. Each drawn item is an element with
     an id made from its key. A header, a card head and a card body take a click, which `rows.itemClick` turns into a message that names
-    the file or the thread; a code row has its own handlers (below).
+    the file or the thread; a code row has its own handlers (below), and so has a button on a card body (a press that stops there).
   - The scroll position is `offset` in the model, in pixels. `on_scroll_wheel` becomes `Wheeled { dy }` (`rows.wheelDelta`), clamped to
     `0 .. total - height`. The scrollbar is the mod's own, a track and a thumb on the right of the stream (`rows.thumbOf`), dragged by a
     grip (`ThumbGrabbed`, `ThumbMoved`, `Released`) or jumped by a click on the track (`TrackClicked`). Sideways scroll is the
@@ -318,6 +353,9 @@ one test.
   E: AmbiguousTarget    json error "ambiguous"         -> escape: picker over the candidates the CLI
                                                          returned, then send again with --target. Target
                                                          resolution stays in Rust, one copy
+-> ReviewCli.message, ReviewCli.messageSend (ops `message` and `message-send`)
+  E: every error above                                 -> the message view's own status and nothing else, the message and the
+                                                        comments kept ([gui-message](graphs/gui-message.md))
 -> watch loop
   E: WatchUnavailable   watchFolder rejects            -> escape: the timer only. Try again after the next load
 -> temp file
@@ -386,6 +424,14 @@ unit `String.prototype.slice` counts, so the mod slices with them as they are. `
 row of one div per run, so the added and removed backgrounds, the selection and the click on the row are those
 of the row and not of a run. The list builds only the rows on screen, so the number of runs is the visible
 rows' and not the file's.
+
+Changed words. A row's `marks` ([shapes](shapes.md)) are decoded as `tokens` are, loosely, with a bad mark dropped.
+`runs` cuts the row's pieces again at the marks' edges, so each run is wholly marked or not, and a marked run keeps the
+colour of its token. A run that is marked has `marked: true` (and no such key otherwise). `view.ts` gives a marked run
+a background of the row's colour at a stronger alpha than the row's tint: ansi1 at `48` on a removed row, ansi2 on an
+added row, against `18` for the row. A run is a child of the row, so its background is drawn over the selection's tint
+as well: the selected and the hovered row keep their marks, as the TUI's bar colours every cell but the marked ones.
+Unified rows and the two halves of a side-by-side item draw their runs by one function, so both layouts mark alike.
 
 | Kind | Theme colour | TUI colour it stands for |
 |---|---|---|
@@ -485,7 +531,7 @@ under it with two children, the sidebar and the stream pane, so a later change c
 `SIDEBAR_W` (280 px) wide and `flex_none`; the diff pane is `flex_1` with `min_w(0)` and takes the rest of the width and the full height
 under the header. Which of the two come, and in which order, is `rows.paneOrder`: the sidebar then the diff, the diff
 then the sidebar, or the diff alone when the sidebar is hidden, from `model.panel`. The sidebar's border is on the side
-that faces the diff. The bar under the diff (selection, thread buttons, editor, picker, confirm question) belongs to
+that faces the diff. The bar under the diff (selection, review-wide buttons, picker, confirm question; the diff's editor is in the stream) belongs to
 the diff pane, so it spans the diff and not the sidebar. A fixed width was chosen over a share of the panel because
 a name needs the same room in a wide panel as in a narrow one.
 
@@ -514,7 +560,11 @@ the new one, the sign, and the code. The gutter holds `icons/plus.svg`, a 16 px 
 `rows.ts` turns the unified rows into one `split` item per code row (key `<path>|p<n>`, `n` the row of the left half, else of the right): an old half on the left and a new half on the right, each a
 `RowItem`, in a box `ROW` high. A run of removed rows pairs line by line with the run of added rows right after it, and the longer run's extra rows
 face an empty half; a context row is on both halves; a hunk header stays one full-width row. Unlike the TUI there are no "N unchanged
-lines" rows, because the stream already shows every row. A card sits under the paired item that holds its row, at the full width, not in a half.
+lines" rows, because the stream already shows every row. A card sits under the paired item that holds its row, in the half its comment is on: a thread whose anchor side is `new` in the right half,
+`old` in the left, and the other half empty with the rule through it (`HeadItem.half` and `BodyItem.half`, `slot` in `view.ts`: 28 px in from
+the half's edge, 12 on the right). A file comment, a thread with no row and the threads not in the diff stay at the full width, and in the unified
+layout every card does. A card in a half is counted at the half's width (`halfCardWidth`: half the stream less the rule, 28 and 12), so it wraps and
+grows sooner than across the stream. The editor follows the same rule.
 
 - The layout is side by side when the stream (`width`) is 900 px or wider and unified otherwise. The header button (`layoutButton`) forces the
   other layout until it is pressed again. It is not saved, so a new panel starts from the width.
@@ -531,6 +581,43 @@ lines" rows, because the stream already shows every row. A card sits under the p
   the TUI's sideways keys do. The numbers, the sign and the `[+]` stay put. A scroll right stops when the end of the longest line on screen
   reaches the half's edge (`maxShift(codeWidth(items on screen), width)`). The limit applies to the sideways scroll only: a vertical scroll
   never moves the code sideways, and past the limit a scroll right holds still while a scroll left moves from where it is. A flip sets it back to 0. Unified keeps the sideways scroll of the whole stream.
+
+### The keyboard
+
+The graph is [gui-keys](graphs/gui-keys.md). The keys are the TUI's `defaults` in `keymap.rs`, read by `rows.panelKey` as
+`n` is, with the same guards: nothing while the editor, a question, the picker or the filter box holds the keyboard. Keys reach
+the panel only when it has focus, which `main.ts` arranges as before (a press on a row, a jump, the editor or a question
+closing, the `focus` command); nothing there changed.
+
+- `Model.cursor` is `{ path, row, side }`: a code row of a loaded, unfolded file, never a hunk header, and in side by side the
+  half it is on (`side` is null in unified). It is null until the first motion key, which puts it on the top code row of the
+  screen and moves no further, or until a press on a row, which puts it there. It is drawn as a neutral tint (`foreground` at
+  a low alpha) on its row, or its half, over the row's own tint and the selection's accent (`rows.cursorOn`, drawn in
+  `view.diffRow`). It is not part of what the stream is built from, so moving it rebuilds nothing.
+- `rows.spots(model)` is where it can stand, in the order the stream draws: every loaded file that is not folded, its code rows in
+  the diff's order, and in side by side its pairs (the pairing of `fileStream`), left half then right. A file not loaded or
+  folded has none, so a motion passes over it. A motion walks `rows.lane`: the spots on the cursor's half, all in unified.
+- `j` `down` / `k` `up` move a row; `ctrl+d` `pagedown` / `ctrl+u` `pageup` half a screen of rows; `[` `]` go to the first row of
+  the previous or next hunk, which is the first spot of the cursor's half after a hunk header, across files. They stop at the
+  first and last row of the stream. In side by side `h` `left` / `l` `right` put the cursor on the old or new half of its pair
+  (`rows.partner`), when that half has a row; in unified they are nothing. A move sets a `near` reveal of the row
+  (`<path>|r<row>`, which the side by side layout finds as the item that holds it) and drops `focus`: a line and a card are never
+  both picked. A `near` reveal scrolls as little as it takes to bring the row on screen (`rows.revealOffset`, used by `rows.scrolled`
+  like any reveal) and not at all when it is. The sidebar follows, since the row's file is on screen.
+- `v` starts a range: `selection` is `rows.pick` of the cursor's row, and `visual` is true. The motions then move the cursor
+  within its file and set `selection` to `rows.span(file, selection.anchor, cursor.row, selection.side)`, so a range keeps the first row's
+  side, never crosses files (the cursor stops at the file's first or last row), and in side by side `h` and `l` leave it. `v` again, with
+  any selection open, and Esc end it; Esc clears the selection and leaves the cursor. A press on a row or a `[+]` click sets `visual`
+  to false, since what the mouse makes is the mouse's, and a reload that keeps the selection keeps the range.
+- `c` is the message a click on the `[+]` of the cursor's row sends (`PlusClicked`, with the cursor's half): the editor on the
+  selection when the row is in it, else on the row. `r` `e` `d` `x` are the buttons of the focused comment's card (`rows.cardButtons`,
+  the comment taken as the thread's last so `x` resolves from any of its comments), found by id, so a key does what its button does and
+  nothing when the card has none: `d` only asks, and an agent's comment has no `e` or `d`. Nothing while a range is selected. With no cursor `v` and `c` only show it.
+- A flip of the layout (`flipped`, from the button or a resize across 900 px) keeps the cursor on its row, with no half in unified and the
+  row's own half in side by side (the range's half while one grows). A spec change drops it. A cursor on a file that has folded, or whose
+  diff was replaced, stands on no spot: the next motion, `v` or `c` puts it on the top row again, and `c` opens nothing from it.
+- Left out: `g` and `shift+g`, a count before a motion, and `0`, `h` and `l` as the sideways scroll in unified. The keystroke
+  spellings `ctrl-d`, `pagedown`, `up`, `left` are the keymap's in herdr-app's form and not verified in the window, as `shift-n` is not.
 
 ### The filter box
 
@@ -568,6 +655,42 @@ read `state.files` as before, and a file shown that the query hides stays shown.
   the only message that writes the input's text from the model, so a late `change` event cannot be overwritten.
 - Left out of the TUI's rules: `ctrl+u` and the rest of the editing keys are the input's own, and the box has no
   fixed key set.
+
+### The agent-message view
+
+The model has `view` (`diff`, the default, or `message`) and `message`, the view's own record: `data` (the last
+`message --json` reply or null), `loading`, `sending`, `comments`, `selection` and `drag` (lines from 1), `hover` and
+`status`. The code is in `message.ts` (pure helpers and the items the view draws) and `message-view.ts` (the drawing),
+apart from the diff stream. `update.ts` only routes the `Message*` messages and `ViewChosen` to it, `runner.ts` runs
+`ReadMessage` and `SendMessage`, and `cli.ts` builds the two commands.
+
+- The mod holds no message logic. The message is read by `message --json --target <t>` and the comments are sent by
+  `message send --target <t> --file <f>` ([cli](cli.md), [shapes](shapes.md)). The prompt is built in Rust, by the
+  code the TUI pane uses. The target is the panel's `target`, the hc address the send uses. With none (the panel was
+  opened from no agent and no send has chosen one) the view says there is no agent and reads nothing. Choosing an agent
+  stays with Send's picker, so one copy of that choice is kept.
+- The header button switches between the diff and the message, and a switch is refused while the editor is open. Opening
+  the view reads the message, and so does Refresh in its header. The timer and the watches do not, and the diff keeps
+  loading behind the view as it always does. The diff is as it was when the user comes back.
+- The view draws the message's lines in a scrolling column, one row per source line, wrapped, with its number in a
+  column on the left and the same `[+]` gutter as a diff row. A press on a line and a drag over others selects the lines
+  between, tinted; a plain click clears the selection; the `[+]` of the hovered line opens the existing editor on the
+  selection when the line is in it, else on the line alone, titled `Comment on lines 3-5`. Character comments are left
+  out: the message view has no keyboard cursor and its lines take no selection inside a line.
+- Save adds the comment to the model and nothing else: no command runs and nothing is written to `review.jsonl`, as the
+  TUI keeps its comments in the pane's memory (ADR 0010). It draws as a card under its last line with `Edit`, which
+  opens the editor on its text, and `Delete`, which removes it at once, as the TUI's `delete`. The comments stay when the
+  user goes back to the diff and are lost when the copy closes.
+- `Send N` sends all the comments in one command and is off with none. The file the mod writes is
+  `{ "id": <message id>, "comments": [{ "start", "end", "body" }] }`, in the private folder and deleted by the CLI as a
+  body file is. The `id` makes the CLI refuse when the agent has written a newer message since the read. On success the
+  comments are cleared and the status says `sent N comments to <agent>`. A refusal (the agent is blocked, not ready or
+  gone, a changed message, hc failed) keeps them and shows the reason; the user sends again or refreshes.
+- Refresh keeps the comments only when the message has the same id. With another id they are dropped, with the status
+  `the agent wrote a new message, N comments dropped`, because their lines belong to the old message.
+- Errors of the two commands are `Failed` with the ops `message` and `message-send`. They set the view's own status and
+  change nothing else: not the diff's status, not the banner, not `stopped`. A binary without the commands says `update
+  herdr-review` there, and the diff keeps working.
 
 ### The panel's own settings
 

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeCli } from "../src/cli.ts";
-import { confirmKey, confirmRow, dock, pickerOptions } from "../src/rows.ts";
+import { confirmKey, confirmRow, dock, pickerOptions, streamLayout } from "../src/rows.ts";
 import { run } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
 import { initModel } from "../src/update.ts";
@@ -65,13 +65,17 @@ test("a second click while a send runs asks for nothing, so one click is one exe
 });
 
 test("a resend is offered on an open thread whose comments are all sent, not on an unsent or a resolved one", () => {
-  const withFocus = (id: string) => steps(loaded(), { _tag: "ThreadAction", id, action: "focus" }).model;
-  const resend = (id: string) => dock(withFocus(id)).buttons.find((b) => b.id === "resend");
-  assert.equal(resend("u1"), undefined); // unsent
-  assert.equal(resend("u2"), undefined); // resolved
+  // The button is on the thread's card, on its last comment.
+  const resend = (m: Model, id: string) => {
+    const it = streamLayout(m, 0).items.find((i) => i.kind === "body" && i.id === id);
+    return it?.kind === "body" ? it.buttons.find((b) => b.id === "resend") : undefined;
+  };
+  assert.equal(resend(loaded(), "u1"), undefined); // unsent
+  assert.equal(resend(loaded(), "u2"), undefined); // resolved (and not drawn)
   const sentThread = { ...file, threads: file.threads.map((t) => (t.id === "u1" ? { ...t, unsent: false } : t)) };
-  const m = steps(reload(loaded(), state, sentThread).model, { _tag: "ThreadAction", id: "u1", action: "focus" }).model;
-  assert.deepEqual(dock(m).buttons.find((b) => b.id === "resend")?.msg, { _tag: "SendClicked", threads: ["u1"] });
+  const m = reload(loaded(), state, sentThread).model;
+  assert.deepEqual(resend(m, "u1")?.msg, { _tag: "SendClicked", threads: ["u1"] });
+  assert.equal(dock(m).buttons.find((b) => b.id === "resend"), undefined);
 });
 
 // send: ReviewCli
@@ -289,8 +293,11 @@ test("the archive question is plain text with an accent button and no red, the d
   const row = confirmRow(steps(counting(2), { _tag: "ArchiveClicked" }).model);
   assert.equal(row?.color, "foreground");
   assert.deepEqual(row?.buttons.map((b) => [b.label, b.danger, b.accent === true]), [["Archive", false, true], ["Cancel", false, false]]);
-  const del = confirmRow(steps(loaded(), { _tag: "ThreadAction", id: "u1", action: "delete" }).model);
+  const asked = steps(loaded(), { _tag: "ThreadAction", id: "u1", action: "delete" }).model;
+  const del = confirmRow(asked);
   assert.deepEqual([del?.color, del?.buttons[0]?.danger], ["ansi1", true]);
+  // A card's Delete does not click the card, so the question focuses the comment it is about.
+  assert.equal(asked.focus, "u1");
 });
 
 test("with nothing to archive the button is off, says only Archive, and a click asks nothing", () => {

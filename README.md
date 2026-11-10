@@ -201,7 +201,8 @@ icons = false                 # hide the file-type glyph on each file row, which
 ## The herdr-app panel
 
 A second way to review, for [herdr-app](https://github.com/herdrdev/herdr) (the desktop app). It is a mod
-that draws a native panel beside the agent: the changed files, every file's unified diff in one scrolling stream
+that draws a native panel beside the agent: the changed files, every file's diff in one scrolling stream (side by side
+in a wide panel)
 (the sidebar follows the file at the top, and a click on a file scrolls to it), and the comment threads under their lines. It holds no review logic. Every read and write runs the `herdr-review`
 binary, so the panel and the pane above show the same review, stored in the same place. The agent
 answers the same way, with `herdr-review comment ...` from its shell, and the panel updates by itself.
@@ -249,11 +250,22 @@ and sends to the agent in it.
 2. Write the comment in the editor and save it. The comment shows as a card under its line, marked `unsent`.
 3. Click `Send`. It shows the number of unsent comments. Every unsent comment goes to the agent as one prompt.
    If the folder has more than one agent, the bar lists them and you click one.
-4. Click a card to focus its thread. The bar then shows `Reply`, `Resolve` or `Reopen`, `Resend` (that thread
-   only), and for your own comments `Edit` and `Delete` (it asks for a second click). A thread the agent resolved
-   shows `new` until you look at it.
+4. Each comment on a card has its own buttons: `Reply`, and on the last one `Resolve` or `Reopen` and `Resend` (that
+   thread only), and for your own comments `Edit` and `Delete` (the bar asks you to confirm). A thread the agent
+   resolved shows `new` until you look at it.
 5. `Archive` moves the resolved threads to `archive.jsonl` after a second click. `Mark viewed` marks the
    selected file as read and folds it to its header (a click on the header opens it), and `Mark unviewed` takes the mark off.
+
+The header's `Side by side` or `Unified` switches the layout; a panel 900 px wide or more starts side by side. Words
+that changed inside a replaced line are marked. The keyboard works as in the pane above: `j` `k`, `ctrl+d` `ctrl+u` and
+`[` `]` move a cursor, `h` `l` pick the half side by side, `v` selects a range, `c` comments, and `r` `e` `d` `x` act on
+the focused thread. `n` and `shift+n` go to the next and previous comment, and `/` filters the files.
+
+`Agent message` in the header shows the agent's last message instead of the diff, as the message pane does. Drag over
+lines and click the `[+]` to comment, which shows as a card under its last line with `Edit` and `Delete`.
+`Send N` sends them all as the agent's next prompt, and the comments go. They are kept in the panel only: `Diff`
+goes back, and closing the panel loses what was not sent. `Refresh` reads the message again and drops the comments if the
+agent has written a new one. The panel needs the agent to be Claude Code.
 
 The header has `Working tree` and `Branch`, which are the two diff specs of the pane above (`b` there), and
 `Refresh`. The panel also reloads when the repository or the review state changes, and every 10 seconds. The
@@ -261,10 +273,8 @@ choice of spec lasts as long as the panel is open.
 
 ### Limits
 
-- A range is two clicks. herdr-app gives a list row no drag.
-- The thread buttons are in the bar under the diff, not on the card, for the same reason.
-- The diff is unified and has no syntax colours or marks on changed words. There are no vim keys, no filter
-  box, and no review of the agent's last message. Use the pane above for those.
+- There is no whole-file view, no `g`/`shift+g`, and no comment on a few words of the agent's message. Use the pane
+  above for those.
 - A frame can lag a change by a moment. `Refresh` loads again at once.
 - With no staged binary and an old `herdr-review` on `PATH`, the panel shows a banner and does nothing else.
   Run the stage script.

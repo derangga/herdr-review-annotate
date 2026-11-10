@@ -9,6 +9,7 @@ Part of the [herdr-review design](../DESIGN.md).
 | `StoreError::Io` | Message with the path, exit 1 | Status line, the editor keeps its text |
 | `GitError` | Message, exit 1 | Message screen or status line, as in the graphs |
 | `TargetError`, `Refusal`, `HerdrError`, `HcError` | Notification and exit 1 (actions). Under hc, no notification. With `send --json`, one JSON object with an `error` kind on stdout and exit 1 | Status line and notification. Nothing marked sent |
+| `MessageError` (`message --json`, `message send`) | One line on stderr, exit 1, and for a delivery `Nothing was sent`. A send file that does not fit the message is `InvalidBatch`, exit 2 | The pane shows it as in [message-review](message-review.md) |
 | `CommandError::NotAllowed` (edit or delete of an agent's comment) | One line on stderr, exit 2 | Cannot occur, the TUI offers the action on the user's comments only |
 | Body file unreadable, a symlink, too long (`--body-file` 16 KiB, `--file` 256 KiB) | `InvalidBody`, one line, exit 2. The file is deleted when it was opened | Not used |
 | `view --set` for a path not in the diff, `file --path` for the same | One line, exit 2 | Not used |

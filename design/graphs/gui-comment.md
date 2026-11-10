@@ -13,7 +13,7 @@ selects the lines between, and the `[+]` on a line inside the range comments on 
 
 The model has `hover` (the row under the pointer, `{ path, row, side }`; `side` is the half of a side-by-side row, `old` or `new`, null in the unified layout), `drag` (a press that has not been released: the row it began on, its side,
 the row the pointer is on now, and whether it ever left the first row) and `selection` (the range, as before; a range is in one file).
-There is no cursor and no shift-click.
+There is no shift-click. The keyboard's cursor and `v` and `c` make the same selection and the same `PlusClicked` ([gui-keys](gui-keys.md)).
 
 ```
 -> on_hover(on) and on_mouse_move of a row               Msg.Hovered { path, row, side, on }; the move always says on = true, so a
@@ -62,11 +62,11 @@ sidebar, the header or the bar below the stream.
        E: any other row:                                rows.pick(file, row), the line alone
        a hunk header row                                E: ignored
   -> selection = that target, so the commented lines stay lit while the editor is open
-  -> anchor from rows.anchorOf, the editor opens
+  -> anchor from rows.anchorOf, the editor opens, and reveal = { key: <path>|editor, near: true }
 -> SelectionCleared                                    Esc on the panel (rows.panelKey), when a selection exists
   -> selection = null
 -> FileCommentClicked                                  the Comment on file button of the bar under the diff
-  -> the editor opens on { path }, no selection
+  -> the editor opens on { path }, no selection, and reveal = { key: <path>|editor, near: true }
 ```
 
 The Esc order on the panel is: the selection first, then the filter. Esc in the editor closes it (`EditorCancelled`) and keeps the
@@ -74,8 +74,23 @@ selection, and the next Esc on the panel clears it. The bar under the diff has n
 `Drag over lines to select them, [+] to comment`, with one it names it (`src/a.rs R12-18 (7 lines). [+] to comment, Esc to clear`), and
 `Comment on file` stays. The selected rows are tinted (`rows.rowState`), also while the editor is open.
 
-The editor is not inline under the row: it is a box docked under the diff, with its title (`Draft note - src/a.rs R12-18`, `Reply to
-u3`, `Edit u3`), the textarea, a Save and a Cancel button and the line `Ctrl+S save, Esc cancel`.
+The editor is inline in the stream, as the TUI's, and not in the bar. `rows.fileStream` puts an `editor` item (key `<path>|editor`, `EDITOR_H`
+200 px) in the file's items, and `view.editorBox` draws it exactly that tall: the title (`Draft note - src/a.rs R12-18`, `Reply to u3`,
+`Edit u3`), the textarea, a status line (red; kept free so the height is fixed), a Save and a Cancel button and the line `Ctrl+S save, Esc
+cancel`. The place:
+
+```
+a new comment (line anchor)    after the cards under the last row of its range (the row with the anchor's end_line, or line, on its side)
+                               side by side: in the half of the anchor's side, as the [+] was clicked; unified: from 48 px in to the right edge
+                               a row no longer in the file: at the top of the file
+a file comment (no line)       at the top of the file, after its note and before the cards with no row, full width
+a reply or an edit             after the thread's card (rows.cardItems), in the card's half
+E: the editor item is in the stream at that place, in that half, for a comment on a new line, on an old line, on a range, a reply, an edit,
+   a file comment and a thread not in the diff, in both layouts; the message view's editor is not in the stream
+E: opening it sets a near reveal of its key, and the stream scrolls only as far as it takes to show it
+E: while it is open a fold or a viewed mark is refused with the busy status: either would hide the editor in its file
+E: the layout cache and the file's memo are cut again when the editor opens, moves or closes
+```
 
 A selection is in memory. A reload keeps it when the file and the rows it covers are unchanged, and clears
 it otherwise.
@@ -104,7 +119,17 @@ it otherwise.
                                                           its text
   -> Msg.Wrote
 -> update(model, Wrote)                                (pure)
-  -> editor closed, selection cleared, saving = false, Triggered    the reload shows the new thread
+  (at EditorSaved: draft = the text. The stream draws the draft at once as the card it will be, in the editor's place:
+     rows.draftThread for a new comment, rows.withDraft for a reply or an edit, built by cardItems so it is the real card's height.
+     The editor stays open behind it, not drawn; a failed write sets draft = null and the editor is drawn again with its text)
+       E: on Save the editor's place shows the draft's card, and the real card that replaces it is the same height
+       E: a failed write draws the editor again
+  -> the editor stays, saving, landing = its file, Triggered; an open editor holds loads back, a landing one does not
+  -> update(model, FilesLoaded) with that file: the editor and the selection go in the same update that draws the card, so the
+     stream never shows neither (no gap, then the card)
+       E: the editor stays through Wrote and Loaded, and goes with the file's FilesLoaded
+       E: no fetch will bring the card (a thread not in the diff, the file not refetched): it goes with Loaded
+       E: the reload fails: it goes, with the error's status
 -> update(model, Failed { write })                     saving = false, the editor stays
 ```
 
@@ -121,7 +146,7 @@ Cardinality: once per user action.
 Each `E:` line is one test. Also: a hover is the row under the pointer and a leave only counts for the row that has it, a drag is
 in one file and a row that is not in the file is ignored, a new drag starts over and a press whose release was lost is replaced by
 the next press, moves with no press select nothing, the selected and the hovered rows are marked for drawing and a hunk header has no
-`[+]`, rows and the `[+]` do nothing while the editor is open, Esc clears the selection before the filter, the bar has no Comment or Cancel and
+`[+]`, rows and the `[+]` do nothing while the editor is open, the editor's item and its fixed height (`test/editor.test.ts`), Esc clears the selection before the filter, the bar has no Comment or Cancel and
 names the drag hint, a drag that starts on a `del` row anchors on the old side, a drag from a `ctx` row onto an `add` row anchors on the new
 side, a range over both a `del` and an `add` row keeps the first side, a header and a card click name their message and a code row none, a file
 comment writes `{"path", "body"}`, the batch file is under `appHome()/data/herdr-review/` (made private with mkdir and chmod 700) and its path is the only thing on

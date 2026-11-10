@@ -216,13 +216,30 @@ test("a save writes the batch for the selection with the model's root and spec, 
   assert.equal(r.model.editor, m.editor);
 });
 
-test("E: Wrote -> editor closed, selection cleared, and the reload shows the new thread", () => {
+test("E: Wrote -> the editor stays, saving, until the file's reply brings the card, and goes in that same update", () => {
   const m = withEditor(loaded(), plus(1), { _tag: "EditorSaved", text: "Why?" });
   const r = steps(m, { _tag: "Wrote", kind: "comment" });
-  assert.equal(r.model.editor, null);
-  assert.equal(r.model.selection, null);
-  assert.equal(r.model.saving, false);
+  // No frame with neither the editor nor the card: the editor keeps its space while the reload runs.
+  assert.notEqual(r.model.editor, null);
+  assert.equal(r.model.saving, true);
+  assert.equal(r.model.landing, "src/a.rs");
   assert.equal(loadsOf(r.cmds).length, 1);
+  // The state says the file changed (its hash), so its fetch is what closes the editor.
+  const changed = { ...state, files: state.files.map((f) => (f.path === "src/a.rs" ? { ...f, hash: "ffffffffffffffff" } : f)) };
+  const s = steps(r.model, { _tag: "Loaded", key: r.model.key, state: changed });
+  assert.notEqual(s.model.editor, null);
+  const f = steps(s.model, { _tag: "FilesLoaded", key: r.model.key, files: [file] });
+  assert.equal(f.model.editor, null);
+  assert.equal(f.model.selection, null);
+  assert.equal(f.model.saving, false);
+  assert.equal(f.model.landing, null);
+});
+
+test("a saved draft whose file no fetch will bring lands with the state, and a failed reload does not keep it open", () => {
+  const r = steps(withEditor(loaded(), plus(1), { _tag: "EditorSaved", text: "Why?" }), { _tag: "Wrote", kind: "comment" }).model;
+  // The same state: nothing to fetch for src/a.rs (not on screen, summary the same), so the editor goes now.
+  assert.equal(steps({ ...r, visible: [] }, { _tag: "Loaded", key: r.key, state }).model.editor, null);
+  assert.equal(steps(r, { _tag: "Failed", op: "load", error: { _tag: "Busy" } }).model.editor, null);
 });
 
 test("E: Busy, BackendFailed, BadRequest -> the editor keeps its draft, and BadRequest reloads once the editor closes", () => {
@@ -262,7 +279,7 @@ test("the cards sit under their rows, the file comment before the rows, and the 
 test("a card says who, how old, where, and the markers", () => {
   const items = streamLayout({ ...loaded(), expanded: new Set(["u2"]) }, Date.parse("2026-11-09T10:00:30Z")).items;
   const head = (id: string) => items.find((i) => i.kind === "head" && i.id === id);
-  assert.deepEqual(head("u1"), { kind: "head", key: "src/a.rs|h:u1", id: "u1", tone: "user", title: "● Your note · now · src/a.rs R2", badges: ["unsent"], quote: null, collapsible: false, open: true, focused: false, last: false });
+  assert.deepEqual(head("u1"), { kind: "head", key: "src/a.rs|h:u1", id: "u1", tone: "user", title: "● Your note · now · src/a.rs R2", badges: ["unsent"], quote: null, collapsible: false, open: true, focused: false, last: false, half: null });
   const u2 = head("u2");
   assert.ok(u2 && u2.kind === "head");
   assert.equal(u2.title, "✓ Your note · now · src/a.rs R2-3");
@@ -383,19 +400,43 @@ test("the question goes when another comment is focused, and a reload keeps it w
   assert.equal(reload(asked, state, gone).model.confirm, null);
 });
 
-test("the edit and delete buttons are absent on an agent's comment", () => {
-  const labels = (id: string) => dock(steps(loaded(), act(id, "focus")).model).buttons.map((b) => b.label);
-  assert.deepEqual(labels("u1"), ["Reply", "Resolve", "Edit", "Delete", "Comment on file"]);
-  assert.deepEqual(labels("a1"), ["Reply", "Reopen", "Comment on file"]);
+// The buttons on the card of comment `id`, as the stream draws them, with the resolved thread u2 opened so its reply is there.
+const cardButtons = (m: Model, id: string) => {
+  const it = streamLayout({ ...m, expanded: new Set(["u2"]) }, Date.parse("2026-11-09T10:00:30Z")).items.find((i) => i.kind === "body" && i.id === id);
+  assert.ok(it && it.kind === "body", id);
+  return it.buttons;
+};
+
+test("each comment's card carries its buttons: edit and delete only on the user's own, resolve or reopen on the last only", () => {
+  const labels = (id: string) => cardButtons(loaded(), id).map((b) => b.label);
+  assert.deepEqual(labels("u1"), ["Reply", "Resolve", "Edit", "Delete"]); // unsent: no Resend
+  assert.deepEqual(labels("u2"), ["Reply", "Edit", "Delete"]); // the root of a thread with a reply: the thread's buttons are on the reply
+  assert.deepEqual(labels("a1"), ["Reply", "Reopen"]); // the agent's comment: no Edit, no Delete
+  // A thread of two sent comments: Resolve and Resend are on the second only.
+  const two = { ...file, threads: file.threads.map((t) => (t.id === "u1" ? { ...t, unsent: false, comments: [...t.comments, { ...t.comments[0], id: "r1", parent: "u1", author: "agent:claude" }] } : t)) } as FileView;
+  assert.deepEqual(cardButtons(loaded(two), "u1").map((b) => b.label), ["Reply", "Edit", "Delete"]);
+  assert.deepEqual(cardButtons(loaded(two), "r1").map((b) => b.label), ["Reply", "Resolve", "Resend"]);
 });
 
-test("a click on a card after lines were picked drops them, so the bar shows the card's buttons", () => {
+test("a card button sends the message the dock's button did, and Delete is the red one", () => {
+  const by = (id: string) => Object.fromEntries(cardButtons(loaded(), id).map((b) => [b.id, b]));
+  const u1 = by("u1");
+  assert.deepEqual(u1.reply?.msg, act("u1", "reply"));
+  assert.deepEqual(u1.resolve?.msg, act("u1", "resolve"));
+  assert.deepEqual(u1.edit?.msg, act("u1", "edit"));
+  assert.deepEqual([u1.delete?.msg, u1.delete?.danger], [act("u1", "delete"), true]);
+  assert.deepEqual(by("a1").reopen?.msg, act("a1", "reopen"));
+  // The thread buttons are not in the dock: a focused comment adds none.
+  assert.deepEqual(dock(steps(loaded(), act("u1", "focus")).model).buttons.map((b) => b.label), ["Comment on file"]);
+});
+
+test("a click on a card after lines were picked drops them", () => {
   const picked = steps(loaded(), ...drag(1, 3)).model;
   assert.notEqual(picked.selection, null);
   const m = steps(picked, act("u1", "focus")).model;
   assert.equal(m.selection, null);
   assert.equal(m.focus, "u1");
-  assert.deepEqual(dock(m).buttons.map((b) => b.label), ["Reply", "Resolve", "Edit", "Delete", "Comment on file"]);
+  assert.deepEqual(dock(m).buttons.map((b) => b.label), ["Comment on file"]);
 });
 
 test("an action while the editor is open waits, and focusing a comment does not", () => {
@@ -425,10 +466,11 @@ test("E: a failed reply keeps the editor, the text lives on in the textarea the 
   assert.equal(r.saving, false);
 });
 
-test("the Wrote of a seen leaves an editor opened since alone, and the Wrote of a reply closes it", () => {
+test("the Wrote of a seen leaves an editor opened since alone, and the Wrote of a reply starts its landing", () => {
   const m = steps(loaded(), act("u1", "reply")).model;
   assert.equal(steps(m, { _tag: "Wrote", kind: "seen" }).model.editor, m.editor);
-  assert.equal(steps(m, { _tag: "Wrote", kind: "reply" }).model.editor, null);
+  // The reply's editor stays, saving, until its file's reply lands (see the Wrote test above).
+  assert.equal(steps(m, { _tag: "Wrote", kind: "reply" }).model.saving, true);
 });
 
 test("Esc closes the editor and keeps the selection, and the next Esc on the panel drops it", () => {

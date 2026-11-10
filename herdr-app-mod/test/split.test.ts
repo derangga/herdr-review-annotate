@@ -55,7 +55,7 @@ test("unified is the diff's rows, and a split stream pairs removed with added, l
 });
 
 test("pairing: the longer run's extra rows face an empty half, and a run of added rows alone has no left", () => {
-  const row = (kind: "ctx" | "add" | "del", n: number) => ({ kind, old: kind === "add" ? null : n, new: kind === "del" ? null : n, text: `t${n}`, tokens: [] });
+  const row = (kind: "ctx" | "add" | "del", n: number) => ({ kind, old: kind === "add" ? null : n, new: kind === "del" ? null : n, text: `t${n}`, tokens: [], marks: [] });
   const rows = [row("del", 1), row("del", 2), row("del", 3), row("add", 1), row("ctx", 9), row("add", 5), row("add", 6), row("del", 7)];
   const m = wide(loadedModel(state, { ...file, rows, threads: [] }));
   // dels 0-2 against add 3; ctx 4; adds 5-6 (no dels before them); del 7 alone.
@@ -157,7 +157,7 @@ test("a selection is tinted on the half of its side, and the [+] is on the half 
 });
 
 // Rows: 0 hunk, 1 ctx, 2-4 del, 5-7 add, 8 ctx, 9-10 del, 11 add, 12 add, 13 add.
-const rowOf = (kind: "hunk" | "ctx" | "add" | "del", n: number) => ({ kind, old: kind === "add" || kind === "hunk" ? null : n, new: kind === "del" || kind === "hunk" ? null : n, text: `t${n}`, tokens: [] });
+const rowOf = (kind: "hunk" | "ctx" | "add" | "del", n: number) => ({ kind, old: kind === "add" || kind === "hunk" ? null : n, new: kind === "del" || kind === "hunk" ? null : n, text: `t${n}`, tokens: [], marks: [] });
 const runs: FileView = { ...file, rows: [rowOf("hunk", 0), rowOf("ctx", 1), ...[2, 3, 4].map((n) => rowOf("del", n)), ...[5, 6, 7].map((n) => rowOf("add", n)), rowOf("ctx", 8), rowOf("del", 9), rowOf("del", 10), ...[11, 12, 13].map((n) => rowOf("add", n))], threads: [] };
 const runsModel = (): Model => wide(loadedModel(state, runs));
 

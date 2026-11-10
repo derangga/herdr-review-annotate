@@ -4,6 +4,7 @@
 //! directory. The panel watches the repo root and the state directory, so a write here would wake
 //! it and it would read again.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{Failure, Output};
@@ -13,9 +14,9 @@ use crate::diff::{
 };
 use crate::env::Env;
 use crate::json::{
-    AnchorJson, AnchorKind, ChangeJson, CommentJson, FileJson, FileSummary, PlacementJson,
-    PlacementKind, RowJson, RowType, SCHEMA, SideJson, StateJson, StatusJson, ThreadJson,
-    TokenJson, TokenKind,
+    AnchorJson, AnchorKind, ChangeJson, CommentJson, FileJson, FileSummary, MarkJson,
+    PlacementJson, PlacementKind, RowJson, RowType, SCHEMA, SideJson, StateJson, StatusJson,
+    ThreadJson, TokenJson, TokenKind,
 };
 use crate::meta::{Meta, load as load_meta, locate};
 use crate::store::{
@@ -23,6 +24,7 @@ use crate::store::{
 };
 use crate::syntax::{Cache, FileTokens, Span, side_of};
 use crate::theme::Token;
+use crate::words::{Marks, changed};
 
 /// `--spec`: which diff the caller wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,23 +172,70 @@ const fn token_kind(token: Token) -> TokenKind {
     }
 }
 
-/// The spans of one line as the JSON writes them: kinds, and UTF-16 offsets in place of bytes.
-/// A span that does not fall on characters of `text` is left out.
-fn tokens_json(text: &str, spans: &[Span]) -> Vec<TokenJson> {
+/// Byte ranges of one line as the JSON writes them: UTF-16 offsets in place of bytes, in order. A
+/// range that does not fall on characters of `text`, or is empty, is left out.
+fn utf16<T>(text: &str, ranges: impl Iterator<Item = (Range<usize>, T)>) -> Vec<(usize, usize, T)> {
     let (mut byte, mut unit) = (0, 0);
     let mut advance = |to: usize| {
         unit += text.get(byte..to)?.encode_utf16().count();
         byte = to;
         Some(unit)
     };
-    spans
-        .iter()
-        .filter_map(|(range, token)| {
+    ranges
+        .filter_map(|(range, with)| {
             let from = advance(range.start)?;
-            Some((from, advance(range.end)?, token_kind(*token)))
+            Some((from, advance(range.end)?, with))
         })
         .filter(|(from, to, _)| from < to)
         .collect()
+}
+
+fn tokens_json(text: &str, spans: &[Span]) -> Vec<TokenJson> {
+    utf16(
+        text,
+        spans
+            .iter()
+            .map(|(range, token)| (range.clone(), token_kind(*token))),
+    )
+}
+
+fn marks_json(text: &str, marks: &Marks) -> Vec<MarkJson> {
+    utf16(text, marks.iter().map(|range| (range.clone(), ())))
+        .into_iter()
+        .map(|(from, to, ())| MarkJson { from, to })
+        .collect()
+}
+
+/// The marks of each row of a hunk: a run of removed rows pairs with the run of added rows right
+/// after it, the first with the first, as the TUI does, and `changed` says what to mark. A row that
+/// is no pair, or whose pair gets no marks, has none.
+fn hunk_marks(rows: &[Row]) -> Vec<Marks> {
+    let mut out = vec![Marks::new(); rows.len()];
+    let mut at = 0;
+    while at < rows.len() {
+        let run = |from: usize, kind| {
+            rows.iter()
+                .skip(from)
+                .take_while(|row| row.kind == kind)
+                .count()
+        };
+        let removed = run(at, RowKind::Removed);
+        let added = run(at + removed, RowKind::Added);
+        for k in 0..removed.min(added) {
+            let (old, new) = (at + k, at + removed + k);
+            if let (Some(a), Some(b)) = (rows.get(old), rows.get(new))
+                && let Some((was, now)) = changed(&a.text, &b.text)
+            {
+                for (at, marks) in [(old, was), (new, now)] {
+                    if let Some(slot) = out.get_mut(at) {
+                        *slot = marks;
+                    }
+                }
+            }
+        }
+        at += (removed + added).max(1);
+    }
+    out
 }
 
 /// The hunk header, then the rows of each hunk, in order, with the tokens `tokens` has for them. A
@@ -195,7 +244,7 @@ fn rows(file: &DiffFile, tokens: &FileTokens) -> Vec<RowJson> {
     if note(file.change).is_some() {
         return Vec::new();
     }
-    let row = |row: &Row| RowJson {
+    let row = |(row, marks): (&Row, Marks)| RowJson {
         kind: match row.kind {
             RowKind::Context => RowType::Ctx,
             RowKind::Added => RowType::Add,
@@ -208,6 +257,7 @@ fn rows(file: &DiffFile, tokens: &FileTokens) -> Vec<RowJson> {
             .line(side_of(row))
             .and_then(|line| tokens.line(side_of(row), line))
             .map_or_else(Vec::new, |spans| tokens_json(&row.text, spans)),
+        marks: marks_json(&row.text, &marks),
     };
     file.hunks
         .iter()
@@ -218,8 +268,10 @@ fn rows(file: &DiffFile, tokens: &FileTokens) -> Vec<RowJson> {
                 new: None,
                 text: hunk.header.clone(),
                 tokens: Vec::new(),
+                marks: Vec::new(),
             };
-            std::iter::once(header).chain(hunk.rows.iter().map(row))
+            let marks = hunk_marks(&hunk.rows);
+            std::iter::once(header).chain(hunk.rows.iter().zip(marks).map(row))
         })
         .collect()
 }
@@ -1384,6 +1436,63 @@ rename to src/b.rs
         let output = world.file("", "app.zzz").unwrap();
         assert!(!output.stdout.contains("tokens"), "{}", output.stdout);
         assert_eq!(file_of(&output).rows.len(), 4);
+    }
+
+    /// The marks of each row of `a.zzz`, as `(from, to)` pairs, for a patch of one hunk.
+    fn marks_of(name: &str, body: &str) -> (FileJson, Vec<Vec<(usize, usize)>>) {
+        let mut world = World::new(name);
+        let (old, new) = (
+            body.lines().filter(|l| !l.starts_with('+')).count(),
+            body.lines().filter(|l| !l.starts_with('-')).count(),
+        );
+        world.patch = format!(
+            "diff --git a/a.zzz b/a.zzz\n--- a/a.zzz\n+++ b/a.zzz\n@@ -1,{old} +1,{new} @@\n{body}"
+        );
+        std::fs::write(world.root.join("a.zzz"), "x\n").unwrap();
+        let file = file_of(&world.file("", "a.zzz").unwrap());
+        let marks = file
+            .rows
+            .iter()
+            .map(|row| row.marks.iter().map(|m| (m.from, m.to)).collect())
+            .collect();
+        (file, marks)
+    }
+
+    #[test]
+    fn a_removed_row_and_the_added_row_that_replaced_it_mark_the_words_that_changed() {
+        let body = " keep\n-let count = 1;\n-fn old_name(a) {}\n-all of this goes\n\
+                    +let total = 1;\n+fn new_name(a) {}\n+x\n+and this is extra\n end\n";
+        let (file, marks) = marks_of("marks", body);
+        // Rows: header, keep, three removed, four added, end.
+        assert_eq!(file.rows.len(), 10);
+        assert_eq!(file.rows[2].text, "let count = 1;");
+        assert_eq!(marks[2], [(4, 9)]);
+        assert_eq!(marks[3], [(3, 11)]);
+        assert_eq!(marks[5], [(4, 9)]);
+        assert_eq!(marks[6], [(3, 11)]);
+        // A rewritten pair, a row with no partner, context and the header have none.
+        for row in [0, 1, 4, 7, 8, 9] {
+            assert!(marks[row].is_empty(), "row {row}: {:?}", marks[row]);
+        }
+        // Written for every row, `[]` when there are none.
+        let value: serde_json::Value = serde_json::to_value(&file).unwrap();
+        assert_eq!(
+            value["rows"][2]["marks"],
+            serde_json::json!([{"from": 4, "to": 9}])
+        );
+        assert_eq!(value["rows"][1]["marks"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn marks_count_utf16_units_on_a_row_with_non_ascii_characters() {
+        // The e acute is 2 bytes and 1 unit, the grinning face 4 bytes and 2 units.
+        let body = "-let s = \"\u{e9}\u{1f600}\" + a;\n+let s = \"\u{e9}\u{1f600}\" + b;\n";
+        let (file, marks) = marks_of("marks-utf16", body);
+        assert_eq!(marks[1], [(16, 17)]);
+        assert_eq!(marks[2], [(16, 17)]);
+        let text = &file.rows[1].text;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(String::from_utf16(&units[16..17]).unwrap(), "a");
     }
 
     #[cfg(not(feature = "syntax"))]
