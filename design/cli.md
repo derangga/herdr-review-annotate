@@ -131,6 +131,13 @@ does not. The herdr backend is the one the TUI plugin uses in plain Herdr, and i
   was nothing to send, and 1 when it failed: `ambiguous` (with the candidates), `no_agent`, `blocked`,
   `not_ready`, `agent_gone`, `busy`, `backend`. A usage error still exits 2 with a line on stderr.
 
+- `theme --json` prints the `[theme]` of `config.toml` for the panel ([shapes](shapes.md)) and writes
+  nothing. It takes no other flag. It finds `config.toml` in `HERDR_PLUGIN_CONFIG_DIR`, and when that is not
+  set (the panel's `exec` passes no environment of its own) in the directory `herdr plugin config-dir review`
+  prints. A missing or unreadable file, a file that is not TOML, and a `herdr` that fails or is not on `PATH`
+  each print the defaults (`gui: "app"`, `colors: null`) with exit 0, the last one with a warning that names
+  it. A file that is not TOML has no warning here, as in the pane, where the keymap reports it.
+
 ### The panel's message commands
 
 `message` with no flag is the Herdr action that opens the message pane ([message-review](message-review.md)). With

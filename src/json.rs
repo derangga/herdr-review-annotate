@@ -3,7 +3,11 @@
 //! `null` is written and never left out, so a decoder checks a field and not its presence. The
 //! types derive `Deserialize` so a test can decode a reply into the shapes the mod decodes.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::theme::Gui;
 
 /// Raised by any change a decoder would notice. A field a decoder may ignore does not raise it.
 pub const SCHEMA: u32 = 1;
@@ -20,6 +24,15 @@ pub enum ChangeJson {
     Submodule,
     TooLarge,
     Unparsed,
+}
+
+/// What `theme --json` prints. `colors` is null under `gui: "app"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThemeJson {
+    pub schema: u32,
+    pub gui: Gui,
+    pub colors: Option<BTreeMap<String, String>>,
+    pub warnings: Vec<String>,
 }
 
 /// What `archive --json` prints.

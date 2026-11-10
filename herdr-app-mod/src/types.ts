@@ -116,6 +116,11 @@ export type MessageReply = { schema: 1; agent: string; status: string; id: strin
 // What `message send` printed when the agent took the prompt.
 export type MessageSentReply = { schema: 1; sent: number };
 
+// What `theme --json` printed. `colors` is null under "app": the panel keeps herdr-app's theme. A key that is not #rrggbb is
+// dropped by decodeTheme.
+export type Colors = Record<string, `#${string}`>;
+export type ThemeReply = { schema: 1; gui: "app" | "plugin"; colors: Colors | null; warnings: string[] };
+
 export type Props = { root: string | null; target: string | null; bin: string | null };
 
 // What the host says about the focused terminal and the panes, after decoding.
@@ -245,6 +250,8 @@ export type Model = {
   panel: Panel; // the sidebar's side and whether it shows, remembered between openings
   filter: string; // the sidebar's query, empty for no filter; it narrows the file list and nothing else
   filtering: boolean; // the query box holds the keyboard, so a key types and is not a command
+  themeAsked: boolean; // the first load of this copy sent ReadTheme, so no later one does
+  colors: Colors | null; // the plugin theme, laid over herdr-app's on each render; null until read and under "app"
 };
 
 export type Trigger = "watch" | "timer" | "refresh" | "write" | "change" | "editor";
@@ -301,6 +308,7 @@ export type Msg =
   | { _tag: "FilterEntered" }
   | { _tag: "FilterCleared" }
   | { _tag: "PanelLoaded"; panel: Panel }
+  | { _tag: "ThemeLoaded"; colors: Colors | null; warnings: string[] }
   | { _tag: "ViewChosen"; view: "diff" | "message" }
   | { _tag: "MessageLoaded"; reply: MessageReply }
   | { _tag: "MessageRefreshed" }
@@ -339,6 +347,7 @@ export type Cmd =
   | { _tag: "Archive"; root: string }
   | { _tag: "SetViewed"; root: string; spec: Spec | null; path: string; viewed: boolean }
   | { _tag: "ReadPanel" }
+  | { _tag: "ReadTheme" }
   | { _tag: "SavePanel"; panel: Panel }
   | { _tag: "ReadMessage"; target: string }
   | { _tag: "SendMessage"; target: string; id: string; comments: { start: number; end: number; body: string }[] };

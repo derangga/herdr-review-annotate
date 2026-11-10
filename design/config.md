@@ -34,19 +34,63 @@ The same file chooses the pane's colours:
 
 ```toml
 [theme]
-name = "catppuccin-latte"
+name = "catppuccin-latte"     # the base flavor
+gui  = "app"                  # "app" (the default) or "plugin"
+
+[theme.palette]               # optional: any of the 14 colours, over the base flavor
+base = "#1a1b26"
+blue = "#7aa2f7"
 ```
 
 - The names are `catppuccin-mocha` (the default), `catppuccin-macchiato`, `catppuccin-frappe` and
   `catppuccin-latte`. A `config.toml` with no `[theme]`, or a `[theme]` with no `name`, is mocha.
 - A name that is not one of the four, a `name` that is not a string, and a `theme` that is not a table are
-  each one `Warning::Config`, and the pane starts in mocha.
+  each one `Warning::Config`, and the pane starts in mocha. A bad `name` does not drop a good `palette`: the
+  palette goes over mocha.
 - The table is read once when the pane starts, with `[keys]`.
 - `theme.rs` is the only module that names a colour. Every other module draws with a role of `Theme`: base,
   text, subtle text, border, accent, agent, cursor, selection, visual, added, removed, their two tints, their
   two changed-word backgrounds, filler, header, popup, warning and success. The tint behind an added or a
   removed row is the flavor's green or red mixed 15 parts in a hundred into its base, and the background of a
-  changed word is the same mix at 35 parts, so both follow the flavor.
+  changed word is the same mix at 35 parts, so both follow the flavor. The three mix strengths are fixed.
+
+`[theme.palette]` lets a user bring their own scheme. Its keys are the 14 colours a flavor has, by their
+Catppuccin names, and the roles are built from the merged palette exactly as from a flavor, so the tints, the
+selection and the changed-word backgrounds follow an override:
+
+| Key | What it colours |
+|---|---|
+| `base` | The pane's background, and the colour every tint is mixed into |
+| `mantle` | The empty half of a split row, the help overlay and the prompts |
+| `surface0` | File headers and the unchanged-lines row |
+| `surface1` | The cursor's row |
+| `surface2` | Borders |
+| `overlay1` | Subtle text: line numbers, hints, comments in code, a resolved thread |
+| `text` | Text |
+| `red` | Removed lines and their tints |
+| `green` | Added lines and their tints, success, strings |
+| `yellow` | Warnings, types |
+| `blue` | The accent (hunk headers, `[+]`, the user's comments), the selection, functions |
+| `mauve` | An agent's comments, keywords |
+| `peach` | The visual-mode chip, numbers |
+| `sky` | Operators |
+
+- A value is `"#rrggbb"`, six hex digits of either case. Nothing else is accepted (the pane is 24-bit only).
+- Each key falls back alone. A value that is not a string or not `#rrggbb`, and a key that is not one of the
+  14, are each one `Warning::Config`, and that key keeps the base flavor's colour. The other keys still apply.
+  A `palette` that is not a table is one warning and no overrides. The wording is `[theme.palette] <key> is not
+  a "#rrggbb" string, keeping the flavor's colour`, `[theme.palette] <key> is not a palette colour, ignored`,
+  `[theme.palette] is not a table, no overrides` and `[theme] gui is not "app" or "plugin", using app`.
+- A light scheme takes `catppuccin-latte` as its base, so a key it leaves out is a light colour.
+
+`gui` says where the herdr-app panel takes its colours ([gui](gui.md), The colours):
+
+- `"app"` (the default, and what a missing `gui` means): herdr-app's own theme, as the panel always did. A
+  custom scheme for the panel is then a herdr-app `themes/*.json`.
+- `"plugin"`: the palette above, the same colours as the pane.
+- A `gui` that is not one of the two, or not a string, is one `Warning::Config` and counts as `"app"`. The pane
+  checks `gui` and draws nothing differently for it. The pane and the panel each show every warning of
+  `[theme]` in their own status line.
 - The pane paints the theme's base behind everything and its text colour on unstyled text, so it does not
   show the terminal's own background. The colours are 24-bit. A terminal without truecolor is not handled.
 

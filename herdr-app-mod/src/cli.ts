@@ -1,8 +1,8 @@
 // ReviewCli: builds argv, runs the binary through Host.exec, maps exit codes to the error list in
 // design/gui.md and decodes stdout. Inner functions throw tagged objects.
-import { decodeArchive, decodeFiles, decodeMessage, decodeMessageSent, decodeSend, decodeState, parseJson } from "./decode.ts";
+import { decodeArchive, decodeFiles, decodeMessage, decodeMessageSent, decodeSend, decodeState, decodeTheme, parseJson } from "./decode.ts";
 import type { ExecResult, Host } from "./host.ts";
-import type { ArchiveReply, FileView, MessageReply, MessageSentReply, ReviewError, SendReply, Spec, State } from "./types.ts";
+import type { ArchiveReply, FileView, MessageReply, MessageSentReply, ReviewError, SendReply, Spec, State, ThemeReply } from "./types.ts";
 
 const READ_TIMEOUT = 60_000;
 const WRITE_TIMEOUT = 30_000;
@@ -27,6 +27,8 @@ export type ReviewCli = {
   message(target: string): Promise<MessageReply>;
   messageSend(target: string, file: string): Promise<MessageSentReply>;
   view(root: string, spec: Spec | null, path: string, set: boolean): Promise<void>;
+  // The palette the pane draws with, for the panel to lay over herdr-app's theme.
+  theme(): Promise<ThemeReply>;
 };
 
 function fail(error: ReviewError): never {
@@ -104,6 +106,9 @@ export function makeCli(host: Host, bin: string | null): ReviewCli {
     },
     async messageSend(target, file) {
       return decodeMessageSent(parseJson(await exec(["message", "send", "--target", target, "--file", file], WRITE_TIMEOUT)));
+    },
+    async theme() {
+      return decodeTheme(parseJson(await exec(["theme", "--json"], READ_TIMEOUT)));
     },
     view: (root, spec, path, set) => write(["view", "--repo", root, "--path", path, set ? "--set" : "--unset", ...specArgs(spec)]),
   };

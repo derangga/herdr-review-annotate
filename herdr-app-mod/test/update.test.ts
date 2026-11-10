@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { initModel, update } from "../src/update.ts";
+import { initModel, themed, update } from "../src/update.ts";
 import type { Cmd, Model, Msg, ReviewError } from "../src/types.ts";
 import { answer, fixtureFile, fixtureState, loadedModel, reload, steps } from "./model.ts";
 
@@ -296,4 +296,53 @@ test("E: a settings write that failed leaves the view as it is and says so", () 
   assert.deepEqual(model.panel, { side: "left", open: false });
   assert.equal(model.status, "could not remember the sidebar setting");
   assert.deepEqual(cmds, []);
+});
+
+const themeCmds = (cmds: Cmd[]) => cmds.filter((c) => c._tag === "ReadTheme");
+
+test("the first Loaded of the copy sends ReadTheme, and a second Loaded sends no second", () => {
+  const opens = steps(initModel(), opened);
+  const first = steps(opens.model, { _tag: "Loaded", key: opens.model.key, state });
+  assert.equal(themeCmds(first.cmds).length, 1);
+  assert.equal(themeCmds(steps(first.model, { _tag: "Loaded", key: first.model.key, state }, trig("refresh")).cmds).length, 0);
+});
+
+test("a stale Loaded does not count as the first", () => {
+  const opens = steps(initModel(), opened);
+  const stale = steps(opens.model, { _tag: "Loaded", key: "other", state });
+  assert.equal(themeCmds(stale.cmds).length, 0);
+  assert.equal(themeCmds(steps(stale.model, { _tag: "Loaded", key: stale.model.key, state }).cmds).length, 1);
+});
+
+test("E: ThemeLoaded with warnings shows them in the status line once, and no banner", () => {
+  const { model, cmds } = steps(loaded(), { _tag: "ThemeLoaded", colors: { background: "#000000" }, warnings: ["a", "b"] });
+  assert.deepEqual(model.colors, { background: "#000000" });
+  assert.equal(model.status, "a; b");
+  assert.equal(model.banner, null);
+  assert.deepEqual(cmds, []);
+  // A reload (the timer) does not clear it, and a later ThemeLoaded would not repeat it: there is none.
+  assert.equal(steps(model, trig("timer"), { _tag: "Loaded", key: model.key, state }).model.status, "a; b");
+});
+
+test("E: ThemeLoaded with colors null and a failure status leaves herdr-app's theme and the review, with no banner", () => {
+  const m = loaded();
+  const { model } = steps(m, { _tag: "ThemeLoaded", colors: null, warnings: ["could not read the plugin theme: update herdr-review"] });
+  assert.equal(model.colors, null);
+  assert.equal(model.status, "could not read the plugin theme: update herdr-review");
+  assert.equal(model.banner, null);
+  assert.equal(model.stopped, false);
+  assert.deepEqual(model.state, m.state);
+});
+
+test("ThemeLoaded with no warnings sets no status, and does not replace a result already shown", () => {
+  assert.equal(steps(loaded(), { _tag: "ThemeLoaded", colors: null, warnings: [] }).model.status, null);
+  const sending = { ...loaded(), status: "sending...", sticky: true };
+  assert.equal(steps(sending, { _tag: "ThemeLoaded", colors: null, warnings: ["x"] }).model.status, "sending...");
+});
+
+test("the merge lays colors over Host.theme() and keeps a name colors lacks, and follows a new Host.theme()", () => {
+  const m = steps(loaded(), { _tag: "ThemeLoaded", colors: { background: "#000000", accent: "#111111" }, warnings: [] }).model;
+  assert.deepEqual(themed({ background: "#ffffff", warning: "#222222", accent: "#333333" }, m), { background: "#000000", warning: "#222222", accent: "#111111" });
+  assert.deepEqual(themed({ background: "#444444", warning: "#555555" }, m), { background: "#000000", warning: "#555555", accent: "#111111" });
+  assert.deepEqual(themed({ warning: "#222222" }, loaded()), { warning: "#222222" });
 });

@@ -7,6 +7,10 @@ Part of the [herdr-review design](../../DESIGN.md).
 ```
 -> load keymap                             R: env (config dir)   E: any -> escape, defaults + warning
 -> load theme                              R: env (config dir)   E: unknown name, bad table -> escape, mocha + warning
+                                                                 E: a palette key unknown, not a string or not #rrggbb
+                                                                    -> escape, that key from the flavor + warning
+                                                                 E: palette not a table -> escape, no overrides + warning
+                                                                 E: gui not "app" or "plugin" -> escape, "app" + warning
 -> load sidebar config                     R: env (config dir)   E: open not a boolean -> escape, shown + warning
                                                                  E: icons not a boolean -> escape, icons shown + warning
                                                                  E: [sidebar] not a table -> escape, both defaults + one warning

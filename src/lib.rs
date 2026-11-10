@@ -28,6 +28,7 @@ pub mod state;
 pub mod store;
 pub mod syntax;
 pub mod theme;
+pub mod theme_json;
 pub mod tui;
 pub mod user;
 pub mod view;

@@ -258,3 +258,30 @@ test("a refused write (the file changed since the read) is read again and then s
   assert.equal(t.calls.filter((c) => c.method === "readTextFile").length, 2);
   assert.equal(writes(t.calls).length, 1);
 });
+
+const themeReply = (over: object = {}) => ok(JSON.stringify({ schema: 1, gui: "plugin", colors: { background: "#1e1e2e" }, warnings: [], ...over }));
+const unreadable = "could not read the plugin theme: ";
+
+test("ReadTheme runs theme --json on the binary that answered, and answers the colours and the warnings", async () => {
+  const t = env({ exec: (_c, args) => (args[0] === "theme" ? themeReply({ warnings: ["bad key"] }) : defaultExec(_c, args)) }, "/opt/herdr-review");
+  await run(t.env, load());
+  const msg = await run(t.env, { _tag: "ReadTheme" });
+  assert.deepEqual(msg, { _tag: "ThemeLoaded", colors: { background: "#1e1e2e" }, warnings: ["bad key"] });
+  assert.deepEqual(execs(t.calls).map((c) => [c.command, c.argv]), [["/opt/herdr-review", ["state", "--json", "--repo", "/repo"]], ["/opt/herdr-review", ["theme", "--json"]]]);
+});
+
+test("E: ReadTheme under app answers colors null", async () => {
+  const t = env({ exec: () => themeReply({ gui: "app", colors: null }) });
+  assert.deepEqual(await run(t.env, { _tag: "ReadTheme" }), { _tag: "ThemeLoaded", colors: null, warnings: [] });
+});
+
+test("E: ReadTheme that fails (TooOld, ContractMismatch, BackendFailed, a timeout, no binary) answers colors null and one status, not Failed", async () => {
+  const replies = [exit(2, "unknown command 'theme'"), themeReply({ schema: 2 }), ok("not json"), exit(1, "boom\nmore"), exit(124, "")] as const;
+  const texts = ["update herdr-review", "unexpected reply at schema: this mod reads schema 1, the binary sent 2", "unexpected reply at $: the reply is not JSON", "boom", "herdr-review failed (124)"];
+  for (const [i, reply] of replies.entries()) {
+    const msg = await run(env({ exec: () => reply }).env, { _tag: "ReadTheme" });
+    assert.deepEqual(msg, { _tag: "ThemeLoaded", colors: null, warnings: [unreadable + texts[i]] });
+  }
+  const missing = await run(env({ exec: () => "reject" }).env, { _tag: "ReadTheme" });
+  assert.deepEqual(missing, { _tag: "ThemeLoaded", colors: null, warnings: [unreadable + "herdr-review not found, set props.bin or run scripts/stage-app-mod.sh"] });
+});

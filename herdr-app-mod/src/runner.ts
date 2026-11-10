@@ -3,6 +3,7 @@
 import { decodeFocus, decodePanel, decodePanes, decodeProps } from "./decode.ts";
 import type { ReviewCli } from "./cli.ts";
 import type { Host } from "./host.ts";
+import { errorText } from "./message.ts";
 import { batchOf } from "./rows.ts";
 import type { Cmd, Msg, Op, Panel, ReviewError, Spec, WriteOp } from "./types.ts";
 
@@ -71,6 +72,15 @@ export function run(env: Env, cmd: Cmd): Promise<Msg | null> {
         const text = await env.host.readTextFile(panelFile(env.host)).catch(() => null);
         return { _tag: "PanelLoaded", panel: decodePanel(text) };
       });
+    case "ReadTheme":
+      // A theme the panel cannot read is not a failed review: no banner, so this does not go through withRecovery.
+      return env.cli.theme().then(
+        (r): Msg => ({ _tag: "ThemeLoaded", colors: r.colors, warnings: r.warnings }),
+        (e: unknown): Msg => {
+          if (!isTagged(e)) throw e;
+          return { _tag: "ThemeLoaded", colors: null, warnings: [`could not read the plugin theme: ${errorText(e)}`] };
+        },
+      );
     case "SavePanel":
       return withRecovery("panel", async () => {
         await savePanel(env.host, cmd.panel);

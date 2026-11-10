@@ -103,8 +103,8 @@ variants   Spec          WorkTree | Branch { base }
            Placement     matched | outdated | not_in_diff, with a row index or null
            Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked (these three carry `side`: `old`, `new` or null, null in the unified layout), SelectionCleared, CursorMoved, CursorHunk, CursorSide, VisualToggled,
                          FileCommentClicked, EditorSaved, EditorCancelled, ThreadAction, SendClicked, PickerChosen, PickerCancelled, ArchiveClicked, ArchiveConfirmed, DeleteConfirmed, ConfirmCancelled, Archived, ViewedClicked,
-                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, LayoutToggled, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent, ViewChosen, MessageLoaded, MessageRefreshed, MessageHovered, MessagePressed, MessageReleased, MessagePlusClicked, MessageCommentAction, MessageSendClicked, MessageSent ...
-           Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel, ReadMessage, SendMessage
+                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, LayoutToggled, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, ThemeLoaded, Failed, Wrote, Sent, ViewChosen, MessageLoaded, MessageRefreshed, MessageHovered, MessagePressed, MessageReleased, MessagePlusClicked, MessageCommentAction, MessageSendClicked, MessageSent ...
+           Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, ReadTheme, SavePanel, ReadMessage, SendMessage
 errors     BinaryMissing | TooOld | ContractMismatch { path } | Busy | BackendFailed { code, stderr }
            BadRequest { stderr } | Refused { Blocked | NotReady | AgentGone }
            NoTarget | AmbiguousTarget { candidates } | WatchUnavailable
@@ -394,7 +394,8 @@ The mod never calls `hc`. Target resolution, the readiness check and the deliver
 ([send](send.md)). The mod only passes `--target` when it knows the terminal.
 
 `Host.theme` returns `Record<string, string>`, and the GPUI setters want `` `#${string}` ``, so `host.ts`
-casts it once.
+casts it once. The `Theme` that `view` receives is `Host.theme()` with the `colors` of `theme --json` laid
+over it, merged on each render by `themed` (`update.ts`) in `main` (The colours, below).
 
 ## Boundary
 
@@ -407,6 +408,8 @@ as a bare `=== true` check on the property, and `decode.ts` covers the rest of t
 decodeState(raw: unknown): State          throws ContractMismatch { path }
 decodeFile(raw: unknown): FileView        throws ContractMismatch { path }
 decodeSend(raw: unknown): SendReply       throws ContractMismatch { path }
+decodeTheme(raw: unknown): ThemeReply     throws ContractMismatch { path } on schema, gui, warnings or colors that is not an object or null;
+                                          a colors key that is not #rrggbb is dropped
 decodeProps(raw: unknown): Props          never throws: a bad field is dropped
 decodePanel(text: string | null): Panel   never throws: a bad field is its default
 ```
@@ -466,6 +469,17 @@ drawn in it read as an error. Red (`ansi1`) is left to removed lines and to Dele
 | The Archive question's sentence | `foreground`, plain |
 | The note beside a disabled Archive (resolved threads the agent closed are unread) | `dim` |
 | The Archive button in the question | `accent` (border and fill), not red: archive moves threads to `archive.jsonl` and deletes none |
+
+The colours. Every name above is looked up in one `Theme`, and that object has two sources, chosen by
+`[theme] gui` in the plugin's `config.toml` ([config](config.md)). Under `"app"` (the default) it is herdr-app's
+`theme()`, so the panel follows the app's theme, its light and dark presets and the user's `themes/*.json`. Under
+`"plugin"` it is `theme()` with the `colors` of `theme --json` laid over it ([shapes](shapes.md)), which are the
+pane's palette under the names this table and the syntax table use. `view.ts` and `rows.ts` do not know which
+source they draw from. The mod reads the theme once, after its first load ([gui-open](graphs/gui-open.md)).
+
+gpui-kit's own widgets (the `Textarea` of the editor, the filter's `Input`, the scrollbars) take some colours
+from herdr-app's theme where the mod sets none, so under `"plugin"` a caret, a text selection or a scrollbar
+thumb may keep herdr-app's colours. That is accepted; [herdr-app-facts](herdr-app-facts.md) lists it to check.
 
 ## Behavior wrappers
 

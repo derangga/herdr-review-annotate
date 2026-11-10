@@ -1,4 +1,4 @@
-# Call graphs: `state`, `file` and `files`
+# Call graphs: `state`, `file`, `files` and `theme`
 
 Part of the [herdr-review design](../../DESIGN.md). The JSON they print is in [shapes](../shapes.md), the
 commands in [cli](../cli.md). The mod is the caller ([gui](../gui.md)), and the TUI does not use these.
@@ -122,6 +122,27 @@ work, so the elements are the same as `file`'s. Each path has its own highlighte
 
 Cardinality: one-shot, called once per batch of files the panel fetches.
 
+## `theme`
+
+```
+-> parse args                              R: env     E: usage, a flag other than --json -> exit 2
+-> find the config dir                     R: env, herdr
+     HERDR_PLUGIN_CONFIG_DIR, else the stdout of `herdr plugin config-dir review`
+                                                      E: herdr fails or is missing -> escape: no file, defaults
+                                                         + warning "could not find the config dir: ..."
+-> load theme (as in the TUI start, graphs/pane.md)   R: dir
+                                                      E: file missing, unreadable or not TOML -> escape: defaults,
+                                                         no warning
+                                                      E: every warning of the TUI's load theme -> into warnings
+-> gui "plugin"? map the palette to the panel's names (shapes.md); "app"? colors null   (pure)
+-> print {schema, gui, colors, warnings}   R: stdout
+```
+
+The pane and `theme` share one load, so a scheme reads the same in both. The mapping to herdr-app's names lives
+in Rust, beside the palette, so the mod draws with the names it already uses.
+
+Cardinality: one-shot, called once when the panel has its binary.
+
 ## Tests
 
 Each `E:` line is one test. The rest are in [tests](../tests.md):
@@ -151,6 +172,11 @@ Each `E:` line is one test. The rest are in [tests](../tests.md):
   it still says 1 after `archive` moved the rest.
   After `archive` moves them, `state` says 0, and the count before an archive is what `archive --json` reports.
   On the mod side: a missing or non-integer `archivable` or `unread_resolved` is a `ContractMismatch`.
+- `theme`: `gui = "plugin"` with a palette override prints that colour under each name the mapping gives it, and
+  the flavor's colour under the rest; `gui = "app"` prints `colors: null`; a `config.toml` with a bad palette
+  key prints its warning and the flavor's colour for that key; `HERDR_PLUGIN_CONFIG_DIR` wins over `herdr`, and
+  without it the dir comes from a recording `herdr`. The golden `herdr-app-mod/test/fixtures/theme.json` is a
+  `"plugin"` reply.
 - A reply that decodes into the shapes of `shapes.md`, with `schema` 1.
 - Golden files: the Rust test compares what `state` and `file` print for a fixed repo, after the root and the
   store directory are replaced by fixed text (the timestamps are those of the events the test writes), with the

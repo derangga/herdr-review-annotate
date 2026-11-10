@@ -39,6 +39,7 @@ breaks). One row per error.
 | `NoTarget` | Status "no agent found for this folder" |
 | `AmbiguousTarget` | Picker over the candidates, then `send --target` |
 | `WatchUnavailable` | The 10 s timer only |
+| Any error of `theme --json` | herdr-app's theme and one status line. Never a banner, since the review still works. No retry |
 | Body file not written | Status line, the editor keeps its text |
 | An unhandled `Msg`, a row index out of range | Throws. herdr-app shows the mod error and `herdr-app status` lists it |
 

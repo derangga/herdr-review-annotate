@@ -11,7 +11,7 @@ import type { Env } from "./runner.ts";
 import { noop, recorderFor } from "./perf.ts";
 import type { Recorder } from "./perf.ts";
 import { layoutCache, scrolled, visibleRange } from "./rows.ts";
-import { initModel, update } from "./update.ts";
+import { initModel, themed, update } from "./update.ts";
 import type { Cmd, Model, Msg } from "./types.ts";
 import { draw } from "./view.ts";
 
@@ -147,7 +147,7 @@ export default class ReviewView extends View {
   render(_cx: Context): Element {
     const t0 = this.perf.start();
     const stream = this.layout(this.model, Date.now());
-    const el = draw(this.model, stream, realHost.theme(), (msg) => this.dispatch(msg), { handle: this.handle, nav: this.nav, textarea: this.textarea, filter: this.filter });
+    const el = draw(this.model, stream, themed(realHost.theme(), this.model), (msg) => this.dispatch(msg), { handle: this.handle, nav: this.nav, textarea: this.textarea, filter: this.filter });
     if (this.perf.on) {
       // The agent-message view draws no stream.
       const { first, end } = this.model.view === "message" ? { first: 0, end: 0 } : visibleRange(stream, this.model.offset, this.model.height);

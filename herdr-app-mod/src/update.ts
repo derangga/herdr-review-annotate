@@ -4,12 +4,15 @@
 import { anchorOf, archivableCount, BATCH, cardKey, cardOrder, clampOffset, cursorSpot, filterCount, filterPick, findComment, isFolded, isSplit, itemKey, jumpStop, keyPath, lane, maxOffset, offsetOfThumb, partner, pick, plural, plusTarget, sameRows, sameSpot, sideOf, span, spots, thumbOf, topSpot, unsentCount, visualOn, wanted } from "./rows.ts";
 import type { Spot } from "./rows.ts";
 import { commentAction, hovered as messageHovered, initMessage, messageFailed, messageLoaded, messageSaved, messageSent, plusClicked as messagePlusClicked, pressed as messagePressed, refreshed as messageRefreshed, released as messageReleased, sendClicked as messageSendClicked, viewChosen } from "./message.ts";
-import type { Cmd, FileView, Jump, Model, Msg, Panel, ReviewError, Reveal, Spec, State, ThreadActionKind, WriteOp } from "./types.ts";
+import type { Cmd, Colors, FileView, Jump, Model, Msg, Panel, ReviewError, Reveal, Spec, State, ThreadActionKind, WriteOp } from "./types.ts";
 
 type Side = "old" | "new" | null;
 
 export const specText = (spec: Spec | null): string => (spec === null ? "meta" : spec.kind === "worktree" ? "worktree" : `branch:${spec.base}`);
 const keyOf = (root: string | null, spec: Spec | null): string => JSON.stringify([root, specText(spec)]);
+
+// The theme the view draws with: herdr-app's, read on each render so a theme switch reaches it, with the plugin's colours over it.
+export const themed = (base: Colors, m: Model): Colors => ({ ...base, ...m.colors });
 
 export const DEFAULT_PANEL: Panel = { side: "left", open: true };
 
@@ -69,6 +72,8 @@ export function initModel(): Model {
     panel: DEFAULT_PANEL,
     filter: "",
     filtering: false,
+    themeAsked: false,
+    colors: null,
   };
 }
 
@@ -513,8 +518,11 @@ export function update(m: Model, msg: Msg): Step {
       if (m.stopped && (msg.source === "watch" || msg.source === "timer")) return [m, []];
       return trigger(m);
     }
-    case "Loaded":
-      return loadedState(m, msg.key, msg.state);
+    case "Loaded": {
+      const [next, cmds] = loadedState(m, msg.key, msg.state);
+      // The first answer of the copy is also the proof that a binary runs, so the theme is read from it, once.
+      return msg.key !== m.key || m.themeAsked ? [next, cmds] : [{ ...next, themeAsked: true }, [...cmds, { _tag: "ReadTheme" }]];
+    }
     case "FilesLoaded":
       return loadedFiles(m, msg.key, msg.files);
     case "Scrolled": {
@@ -653,6 +661,11 @@ export function update(m: Model, msg: Msg): Step {
       return entered(m);
     case "PanelLoaded":
       return [{ ...m, panel: msg.panel }, []];
+    case "ThemeLoaded": {
+      // The warnings are the status once, as a result a reload does not clear; a result already there is not replaced.
+      const colored = { ...m, colors: msg.colors };
+      return [msg.warnings.length === 0 || m.sticky ? colored : { ...colored, status: msg.warnings.join("; "), sticky: true }, []];
+    }
     case "ViewChosen":
       return viewChosen(m, msg.view);
     case "MessageLoaded":

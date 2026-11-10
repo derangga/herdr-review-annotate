@@ -504,3 +504,9 @@ Read from `gpui-kit.d.ts` and `herdr-app check`; **not seen in the window**, so 
 5. The rows (section 12): that `on_hover` and `on_mouse_move` keep working in the real panel's rows, that the `[+]` on the hovered line opens the
    editor on the line or the range, that a plain click highlights nothing and clears a range, that a drag released outside the stream but inside the
    panel ends, and that Esc arrives after a press on a row (the panel gives the keyboard to its handle on a press).
+
+6. The plugin theme (`[theme] gui = "plugin"`, [gui](gui.md) The colours): whether `Host.exec` passes
+   `HERDR_PLUGIN_CONFIG_DIR` to the binary, and whether `herdr` is on the `PATH` of the panel's process for the
+   `herdr plugin config-dir review` fallback (`theme --json` warns when neither works). And which colours of
+   gpui-kit's `Textarea`, `Input` and scrollbars stay herdr-app's when the mod's are the pane's palette: the caret,
+   the text selection, the thumb. Seen only in the user's own panel.

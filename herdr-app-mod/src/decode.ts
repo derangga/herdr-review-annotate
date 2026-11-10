@@ -5,6 +5,7 @@ import type {
   ArchiveReply,
   Candidate,
   Change,
+  Colors,
   Comment,
   Focus,
   FileSummary,
@@ -18,6 +19,7 @@ import type {
   ReviewError,
   Row,
   SendReply,
+  ThemeReply,
   Spec,
   State,
   Thread,
@@ -306,6 +308,19 @@ export function decodeMessageSent(raw: unknown): MessageSentReply {
   const o = obj(raw, "$");
   schema(o);
   return { schema: SCHEMA, sent: int(o, "sent", "$") };
+}
+
+// `theme --json`. The colours are decoration, so a key that is not #rrggbb is dropped and the panel keeps herdr-app's colour
+// for that name. The null of "app" is the only null accepted.
+export function decodeTheme(raw: unknown): ThemeReply {
+  const o = obj(raw, "$");
+  schema(o);
+  const gui = oneOf(o, "gui", "$", ["app", "plugin"] as const);
+  const warnings = list(o, "warnings", "$", strings);
+  if (o["colors"] === null) return { schema: SCHEMA, gui, colors: null, warnings };
+  const colors: Colors = {};
+  for (const [k, v] of Object.entries(obj(o["colors"], "$.colors"))) if (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) colors[k] = v as `#${string}`;
+  return { schema: SCHEMA, gui, colors, warnings };
 }
 
 export function decodeArchive(raw: unknown): ArchiveReply {

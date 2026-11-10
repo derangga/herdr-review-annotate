@@ -32,6 +32,7 @@ pub const USAGE: &str = "usage:
   herdr-review state  [--repo <root>] [--spec worktree|branch] [--base <ref>] --json
   herdr-review file   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --json
   herdr-review files  [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p>... --json
+  herdr-review theme  --json
   herdr-review archive [--repo <root>] [--json]
   herdr-review view   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --set|--unset
   herdr-review message --json (--pane <herdr pane> | --target <t7>)
@@ -139,6 +140,8 @@ pub enum Command {
         query: Query,
         paths: Vec<String>,
     },
+    /// `theme --json`: the pane's colours for the panel.
+    Theme,
     Message,
     MessageTui,
     /// `message --json`: the agent's newest message, for the panel.
@@ -592,6 +595,14 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             }
             Ok(Command::Files { query, paths })
         }
+        "theme" => {
+            let mut parsed = split(rest, &[], &["--json"])?;
+            if !parsed.switch("--json") {
+                return Err(Usage("this command prints JSON only, pass --json".into()));
+            }
+            no_arguments(parsed)?;
+            Ok(Command::Theme)
+        }
         "archive" => {
             let mut parsed = split(rest, &["--repo"], &["--json"])?;
             let (repo, json) = (
@@ -1016,6 +1027,15 @@ mod tests {
                 query: Query::default()
             })
         );
+        assert_eq!(parse(&args("theme --json")), Ok(Command::Theme));
+        for line in [
+            "theme",
+            "theme --json --repo /r",
+            "theme --json extra",
+            "theme --spec worktree",
+        ] {
+            assert!(parse(&args(line)).is_err(), "{line}");
+        }
         assert_eq!(parse(&args("message")), Ok(Command::Message));
         assert!(parse(&args("message --repo /r")).is_err());
         assert_eq!(parse(&args("message-tui")), Ok(Command::MessageTui));

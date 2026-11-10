@@ -41,6 +41,26 @@ Cardinality: once per copy. Opening again is a new copy with its own state.
   -> the first that starts is kept on the instance
 ```
 
+## Read the theme (once the binary is known)
+
+```
+-> the first Msg.Loaded of the copy               update: Cmd.ReadTheme, once per copy   (pure)
+-> run Cmd.ReadTheme: exec theme --json           R: Host.exec (the kept binary), decodeTheme
+     -> Msg.ThemeLoaded { colors, warnings }      colors null under "app"
+                                                  E: warnings not empty -> the status line shows them joined, once: sticky, so a reload keeps it, and a
+                                                     result already in the status line is not replaced
+                                                  E: any failure (TooOld, ContractMismatch, BackendFailed, a
+                                                     timeout) -> escape: Msg.ThemeLoaded { colors: null }, one
+                                                     status "could not read the plugin theme: ...", no banner,
+                                                     no retry
+-> view: t = { ...Host.theme(), ...colors }       on every render, so a herdr-app theme switch still reaches
+                                                  the names colors leaves out
+```
+
+Until `ThemeLoaded` arrives the panel draws in herdr-app's theme, so with `gui = "plugin"` the first frames
+are herdr-app's colours. The theme is read once: an edit to `config.toml` shows in a new copy of the panel, as
+it shows in a new pane.
+
 ## Show, hide or move the sidebar
 
 ```
@@ -84,4 +104,5 @@ Cardinality: once per copy. Opening again is a new copy with its own state.
 ## Tests
 
 Each `E:` line is one test. Also: the happy path (root from `focused()`, target set), and `init` against a
-`FakeHost` whose `focused()` returns null renders the banner and throws nothing.
+`FakeHost` whose `focused()` returns null renders the banner and throws nothing. For the theme: a second
+`Loaded` sends no second `ReadTheme`, and the merge keeps a `Host.theme()` name that `colors` lacks.

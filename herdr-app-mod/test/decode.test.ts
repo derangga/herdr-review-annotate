@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeFiles, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, parseJson } from "../src/decode.ts";
+import { decodeFile, decodeFiles, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, decodeTheme, parseJson } from "../src/decode.ts";
 import { fixture } from "./fake-host.ts";
 
 const state = () => JSON.parse(fixture("state"));
@@ -239,4 +239,41 @@ test("E: a missing, unreadable or odd settings file gives left and shown, field 
   assert.deepEqual(decodePanel('{"side":"right","open":"no"}'), { side: "right", open: true });
   assert.deepEqual(decodePanel('{"side":"up","open":false}'), { side: "left", open: false });
   assert.deepEqual(decodePanel('{"open":false}'), { side: "left", open: false });
+});
+
+const theme = () => ({ schema: 1, gui: "plugin", colors: { background: "#1e1e2e", accent: "#89b4fa" }, warnings: ["w"] });
+
+test("a theme reply decodes: the colours under plugin, null under app", () => {
+  assert.deepEqual(decodeTheme(theme()), { schema: 1, gui: "plugin", colors: { background: "#1e1e2e", accent: "#89b4fa" }, warnings: ["w"] });
+  assert.deepEqual(decodeTheme({ ...theme(), gui: "app", colors: null, warnings: [] }), { schema: 1, gui: "app", colors: null, warnings: [] });
+});
+
+test("the golden theme reply decodes with all 17 colours the panel reads", () => {
+  const got = decodeTheme(JSON.parse(fixture("theme")));
+  assert.equal(got.gui, "plugin");
+  assert.deepEqual(Object.keys(got.colors ?? {}).sort(), ["accent", "ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "ansi7", "background", "border", "chrome", "dim", "foreground", "hover", "muted", "raised", "selected"]);
+});
+
+test("E: a theme reply with another schema, a gui that is not app or plugin, or warnings that are not strings -> ContractMismatch", () => {
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), schema: 2 })).path, "schema");
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), gui: "dark" })).path, "$.gui");
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), warnings: [1] })).path, "$.warnings[0]");
+  assert.equal(mismatch(() => decodeTheme([])).path, "$");
+});
+
+test("E: a theme field missing, retyped or null where a value is expected -> ContractMismatch", () => {
+  for (const key of ["gui", "warnings", "colors"]) {
+    const missing: Record<string, unknown> = theme();
+    delete missing[key];
+    assert.equal(mismatch(() => decodeTheme(missing)).path, key === "colors" ? "$.colors" : `$.${key}`);
+  }
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), gui: null })).path, "$.gui");
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), warnings: null })).path, "$.warnings");
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), colors: "#000000" })).path, "$.colors");
+  assert.equal(mismatch(() => decodeTheme({ ...theme(), colors: [] })).path, "$.colors");
+});
+
+test("a theme colour that is not #rrggbb is dropped and the rest stay", () => {
+  const colors = { background: "#1e1e2e", dim: "red", muted: "#abc", border: 5, hover: null, raised: "#GGGGGG", accent: "#89b4fa" };
+  assert.deepEqual(decodeTheme({ ...theme(), colors }).colors, { background: "#1e1e2e", accent: "#89b4fa" });
 });

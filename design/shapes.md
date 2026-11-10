@@ -34,7 +34,7 @@ Records:
 | `View::whole` | A set of `RelPath`: the files shown whole. `App::read_diff` fills them after each load. Not stored |
 | `Keymap` | Key to `Action`, plus `warnings` |
 | `SidebarConfig` | `open` (default true) and `icons` (default false), read once from `[sidebar]` into `View::sidebar` and `View::icons` |
-| `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose |
+| `Theme` | One colour per role, filled from the Catppuccin flavor `[theme] name` chose with the `[theme.palette]` overrides over it, and the `gui` choice (`app` or `plugin`) ([config](config.md)) |
 | `Env` | Every `HERDR_*`, `REVIEW_*` and `HC_TERMINAL_ID` value, and `exe` (the running binary's path), read once in `main.rs` |
 
 Variants:
@@ -271,6 +271,42 @@ archive:       { "schema": 1, "archived": 2, "unsent": 1 }
 `candidates` is empty except for `ambiguous` under the hc backend. Under herdr the picker is the TUI's, so the
 list stays empty and `message` says how many agents matched. `status` is hc's plain word from `hc ls`. A usage error exits
 2 and prints a line on stderr, not JSON.
+
+### `theme --json`
+
+```
+{ "schema": 1,
+  "gui": "app" | "plugin",          "app" also for a gui that was bad
+  "colors": { "background": "#rrggbb", ... } | null,   null under "app"
+  "warnings": ["..."] }             every Warning::Config of [theme], as the pane words them
+```
+
+Under `"plugin"`, `colors` holds the herdr-app theme names the panel reads, filled from the merged palette
+([config](config.md)). It has exactly these keys and no others, and the panel lays them over herdr-app's
+`theme()`, so a name not listed keeps herdr-app's colour:
+
+| Key | Palette colour |
+|---|---|
+| `background` | `base` |
+| `foreground` | `text` |
+| `dim`, `muted` | `overlay1` |
+| `border` | `surface2` |
+| `hover`, `raised` | `surface0` |
+| `selected` | `surface1` |
+| `chrome` | `mantle` |
+| `accent` | `blue` |
+| `ansi1` | `red` |
+| `ansi2` | `green` |
+| `ansi3` | `yellow` |
+| `ansi4` | `blue` |
+| `ansi5` | `mauve` |
+| `ansi6` | `peach` |
+| `ansi7` | `sky` |
+
+`ansi3` is yellow because the panel draws warnings and numbers in it, and `ansi6` is peach because it draws
+types in it, so the panel's numbers are yellow and its types peach, the two swapped from the pane. The
+warnings keep the pane's yellow. Values are lower-case `#rrggbb`, and `colors` is written with its keys in
+alphabetical order (Rust type `ThemeJson` in `json.rs`).
 
 ### `message --json` and `message send`
 

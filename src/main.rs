@@ -9,7 +9,7 @@ use herdr_review::env::Env;
 use herdr_review::hc::run_hc;
 use herdr_review::herdr::run_herdr_output;
 use herdr_review::message_json;
-use herdr_review::{message_action, message_tui, open, send, state, tui, user};
+use herdr_review::{message_action, message_tui, open, send, state, theme_json, tui, user};
 
 #[allow(
     clippy::print_stdout,
@@ -53,6 +53,7 @@ fn main() -> ExitCode {
         Ok(Command::Files { query, paths }) => finish(
             &state::files(&query, &paths, &env, run_git_bytes).unwrap_or_else(|f| f.output()),
         ),
+        Ok(Command::Theme) => finish(&theme_json::command(&env, run_herdr_output)),
         Ok(Command::Archive { repo, json }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             finish(

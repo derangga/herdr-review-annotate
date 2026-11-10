@@ -53,7 +53,7 @@ One file per group of operations. An `E:` line in a graph is one test.
 | [commands](design/graphs/commands.md) | The agent CLI (`comment apply`, `reply`, `resolve`, `reopen`), the user CLI (`--as user`, `edit`, `delete`, `seen`, `archive`, `view`), `open` |
 | [pane](design/graphs/pane.md) | TUI start, load the diff, the loop, a user comment |
 | [send](design/graphs/send.md) | Send, under the herdr backend and under hc |
-| [json](design/graphs/json.md) | `state` and `file`, the read-only JSON the panel reads |
+| [json](design/graphs/json.md) | `state`, `file`, `files` and `theme`, the read-only JSON the panel reads |
 | [gui-open](design/graphs/gui-open.md) | The panel opens: root, target, binary, close |
 | [gui-load](design/graphs/gui-load.md) | The panel loads the state: triggers, single flight, spec switch, file switch |
 | [gui-stream](design/graphs/gui-stream.md) | The panel's stream of every file: items and heights, fetching the files as they show, the selected file, scrolling, folding |

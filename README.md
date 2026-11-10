@@ -186,6 +186,11 @@ switch_spec = ""              # unbound
 
 [theme]
 name = "catppuccin-latte"     # mocha (default), macchiato, frappe, latte
+gui = "app"                   # the herdr-app panel's colours: "app" (default) or "plugin"
+
+[theme.palette]               # optional: any of the 14 colours below, over the flavor
+base = "#1a1b26"
+blue = "#7aa2f7"
 
 [sidebar]
 open = false                  # start with the sidebar hidden
@@ -196,6 +201,31 @@ icons = false                 # hide the file-type glyph on each file row, which
   `shift+s` and `S` are the same key.
 - An action you do not list keeps its default keys. A key you assign takes priority over another
   action's default, and the pane prints a warning naming each action left with no key.
+- `[theme.palette]` brings your own colour scheme. Each key replaces one colour of the flavor `name`
+  chose, as `"#rrggbb"`, and a key you leave out keeps the flavor's colour. The tints behind added and
+  removed lines, the selection and the changed words are mixed from the palette, so they follow it. For a
+  light scheme take `catppuccin-latte` as the flavor. A value that is not `"#rrggbb"` and a key that is not
+  in the table are each a warning in the pane, and the other keys still apply.
+
+  | Key | What it colours |
+  |---|---|
+  | `base` | The background, and the colour the tints are mixed into |
+  | `mantle` | The empty half of a split row, the help overlay and the prompts |
+  | `surface0` | File headers and the unchanged-lines row |
+  | `surface1` | The cursor's row |
+  | `surface2` | Borders |
+  | `overlay1` | Subtle text: line numbers, hints, comments in code, a resolved thread |
+  | `text` | Text |
+  | `red` | Removed lines and their tints |
+  | `green` | Added lines and their tints, success, strings |
+  | `yellow` | Warnings, types |
+  | `blue` | The accent (hunk headers, `[+]`, your comments), the selection, functions |
+  | `mauve` | An agent's comments, keywords |
+  | `peach` | The visual-mode chip, numbers |
+  | `sky` | Operators |
+
+- `gui` says where the herdr-app panel takes its colours. `"app"` keeps herdr-app's own theme, as before.
+  `"plugin"` gives the panel the pane's palette. The pane looks the same for both.
 - A mistake in the file is a warning in the pane, never a crash. A file that is not valid TOML is ignored.
 
 ## The herdr-app panel
@@ -270,6 +300,32 @@ agent has written a new one. The panel needs the agent to be Claude Code.
 The header has `Working tree` and `Branch`, which are the two diff specs of the pane above (`b` there), and
 `Refresh`. The panel also reloads when the repository or the review state changes, and every 10 seconds. The
 choice of spec lasts as long as the panel is open.
+
+### Colours
+
+The panel takes its colours from `[theme] gui` in the pane's `config.toml` ([Configure](#configure)):
+
+- `gui = "app"`, the default, uses herdr-app's own theme, so the panel follows the theme you pick in herdr-app.
+  For a scheme of your own in this mode, add it as a herdr-app theme (`themes/*.json` in the app folder).
+- `gui = "plugin"` uses the pane's flavor and `[theme.palette]`, so the panel and the pane show the same colours.
+  The panel reads them once when it opens. Open a new panel after you edit the file.
+
+Under `"plugin"` the palette keys colour the panel as in the pane, with these differences:
+
+| Key | In the panel |
+|---|---|
+| `base` | The background |
+| `mantle` | The track of the stream's scrollbar |
+| `surface0` | File headers, hunk headers, and a hovered button or row |
+| `surface1` | The selected button and the focused card |
+| `surface2` | Borders |
+| `overlay1` | Hints and other muted text |
+| `yellow` | Warnings, and numbers in code |
+| `peach` | Types in code |
+
+The panel draws the other keys as the pane does. The editor's caret and text selection, the filter box and the
+scrollbars are drawn by herdr-app and may keep herdr-app's colours. A mistake in `[theme]` shows in the panel's
+status line. If the panel cannot read the theme, it uses herdr-app's and says why in the status line.
 
 ### Limits
 
