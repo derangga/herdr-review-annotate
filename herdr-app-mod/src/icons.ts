@@ -44,3 +44,6 @@ export function fileIcon(name: string): string {
 
 // Every drawing the map can name, for the test that the files exist.
 export const ICON_NAMES: string[] = [...new Set([GENERIC, ...NAMES.values(), ...EXTENSIONS.values()])];
+
+// The drawings for the panel's buttons, not for file types: they stay out of the maps above. The test checks each is a file in `icons/`.
+export const UI_ICONS: string[] = ["panel-left", "panel-right", "swap", "columns", "refresh", "arrow-up", "arrow-down", "circle-check", "comment-plus", "send", "archive", "reply", "check", "undo", "pencil", "trash"];

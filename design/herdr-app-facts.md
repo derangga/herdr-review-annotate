@@ -475,6 +475,18 @@ drag selection. They gave no numbers (no render times, no event counts), so thos
   while nothing it is built from changes, so a wheel tick or a hover does not rebuild it. The time of a render in the real panel, and whether
   the 'interrupted' banner can still appear, are **not yet seen**.
 
+## 13. Icon buttons (2026-11-10)
+
+Read from `gpui-kit.d.ts` and `herdr-app check`; **not seen in the window**, so each line below is for the user to confirm in their own panel.
+- `div().tooltip(text)` takes a string and shows it after half a second. `.accessibility_label(text)` names the element for a screen reader.
+  `.active(declare)` styles the pressed element. All three type-check on a `div` and `check` loads the mod.
+- The 16 button drawings (`panel-left panel-right swap columns refresh arrow-up arrow-down circle-check comment-plus send archive reply check
+  undo pencil trash`) are in `icons/`, 24 px viewBox, stroke 2, round caps, and the stage script copies them with the file-type ones. `check`
+  prints no WARN for them.
+- Unknown, to see: whether `.active(...)` fires on a `div` with `on_click`; whether a tooltip appears over a disabled (opacity 0.4) `div`; whether
+  the icon takes the hover colour set on its parent (the icon also has its own `text_color`, which may win); whether a 16 px icon at stroke 2 is
+  too heavy (the fix is `stroke-width="1.75"` in the files). If `.active` does nothing, drop it; do not fake it with `mouse_down`.
+
 ## Still unknown
 
 1. That the staged binary survives an app restart (documented, not run).

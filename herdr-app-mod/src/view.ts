@@ -20,14 +20,18 @@ const SIDEBAR_W = 280;
 const tint = (color: `#${string}`, alpha: string): `#${string}` => `${color}${alpha}`;
 const CLEAR = "#00000000";
 
-// danger is a button that destroys something: the red of a removed line.
-export function button(id: string, label: string, on: boolean, t: Theme, click: (() => void) | null, danger = false): Element {
+const drawing = (name: string): string => `mods/herdr-review/icons/${name}.svg`;
+
+// danger is a button that destroys something: the red of a removed line. `icon` puts a drawing before the label and `tip` is a
+// tooltip, for a button that keeps its words but has more to say (a count, why it is off).
+export function button(id: string, label: string, on: boolean, t: Theme, click: (() => void) | null, danger = false, icon?: string, tip?: string): Element {
   return div()
     .id(id)
     .h(24)
     .px(8)
     .flex()
     .items_center()
+    .gap(6)
     .rounded(6)
     .border_1()
     .border_color(danger ? t.ansi1 : on ? t.accent : t.border)
@@ -35,13 +39,90 @@ export function button(id: string, label: string, on: boolean, t: Theme, click: 
     .text_color(on || danger ? t.foreground : t.muted)
     .when(on && !danger, (e) => e.bg(t.selected))
     .when(danger, (e) => e.bg(tint(t.ansi1, "30")))
+    .when(tip !== undefined, (e) => e.tooltip(tip ?? "").accessibility_label(tip ?? ""))
     // The press is the button's own: a button on a card must not also fire the card's click behind it.
     .when(click !== null, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
       cx.stop_propagation();
       click?.();
     }))
     .when(click === null, (e) => e.opacity(0.4))
+    .when(icon !== undefined, (e) => e.child(svg(drawing(icon ?? "")).size(14).flex_none().text_color(danger ? t.ansi1 : on ? t.accent : t.muted)))
     .child(label);
+}
+
+// A toggle, a step or a repeat action, as a drawing alone: `tip` is its tooltip and its name for a screen reader, so it is required
+// (and says why when the button is off). `on` is a toggle that is lit, `danger` a button that destroys something. A square of `size`.
+export type IconState = "rest" | "on" | "danger";
+export function iconButton(id: string, icon: string, tip: string, state: IconState, t: Theme, click: (() => void) | null, size = 28): Element {
+  const color = state === "danger" ? t.ansi1 : state === "on" ? t.accent : t.muted;
+  return div()
+    .id(id)
+    .w(size)
+    .h(size)
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(6)
+    .text_color(color)
+    .when(state === "on", (e) => e.bg(t.selected))
+    .when(state === "danger", (e) => e.bg(tint(t.ansi1, "30")))
+    .tooltip(tip)
+    .accessibility_label(tip)
+    // As in `button`, the press is the button's own.
+    .when(click !== null, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover).text_color(state === "rest" ? t.foreground : color)).active((s) => s.bg(t.selected)).on_click((_e, cx) => {
+      cx.stop_propagation();
+      click?.();
+    }))
+    .when(click === null, (e) => e.opacity(0.4))
+    .child(svg(drawing(icon)).size(16).flex_none().text_color(color));
+}
+
+// One of a record's buttons (rows.ts `DockButton`): an icon alone, or its words with the icon before them. The tooltip is `tip` or
+// the label, with the key that does the same in brackets.
+export function recordButton(id: string, b: DockButton, t: Theme, dispatch: Dispatch, size = 24): Element {
+  const click = b.off ? null : () => dispatch(b.msg);
+  // A `tip` is a reason the button is off or a count, so the key is not added to it.
+  const tip = b.tip !== undefined || b.key === undefined ? (b.tip ?? b.label) : `${b.label} (${b.key})`;
+  if (b.icon !== undefined && b.iconOnly === true) return iconButton(id, b.icon, tip, b.danger ? "danger" : b.accent === true ? "on" : "rest", t, click, size);
+  return button(id, b.label, b.accent === true, t, click, b.danger, b.icon, b.icon === undefined ? undefined : tip);
+}
+
+// A choice of one among a few words in a single track. The chosen segment is lit; one with no `click` is off, and its tooltip says why.
+export type Segment = { id: string; label: string; tip: string; on: boolean; click: (() => void) | null };
+export function segmented(id: string, options: Segment[], t: Theme): Element {
+  return h_flex()
+    .id(id)
+    .h(28)
+    .flex_none()
+    .p(2)
+    .gap(2)
+    .items_center()
+    .rounded(7)
+    .border_1()
+    .border_color(t.border)
+    .children(
+      options.map((o) =>
+        div()
+          .id(o.id)
+          .h(22)
+          .px(10)
+          .flex()
+          .items_center()
+          .rounded(5)
+          .text_size(11)
+          .text_color(o.on ? t.foreground : t.muted)
+          .when(o.on, (e) => e.bg(t.selected))
+          .tooltip(o.tip)
+          .accessibility_label(o.tip)
+          .when(o.click !== null, (e) => e.cursor_pointer().when(!o.on, (x) => x.hover((s) => s.bg(t.hover))).on_click((_e, cx) => {
+            cx.stop_propagation();
+            o.click?.();
+          }))
+          .when(o.click === null, (e) => e.opacity(0.4))
+          .child(o.label),
+      ),
+    );
 }
 
 // A theme colour by the name rows.ts chose; a name the theme lacks is the plain foreground.
@@ -101,7 +182,7 @@ function body(item: BodyItem, t: Theme, dispatch: Dispatch): Element {
         .children(item.lines.map((line) => div().min_h(16).text_size(12).text_color(t.foreground).child(line === "" ? " " : line)))
         // heightOf counts this row: 4 above, 24 a button, 6 between rows when it wraps.
         .when(item.buttons.length > 0, (e) =>
-          e.child(h_flex().flex_wrap().gap(6).pt(4).children(item.buttons.map((b) => button(`card-${item.id}-${b.id}`, b.label, false, t, () => dispatch(b.msg), b.danger)))),
+          e.child(h_flex().flex_wrap().gap(6).pt(4).children(item.buttons.map((b) => recordButton(`card-${item.id}-${b.id}`, b, t, dispatch)))),
         ),
     ));
 }
@@ -296,7 +377,7 @@ export function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element
       .child(div().font_semibold().text_color(pick(WARN, t)).child("Several agents match this folder. Send to which?"))
       .children(pickerOptions(m.picker).map((b) => h_flex().child(button(`dock-${b.id}`, b.label, false, t, () => dispatch(b.msg)))));
   }
-  const btn = (b: DockButton): Element => button(`dock-${b.id}`, b.label, b.accent === true, t, b.off ? null : () => dispatch(b.msg), b.danger);
+  const btn = (b: DockButton): Element => recordButton(`dock-${b.id}`, b, t, dispatch);
   const ask = confirmRow(m);
   if (ask !== null) {
     return wrap
@@ -547,13 +628,33 @@ export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui:
         .child(div().text_size(11).text_color(t.ansi2).child(`+${sum.add}`))
         .child(div().text_size(11).text_color(t.ansi1).child(`-${sum.del}`))
         .child(div().flex_1())
-        .children([...sidebarButtons(m), layoutButton(m)].map((b) => button(b.id, b.label, false, t, () => dispatch(b.msg))))
-        .child(button("spec-worktree", "Working tree", m.spec !== null && m.spec.kind === "worktree", t, () => dispatch({ _tag: "SpecChosen", spec: { kind: "worktree" } })))
+        // One group that wraps as a unit: the choice of what to diff, the agent's message, a rule, and the four icons.
         .child(
-          button("spec-branch", base === null ? "Branch" : `Branch ${base}`, m.spec !== null && m.spec.kind === "branch", t, base === null ? null : () => dispatch({ _tag: "SpecChosen", spec: { kind: "branch", base } })),
-        )
-        .child(button("view-message", "Agent message", false, t, () => dispatch({ _tag: "ViewChosen", view: "message" })))
-        .child(button("refresh", "Refresh", false, t, () => dispatch({ _tag: "Triggered", source: "refresh" }))),
+          h_flex()
+            .flex_none()
+            .gap(8)
+            .items_center()
+            .child(
+              segmented(
+                "spec",
+                [
+                  { id: "spec-worktree", label: "Working tree", tip: "Working tree", on: m.spec !== null && m.spec.kind === "worktree", click: () => dispatch({ _tag: "SpecChosen", spec: { kind: "worktree" } }) },
+                  {
+                    id: "spec-branch",
+                    label: "Branch",
+                    tip: base === null ? "No base branch found" : `Branch ${base}`,
+                    on: m.spec !== null && m.spec.kind === "branch",
+                    click: base === null ? null : () => dispatch({ _tag: "SpecChosen", spec: { kind: "branch", base } }),
+                  },
+                ],
+                t,
+              ),
+            )
+            .child(button("view-message", "Agent message", false, t, () => dispatch({ _tag: "ViewChosen", view: "message" })))
+            .child(div().w(1).h(16).flex_none().bg(t.border))
+            .children([...sidebarButtons(m), layoutButton(m)].map((b) => iconButton(b.id, b.icon, b.label, b.on ? "on" : "rest", t, () => dispatch(b.msg))))
+            .child(iconButton("refresh", "refresh", "Refresh", "rest", t, () => dispatch({ _tag: "Triggered", source: "refresh" }))),
+        ),
     )
     .when(m.banner !== null, (e) => e.child(div().px(12).py(6).text_size(12).text_color(t.ansi1).child(m.banner ?? "")))
     .when(m.status !== null, (e) => e.child(div().px(12).py(4).text_size(11).text_color(pick(WARN, t)).child(m.status ?? "")))

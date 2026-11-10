@@ -6,7 +6,7 @@ import { messageItems, sendButton, viewButton } from "./message.ts";
 import type { MessageItem } from "./message.ts";
 import { CARD_W, GUTTER_W, PLUS, ROW, WARN } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
-import { button, dockBar } from "./view.ts";
+import { button, dockBar, iconButton } from "./view.ts";
 import type { Theme, Ui } from "./view.ts";
 
 type Dispatch = (msg: Msg) => void;
@@ -72,8 +72,8 @@ function card(i: Extract<MessageItem, { kind: "card" }>, t: Theme, dispatch: Dis
             .gap(6)
             .items_center()
             .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(11).text_color(t.accent).child(i.label))
-            .child(button(`msg-edit-${i.id}`, "Edit", false, t, () => dispatch({ _tag: "MessageCommentAction", id: i.id, action: "edit" })))
-            .child(button(`msg-delete-${i.id}`, "Delete", false, t, () => dispatch({ _tag: "MessageCommentAction", id: i.id, action: "delete" }))),
+            .child(iconButton(`msg-edit-${i.id}`, "pencil", "Edit", "rest", t, () => dispatch({ _tag: "MessageCommentAction", id: i.id, action: "edit" }), 24))
+            .child(iconButton(`msg-delete-${i.id}`, "trash", "Delete", "danger", t, () => dispatch({ _tag: "MessageCommentAction", id: i.id, action: "delete" }), 24)),
         )
         .children(i.body.map((text) => div().min_h(16).text_size(12).text_color(t.foreground).child(text === "" ? " " : text))),
     );
@@ -111,8 +111,8 @@ export function drawMessage(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Ele
         .when(mv.data !== null, (e) => e.child(div().text_size(11).text_color(t.muted).child(`${mv.data?.agent ?? ""}, ${mv.data?.status ?? ""}`)))
         .child(div().flex_1())
         .child(button(swap.id, swap.label, false, t, () => dispatch(swap.msg)))
-        .child(button("message-refresh", "Refresh", false, t, mv.loading ? null : () => dispatch({ _tag: "MessageRefreshed" })))
-        .child(button("message-send", send.label, !send.off, t, send.off ? null : () => dispatch({ _tag: "MessageSendClicked" }))),
+        .child(iconButton("message-refresh", "refresh", mv.loading ? "Reading the message..." : "Refresh", "rest", t, mv.loading ? null : () => dispatch({ _tag: "MessageRefreshed" })))
+        .child(button("message-send", send.label, !send.off, t, send.off ? null : () => dispatch({ _tag: "MessageSendClicked" }), false, "send")),
     )
     .when(mv.status !== null, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t[WARN] ?? t.foreground).child(mv.status ?? "")))
     .when(mv.loading || waiting, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Reading the agent's message...")))

@@ -421,16 +421,17 @@ const who = (author: string, you: string): string => (author === "user" ? you : 
 // last comment has them; Edit and Delete only the user's own comment.
 function cardButtons(thread: Thread, comment: Comment, last: boolean): DockButton[] {
   const out: DockButton[] = [];
-  const add = (id: string, label: string, msg: Msg, danger = false): void => void out.push({ id, label, msg, danger, off: false });
-  add("reply", "Reply", { _tag: "ThreadAction", id: comment.id, action: "reply" });
+  // Every card button is an icon: the label and the key are its tooltip.
+  const add = (id: string, label: string, icon: string, msg: Msg, key?: string, danger = false): void => void out.push({ id, label, msg, danger, off: false, icon, iconOnly: true, key });
+  add("reply", "Reply", "reply", { _tag: "ThreadAction", id: comment.id, action: "reply" }, "r");
   if (last) {
-    if (thread.status === "open") add("resolve", "Resolve", { _tag: "ThreadAction", id: comment.id, action: "resolve" });
-    else add("reopen", "Reopen", { _tag: "ThreadAction", id: comment.id, action: "reopen" });
-    if (thread.status === "open" && !thread.unsent) add("resend", "Resend", { _tag: "SendClicked", threads: [thread.id] });
+    if (thread.status === "open") add("resolve", "Resolve", "check", { _tag: "ThreadAction", id: comment.id, action: "resolve" }, "x");
+    else add("reopen", "Reopen", "undo", { _tag: "ThreadAction", id: comment.id, action: "reopen" }, "x");
+    if (thread.status === "open" && !thread.unsent) add("resend", "Resend", "send", { _tag: "SendClicked", threads: [thread.id] });
   }
   if (comment.author === "user") {
-    add("edit", "Edit", { _tag: "ThreadAction", id: comment.id, action: "edit" });
-    add("delete", "Delete", { _tag: "ThreadAction", id: comment.id, action: "delete" }, true);
+    add("edit", "Edit", "pencil", { _tag: "ThreadAction", id: comment.id, action: "edit" }, "e");
+    add("delete", "Delete", "trash", { _tag: "ThreadAction", id: comment.id, action: "delete" }, "d", true);
   }
   return out;
 }
@@ -547,13 +548,13 @@ export const EDITOR_TEXT = 108;
 export const EDITOR_H = 12 + 12 + 16 + 4 + EDITOR_TEXT + 4 + 16 + 4 + 24;
 
 // The height of a comment's button row when the card's text is `avail` wide: the buttons' estimated widths, wrapped.
-function buttonsHeight(buttons: DockButton[], avail: number): number {
+export function buttonsHeight(buttons: DockButton[], avail: number): number {
   if (buttons.length === 0) return 0;
   // The rows a wrapping flex row makes: a button goes on the next row when it does not fit after the ones before it.
   let rows = 1;
   let used = 0;
   for (const b of buttons) {
-    const w = b.label.length * CHAR_W + 18;
+    const w = b.iconOnly === true ? BTN_H : b.label.length * CHAR_W + 18;
     if (used > 0 && used + BTN_GAP + w > avail) {
       rows++;
       used = w;
@@ -966,8 +967,10 @@ export function editorTitle(e: Editor): string {
   return `Draft note - ${e.anchor === null ? "" : anchorLabel(e.anchor)}`;
 }
 
-// danger is a red button that destroys something; accent is the main, harmless one of a question.
-export type DockButton = { id: string; label: string; msg: Msg; danger: boolean; off: boolean; accent?: boolean };
+// danger is a red button that destroys something; accent is the lit one: the main, harmless button of a question, the send, or a
+// toggle that is on. `icon` names a drawing in `icons/` (the picker's and the question's buttons keep their words and have none).
+// `iconOnly` draws the icon alone, with `label` as its tooltip; `tip` replaces the label there, and `key` is the key that does the same.
+export type DockButton = { id: string; label: string; msg: Msg; danger: boolean; off: boolean; accent?: boolean; icon?: string; iconOnly?: boolean; tip?: string; key?: string };
 
 // Threads with a user comment that no send carried: the ones in the files, and the ones not in the diff.
 export const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
@@ -1027,7 +1030,7 @@ export type DockNote = { text: string; color: string };
 
 export function dock(m: Model): { label: string; buttons: DockButton[]; actions: DockButton[]; note: DockNote | null } {
   const buttons: DockButton[] = [];
-  const add = (id: string, label: string, msg: Msg, danger = false): void => void buttons.push({ id, label, msg, danger, off: false });
+  const add = (id: string, label: string, icon: string, msg: Msg): void => void buttons.push({ id, label, msg, danger: false, off: false, icon });
   const hit = findComment(m.files, m.state, m.focus);
   const picked = m.selection === null ? null : (m.files.get(m.selection.path) ?? null);
   let label = "Drag over lines to select them, [+] to comment";
@@ -1038,21 +1041,21 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
     label = `${thread.id}${comment.id === thread.id ? "" : ` / ${comment.id}`}`;
   }
   const shown = m.selected === null ? undefined : summaryOf(m, m.selected);
-  if (shown !== undefined) add("file", "Comment on file", { _tag: "FileCommentClicked" });
+  if (shown !== undefined) add("file", "Comment on file", "comment-plus", { _tag: "FileCommentClicked" });
   // What acts on the whole review, or on the file shown.
   const unsent = unsentCount(m.state);
   const none = stops(m).all.length === 0;
   const archivable = archivableCount(m.state);
-  const actions: DockButton[] = [
-    { id: "prev-thread", label: "Previous comment", msg: { _tag: "ThreadJumped", forward: false }, danger: false, off: none },
-    { id: "next-thread", label: "Next comment", msg: { _tag: "ThreadJumped", forward: true }, danger: false, off: none },
-    { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", msg: { _tag: "SendClicked" }, danger: false, off: m.sending },
-    { id: "archive", label: archivable > 0 ? `Archive ${archivable}` : "Archive", msg: { _tag: "ArchiveClicked" }, danger: false, off: m.inFlight || archivable === 0 },
-  ];
-  if (shown !== undefined) actions.push({ id: "viewed", label: shown.viewed ? "Mark unviewed" : "Mark viewed", msg: { _tag: "ViewedClicked", path: shown.path, viewed: !shown.viewed }, danger: false, off: false });
   // Why Archive is off when threads are resolved: the agent's resolve is unread, and archive waits for the user to see it.
   const unread = unreadCount(m.state);
   const note = archivable === 0 && unread > 0 ? { text: `Nothing to archive yet: ${unread} resolved by the agent ${unread === 1 ? "is" : "are"} unread (marked new)`, color: "dim" } : null;
+  const actions: DockButton[] = [
+    { id: "prev-thread", label: "Previous comment", icon: "arrow-up", iconOnly: true, key: "shift+n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: false }, danger: false, off: none },
+    { id: "next-thread", label: "Next comment", icon: "arrow-down", iconOnly: true, key: "n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: true }, danger: false, off: none },
+    { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", icon: "send", accent: true, tip: unsent > 0 ? `Send ${plural(unsent, "unsent comment", "unsent comments")}` : "Send", msg: { _tag: "SendClicked" }, danger: false, off: m.sending },
+    { id: "archive", label: archivable > 0 ? `Archive ${archivable}` : "Archive", icon: "archive", tip: archivable > 0 ? `Archive ${plural(archivable, "resolved thread", "resolved threads")}` : (note?.text ?? "No resolved threads to archive"), msg: { _tag: "ArchiveClicked" }, danger: false, off: m.inFlight || archivable === 0 },
+  ];
+  if (shown !== undefined) actions.push({ id: "viewed", label: shown.viewed ? "Mark unviewed" : "Mark viewed", icon: "circle-check", iconOnly: true, accent: shown.viewed, msg: { _tag: "ViewedClicked", path: shown.path, viewed: !shown.viewed }, danger: false, off: false });
   return { label, buttons, actions, note };
 }
 
@@ -1151,18 +1154,19 @@ export function sidebarRows(files: FileSummary[], query = ""): SideRow[] {
   return out;
 }
 
-export type HeaderButton = { id: string; label: string; msg: Msg };
+// A header button is always an icon; `label` is its tooltip and says what a click does, `on` is a toggle that is lit.
+export type HeaderButton = { id: string; label: string; icon: string; on: boolean; msg: Msg };
 
 // The two buttons for the sidebar. Moving it is offered only while it shows, since nothing would change on screen.
 export function sidebarButtons(m: Model): HeaderButton[] {
-  const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", msg: { _tag: "SidebarToggled" } }];
-  if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move right" : "Move left", msg: { _tag: "SidebarFlipped" } });
+  const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", icon: m.panel.side === "left" ? "panel-left" : "panel-right", on: m.panel.open, msg: { _tag: "SidebarToggled" } }];
+  if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move right" : "Move left", icon: "swap", on: false, msg: { _tag: "SidebarFlipped" } });
   return buttons;
 }
 
 // The button that forces the other layout than the one drawn, until pressed again.
 export function layoutButton(m: Model): HeaderButton {
-  return { id: "layout-toggle", label: isSplit(m) ? "Unified" : "Side by side", msg: { _tag: "LayoutToggled" } };
+  return { id: "layout-toggle", label: isSplit(m) ? "Unified" : "Side by side", icon: "columns", on: isSplit(m), msg: { _tag: "LayoutToggled" } };
 }
 
 // What sits under the header, left to right: the sidebar on its side, or left out when hidden, and the diff.

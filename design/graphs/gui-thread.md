@@ -11,7 +11,7 @@ written below.
 -> ThreadAction { action, id }                         user action
      id is a comment id. A card is a head item and one item per comment, so a click on the head is `toggle` with
      the root's id and a click on a comment is `focus`. The buttons are on the card, at the bottom of each comment
-     (`rows.cardButtons`), and name that comment's id; a press on one stops there and is not also a `focus`. Reply is
+     (`rows.cardButtons`; icons alone, the word and key in the tooltip), and name that comment's id; a press on one stops there and is not also a `focus`. Reply is
      on every comment, resolve or reopen and resend on the thread's last, edit and delete on the user's own.
      reply, resolve and reopen act on the thread of that comment, edit and delete on the comment itself.
   -> update(model, ThreadAction)                       (pure)
@@ -55,7 +55,7 @@ written below.
   -> editor closed, Triggered
 ```
 
--> ThreadJumped { forward }                            the Previous and Next comment buttons, and n and shift+n
+-> ThreadJumped { forward }                            the Previous and Next comment icon buttons, and n and shift+n
      the keys are mapped by rows.panelKey, which says nothing while the editor, a question or the picker is up
   -> update(model, ThreadJumped)                       (pure)
        editor open                                     status "finish or cancel the comment first", nothing else

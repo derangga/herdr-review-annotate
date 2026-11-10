@@ -27,7 +27,7 @@ test("the layout follows the width, and a forced layout beats it", () => {
 
 test("the header button names the other layout, and pressing it forces that layout and clears the hover", () => {
   const m = steps(split(), { _tag: "Hovered", ...msg("src/a.rs", 3, "new"), on: true }).model;
-  assert.deepEqual(layoutButton(m), { id: "layout-toggle", label: "Unified", msg: { _tag: "LayoutToggled" } });
+  assert.deepEqual(layoutButton(m), { id: "layout-toggle", label: "Unified", icon: "columns", on: true, msg: { _tag: "LayoutToggled" } });
   const once = steps(m, { _tag: "LayoutToggled" }).model;
   assert.equal(once.split, false);
   assert.equal(once.hover, null);

@@ -161,10 +161,10 @@ index in it counts into the `rows` of the same `file` reply.
   tick, so a screen of new cards is a short queue and not a burst. The write is the one opening the card sends, run
   by `runner.ts` like any other, never from a draw. Opening a card also adds its id to `seenSent`. A failed seen keeps its
   handling (nothing shown) and is not retried by looking; opening the card sends it again.
-- Next and previous comment. `ThreadJumped { forward }` comes from two buttons, `Previous comment` and `Next
-  comment`, and from the keys. The buttons are the first two of the second row of the bar under the stream, with
+- Next and previous comment. `ThreadJumped { forward }` comes from two icon buttons (`arrow-up`, `arrow-down`; tooltips `Previous
+  comment (shift+n)` and `Next comment (n)`) and from the keys. The buttons are the first two of the second row of the bar under the stream, with
   Send, Archive and Mark viewed: the header already wraps on a narrow panel, and the bar is where the other
-  review-wide buttons are. They are off when the review has no thread, and the bar is replaced by the editor or
+  review-wide buttons are. They are off when the review has no thread (the tooltip then says `No comments yet`), and the bar is replaced by the editor or
   the question while those are up, so they are not there then. The row wraps when it is narrow.
   - The order is the TUI's. The threads not in the diff come first (they are drawn above every file), then
     the files in the sidebar's order, and in a file the cards as they are drawn: the ones with no row, then
@@ -535,10 +535,25 @@ that faces the diff. The bar under the diff (selection, review-wide buttons, pic
 the diff pane, so it spans the diff and not the sidebar. A fixed width was chosen over a share of the panel because
 a name needs the same room in a wide panel as in a narrow one.
 
-The header holds two buttons for the sidebar, from `rows.sidebarButtons`, left of the spec buttons: `Hide files` or
-`Show files` (`SidebarToggled`), and `Move right` or `Move left` (`SidebarFlipped`). The second is drawn only while the
-sidebar shows, since moving a hidden column changes nothing on screen. Both change `panel` at once and send `Cmd.SavePanel`.
-The header wraps its buttons onto a second line when the panel is too narrow for them.
+The header holds, right of `Review` and the counts and in one group that wraps as a unit: a segmented control for what is diffed
+(`Working tree`, `Branch`, with the base in the tooltip, and off with `No base branch found` when there is none), the `Agent message`
+text button, a 1 px rule, and four icon buttons from `rows.sidebarButtons`, `rows.layoutButton` and the refresh: the files toggle
+(`panel-left` or `panel-right` for the side the sidebar is on, lit while it shows; `SidebarToggled`), the move (`swap`, drawn only while the
+sidebar shows, since moving a hidden column changes nothing on screen; `SidebarFlipped`), the layout (`columns`, lit while side by side is drawn;
+`LayoutToggled`) and `refresh`. The first three change `panel` or `split` at once, and the first two send `Cmd.SavePanel`.
+The group moves to a second line when the panel is too narrow for it, never between an icon and its neighbour.
+
+Which control is an icon: a toggle, a step or a repeat action (the header's four, the comment arrows, Mark viewed, every button on a card, Edit and
+Delete on a message card, Refresh in both views). A control that starts a flow, carries a count or answers a question keeps its words:
+`Agent message`, `Comment on file`, `Send n` and `Archive n` (each with a leading icon, Send lit as the main action), the editor's Save and Cancel,
+the confirm row and the agent picker. `view.iconButton` draws an icon: a 28 px square in the header and 24 px in the bar, on cards and in the
+message view, `t.muted` at rest, a `t.hover` ground on hover, `t.selected` while pressed (`.active`) or lit, `t.accent` for the lit icon and
+`t.ansi1` on a red ground for Delete, 40% opacity when off. Its tooltip is required, is also the screen-reader name, and carries the key where
+there is one (`Reply (r)`, `Resolve (x)`, `Edit (e)`, `Delete (d)`). A record in `rows.ts` (`DockButton`, `HeaderButton`) carries `icon`
+(a drawing in `icons/`, listed in `icons.UI_ICONS`, not in the file-type maps) and, for the dock and cards, `iconOnly`, `tip` and `key`;
+`label` stays the plain name and is the tooltip when there is no `tip`. `rows.buttonsHeight` counts an icon-only button as `BTN_H` wide,
+so a card's height does not change with the icons. Nothing here animates: the sidebar hides at once because a width transition would send
+a `Resized` per frame, and the segmented control has no sliding mark because a spec change reloads the diff on the main thread.
 A button that is off has no click handler and draws at 40% opacity, so it reads as off at a glance.
 
 ### The gutter and the [+]

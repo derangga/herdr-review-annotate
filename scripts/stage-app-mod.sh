@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the herdr-app mod and the release binary, and copies both to the mod's own folder:
-# ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review (the binary under bin/, the file-type drawings under icons/). Nothing else under
+# ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review (the binary under bin/, the file-type and button drawings under icons/). Nothing else under
 # the app folder is touched. Saving any file in the mod folder reloads the mod, so main.js goes last.
 set -euo pipefail
 
