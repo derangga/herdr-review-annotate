@@ -3313,6 +3313,29 @@ fn a_click_on_a_narrowed_row_selects_the_file_drawn_there() {
 }
 
 #[test]
+fn clicking_the_stream_while_the_query_takes_keys_gives_the_keys_back_and_keeps_the_query() {
+    let fixture = Fixture::new("filter-click-stream");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, chars("/vw"));
+    assert!(app.view.filter.as_ref().unwrap().typing);
+    drawn(&mut app, 80);
+    // The sidebar is the first 20 columns, so column 40 is the stream.
+    app.mouse(MouseEvent {
+        kind: event::MouseEventKind::Down(event::MouseButton::Left),
+        column: 40,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    });
+    let filter = app.view.filter.as_ref().unwrap();
+    assert!(!filter.typing);
+    assert_eq!(filter.query, "vw");
+    let cursor = app.view.cursor;
+    press(&fixture, &mut app, [key('j')]);
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "vw");
+    assert_eq!(app.view.cursor, cursor + 1);
+}
+
+#[test]
 fn the_filter_key_shows_a_hidden_sidebar_and_a_narrow_pane_opens_nothing() {
     let fixture = Fixture::new("filter-hidden");
     let mut app = filter_pane(&fixture);

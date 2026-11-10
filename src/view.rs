@@ -1781,6 +1781,9 @@ impl View {
                 if row < self.stream.len() {
                     self.drag = !plus_clicked;
                     self.panel = Panel::Stream;
+                    if let Some(filter) = &mut self.filter {
+                        filter.typing = false;
+                    }
                     self.move_to(row);
                     if matches!(self.stream.file_row(row), Some(FileRow::Pair { .. })) {
                         let left = split_widths(usize::from(areas.stream.width)).0;

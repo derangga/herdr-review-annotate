@@ -70,6 +70,9 @@ The mouse wheel scrolls (the sideways wheel scrolls the code) and a click moves 
     selects the file drawn on its row. A cursor on a file that does not match has no highlighted row, and
     `down` goes to the first match after that file and `up` to the last match before it. The mouse never
     changes the filter.
+  - A click on a row of the stream while the query takes keys ends the typing, as `enter` does, and keeps the
+    query. The keys are the keymap's again and the cursor is where the click put it. A click in the sidebar
+    leaves the query taking keys.
   - The query is a rounded box of three rows at the top of the sidebar. It is drawn whether or not there
     is a filter, so the user sees that the files can be filtered, and it reads as an input field and not
     as a file. Inside it are a `>` prompt in the accent colour, the text cut from the left so its end stays
