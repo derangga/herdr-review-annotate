@@ -910,6 +910,23 @@ fn escape_leaves_the_editor_without_a_comment_and_an_empty_one_saves_nothing() {
 }
 
 #[test]
+fn a_paste_into_the_message_editor_lands_as_text() {
+    let (_fixture, mut pane) = opened("paste-editor", NOTE);
+    press(&mut pane, "c");
+    pane.paste("one\ttwo");
+    pane.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    assert_eq!(pane.comments[0].body, "one    two");
+}
+
+#[test]
+fn a_paste_with_no_editor_does_nothing() {
+    let (_fixture, mut pane) = opened("paste-none", NOTE);
+    pane.paste("cdSq");
+    assert!(!pane.quit);
+    assert!(pane.compose.is_none() && pane.comments.is_empty());
+}
+
+#[test]
 fn the_editor_is_drawn_under_the_lines_it_comments_on() {
     let (_fixture, mut pane) = opened("editor", NOTE);
     press(&mut pane, "jVj");

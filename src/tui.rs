@@ -13,8 +13,8 @@ use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{
-    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyCode, KeyEvent, KeyEventKind, MouseEvent,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -1075,6 +1075,27 @@ impl App {
         }
     }
 
+    /// A paste. The editor takes it whole, the filter box takes it as typed characters, and every
+    /// other state ignores it, so pasted text never runs an action.
+    pub fn paste(&mut self, text: &str) {
+        if let Some(compose) = &mut self.compose {
+            compose.editor.paste(text);
+        } else if self.prompt.is_none()
+            && !self.view.help
+            && self
+                .view
+                .filter
+                .as_ref()
+                .is_some_and(|filter| filter.typing)
+            && let Some(diff) = &self.diff
+        {
+            for character in text.chars().filter(|character| !character.is_control()) {
+                self.view
+                    .filter_key(KeyEvent::from(KeyCode::Char(character)), diff);
+            }
+        }
+    }
+
     /// Apply a key press: to the editor when one is open, else to the help overlay or the keymap.
     pub fn key(&mut self, key: KeyEvent, git: &mut Git) {
         if self.compose.is_some() {
@@ -1603,6 +1624,7 @@ pub fn run_loop<B: Backend>(
             Ok(Some(Event::FocusGained)) if app.compose.is_none() && app.view.select.is_none() => {
                 app.load(git);
             }
+            Ok(Some(Event::Paste(text))) if app.screen == Screen::Review => app.paste(&text),
             Ok(_) => {}
         }
         if input {
@@ -1630,12 +1652,13 @@ impl<F: FnMut()> Drop for Guard<F> {
     }
 }
 
-/// Raw mode off, main screen back, cursor shown, mouse and focus reports off.
+/// Raw mode off, main screen back, cursor shown, mouse, focus and paste reports off.
 pub(crate) fn restore_terminal() {
     let _ = execute!(
         io::stdout(),
         DisableMouseCapture,
         DisableFocusChange,
+        DisableBracketedPaste,
         LeaveAlternateScreen,
         ratatui::crossterm::cursor::Show
     );
@@ -1658,7 +1681,8 @@ pub(crate) fn enter_terminal() -> io::Result<()> {
         io::stdout(),
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableFocusChange
+        EnableFocusChange,
+        EnableBracketedPaste
     )
 }
 

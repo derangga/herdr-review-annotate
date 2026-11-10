@@ -184,6 +184,17 @@ impl Editor {
         Outcome::Continue
     }
 
+    /// Insert pasted text at the cursor in one step. Line endings become `\n`, a tab becomes four
+    /// spaces and control characters are removed, as for stored text.
+    pub fn paste(&mut self, text: &str) {
+        self.status.clear();
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let chars = sanitize_terminal_text(&text).chars().collect::<Vec<_>>();
+        let end = self.cursor + chars.len();
+        self.comment.splice(self.cursor..self.cursor, chars);
+        self.cursor = end;
+    }
+
     fn save(&mut self) -> Outcome {
         let text = self.text();
         if text.is_empty() {
@@ -327,6 +338,30 @@ mod tests {
         editor.handle_key(KeyEvent::from(KeyCode::Left));
         editor.handle_key(KeyEvent::from(KeyCode::Backspace));
         assert_eq!(editor.comment, ['a']);
+    }
+
+    #[test]
+    fn a_paste_inserts_at_the_cursor_in_one_step() {
+        let mut editor = Editor::default();
+        type_text(&mut editor, "ac");
+        editor.handle_key(KeyEvent::from(KeyCode::Left));
+        editor.paste("b");
+        assert_eq!(typed(&editor), "abc");
+        assert_eq!(editor.cursor, 2);
+    }
+
+    #[test]
+    fn a_paste_turns_tabs_into_spaces_and_normalises_line_endings() {
+        let mut editor = Editor::default();
+        editor.paste("a\tb\r\nc\rd");
+        assert_eq!(typed(&editor), "a    b\nc\nd");
+    }
+
+    #[test]
+    fn a_paste_drops_escape_sequences() {
+        let mut editor = Editor::default();
+        editor.paste("x\u{1b}[31my");
+        assert!(!editor.comment.contains(&'\u{1b}'));
     }
 
     #[test]

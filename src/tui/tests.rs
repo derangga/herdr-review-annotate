@@ -1284,6 +1284,52 @@ fn cancelling_the_editor_writes_nothing() {
     assert!(app.review.threads.is_empty());
 }
 
+#[test]
+fn a_paste_into_the_editor_lands_as_text() {
+    let fixture = Fixture::new("paste-editor");
+    let mut app = opened(&fixture, patch_text());
+    press(&fixture, &mut app, [key('c')]);
+    app.paste("one\ttwo");
+    press(&fixture, &mut app, [ctrl_s()]);
+    assert_eq!(app.review.threads[0].root.body, "one    two");
+}
+
+#[test]
+fn a_paste_with_no_editor_runs_no_action() {
+    let fixture = Fixture::new("paste-none");
+    let mut app = opened(&fixture, patch_text());
+    app.paste("dSxq");
+    assert!(!app.quit);
+    assert!(app.compose.is_none());
+    assert!(app.prompt.is_none());
+    assert!(app.review.threads.is_empty());
+    assert!(!fixture.dir().join("review.jsonl").exists());
+}
+
+#[test]
+fn a_paste_into_the_filter_box_narrows_the_sidebar() {
+    let fixture = Fixture::new("paste-filter");
+    let mut app = filter_pane(&fixture);
+    press(&fixture, &mut app, [key('/')]);
+    app.paste("vw");
+    assert_eq!(app.view.filter.as_ref().unwrap().query, "vw");
+    assert_eq!(sidebar(&mut app)[0], "> vw 2/4");
+}
+
+#[test]
+fn the_loop_hands_a_paste_to_the_editor() {
+    let fixture = Fixture::new("paste-loop");
+    let mut app = opened(&fixture, patch_text());
+    drive(
+        &fixture,
+        &mut app,
+        vec![Some(key('c')), Some(Event::Paste("hi".into()))],
+        |_| {},
+    );
+    // Stopping the loop saves a draft that has text, so the paste shows up as the saved comment.
+    assert_eq!(app.review.threads[0].root.body, "hi");
+}
+
 /// The pane drawn at `width` by 12, as the rows of the screen and the buffer behind them.
 fn drawn(app: &mut App, width: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     drawn_tall(app, width, 12)

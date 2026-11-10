@@ -59,6 +59,7 @@ This is the only stream in the program. It merges two sources.
     -> no event, and a file on screen is not highlighted to its end?
       -> highlight one slice (below)       R: git, repo dir, budget
     -> key -> Keymap -> Action             (pure)     no binding -> ignored
+    -> paste                               (pure)     editor open -> into the editor, whole; filter box taking keys -> as typed characters; otherwise ignored
     -> apply Action to the app state       R: per action, see the next graphs
   -> store length changed?                 R: dir     E: Io -> escape, warning, retry next tick
     -> read from offset, fold, reload diff

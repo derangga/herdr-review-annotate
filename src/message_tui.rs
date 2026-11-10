@@ -882,6 +882,14 @@ impl Pane {
         }
     }
 
+    /// A paste goes into the editor when it is open and nowhere else, so pasted text never runs
+    /// a key.
+    pub fn paste(&mut self, text: &str) {
+        if let Some(compose) = &mut self.compose {
+            compose.editor.paste(text);
+        }
+    }
+
     /// `reload`: with comments, ask first. Without, load the newest message.
     fn reload(&mut self) {
         if self.comments.is_empty() {
@@ -1589,6 +1597,7 @@ pub fn run_loop<B: Backend>(
             Err(_) => return Exit::Io,
             Ok(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => pane.key(key),
             Ok(Some(Event::Mouse(mouse))) => pane.mouse(mouse),
+            Ok(Some(Event::Paste(text))) => pane.paste(&text),
             Ok(_) => {}
         }
         pane.run_pending(|pane| {

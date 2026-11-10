@@ -64,6 +64,9 @@ Part of the [herdr-review design](../DESIGN.md).
   cursor row, or under the last row of the range a new comment points at when that is lower,
   and above that row when there is no room below. It grows with its text up to two thirds of the stream's
   height. `Ctrl+S` saves and `Esc` cancels.
+- Both panes ask the terminal for bracketed paste. A paste into the editor is inserted whole, with a tab as
+  four spaces and every line ending as `\n`. A paste while the filter box takes keys goes into the query as
+  typed characters. In every other state a paste is ignored, so pasted text never runs an action.
 - The top border reads `Draft note - <path> R<line>` for a new comment: `L` for the old side, `R101-110` for a
   range, and the bare path for a file comment. A path that does not fit is cut from the left with `…`. A reply
   reads `Reply to <id>` and an edit reads `Edit <id>`. The bottom border holds `^S save  Esc cancel` on the
