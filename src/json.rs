@@ -79,6 +79,13 @@ pub struct FileJson {
     pub threads: Vec<ThreadJson>,
 }
 
+/// `files --json`: the `file` reply of each path asked, in the order asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesJson {
+    pub schema: u32,
+    pub files: Vec<FileJson>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RowType {

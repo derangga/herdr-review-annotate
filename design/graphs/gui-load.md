@@ -26,7 +26,8 @@ commands it calls are in [json](json.md).
   -> key differs from the model's?                     E: stale reply -> dropped, the model not touched
      else state replaced, banner cleared, the spec the reply names taken
        a file that left the diff goes from `files`
-       a loaded file whose summary changed, and the files on screen, go into `dirty`: they are fetched again
+       a loaded file whose summary changed goes into `dirty`: it is fetched again (a file on screen whose summary
+       is the same is not, so it keeps its view)
        the selected file stays while it is in the diff, else it is the first
   -> pending? pending = false, inFlight = true, Cmd.Load       a change of key sets pending, so a stale
                                                        reply is followed by the load that was asked for

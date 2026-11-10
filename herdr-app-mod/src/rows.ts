@@ -248,6 +248,22 @@ export function stops(m: Model): { all: Stop[]; top: number } {
   return { all, top };
 }
 
+// `stops(m).all.length === 0` without building the list or sorting a file's threads: a file the stream draws holds one stop per
+// thread, any other file one stop when the summary counts a thread. Kept per `files` while the state and the folds are the same
+// objects, so a hover or a wheel tick does not walk the review again.
+const noStopsMemo = new WeakMap<ReadonlyMap<string, FileView>, { state: State | null; folds: Model["folds"]; none: boolean }>();
+export function noStops(m: Model): boolean {
+  const kept = noStopsMemo.get(m.files);
+  if (kept !== undefined && kept.state === m.state && kept.folds === m.folds) return kept.none;
+  const files = m.state === null ? [] : m.state.files;
+  const none = (m.state === null || m.state.orphans.length === 0) && files.every((f) => {
+    const view = m.files.get(f.path);
+    return view !== undefined && !isFolded(m, f) ? view.threads.length === 0 : f.threads === 0;
+  });
+  noStopsMemo.set(m.files, { state: m.state, folds: m.folds, none });
+  return none;
+}
+
 // Where next or previous comment lands, wrapping round at the ends. From the focused thread it is the one
 // after or before it. With nothing focused it counts from the top of the selected file: next is that file's first
 // thread, previous is the last one before the file. null when the review has no thread.
@@ -755,13 +771,14 @@ export function streamLayout(m: Model, now: number): Stream {
 // streamLayout, kept while nothing it reads changes. A wheel tick, a hover, a drag or a selection changes none of these,
 // so none of them cuts the items and the prefix sums again: only the files, the folds, the open threads, the focus, the
 // width, the files that failed, and the minute (the ages on the cards) do.
-export function layoutCache(): (m: Model, now: number) => Stream {
+export function layoutCache(onRebuild: () => void = () => {}): (m: Model, now: number) => Stream {
   let deps: unknown[] = [];
   let kept: Stream | null = null;
   return (m, now) => {
     const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, m.editor, m.draft, m.view, Math.floor(now / 60000)];
     if (kept !== null && next.every((d, i) => d === deps[i])) return kept;
     deps = next;
+    onRebuild();
     kept = streamLayout(m, now);
     return kept;
   };
@@ -984,9 +1001,15 @@ export const archivableCount = (state: State | null): number => (state === null 
 // What archive leaves only because the agent's resolve is unseen, as the last state said.
 export const unreadCount = (state: State | null): number => (state === null ? 0 : state.unread_resolved);
 
+const unsentMemo = new WeakMap<State, number>();
 export function unsentCount(state: State | null): number {
   if (state === null) return 0;
-  return state.files.reduce((n, f) => n + f.unsent, 0) + state.orphans.filter((t) => t.unsent).length;
+  let n = unsentMemo.get(state);
+  if (n === undefined) {
+    n = state.files.reduce((sum, f) => sum + f.unsent, 0) + state.orphans.filter((t) => t.unsent).length;
+    unsentMemo.set(state, n);
+  }
+  return n;
 }
 
 // The agents a send found for this folder, one button each, and a way out.
@@ -1047,7 +1070,7 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
   if (shown !== undefined) add("file", "Comment on file", "comment-plus", { _tag: "FileCommentClicked" });
   // What acts on the whole review, or on the file shown.
   const unsent = unsentCount(m.state);
-  const none = stops(m).all.length === 0;
+  const none = noStops(m);
   const archivable = archivableCount(m.state);
   // Why Archive is off when threads are resolved: the agent's resolve is unread, and archive waits for the user to see it.
   const unread = unreadCount(m.state);
@@ -1126,13 +1149,13 @@ export function fileMatches(query: string, path: string): boolean {
 
 // How many of the diff's files the query matches, and how many there are: the `2/4` in the box.
 export function filterCount(files: FileSummary[], query: string): { shown: number; total: number } {
-  return { shown: files.filter((f) => fileMatches(query, f.path)).length, total: files.length };
+  return sidebarOf(files, query).count;
 }
 
 // Where Enter in the box sends the file shown: the first match, unless the file shown matches already or
 // nothing does.
 export function filterPick(m: Model): string | null {
-  const hits = (m.state === null ? [] : m.state.files).filter((f) => fileMatches(m.filter, f.path));
+  const hits = sidebarOf(m.state === null ? NO_FILES : m.state.files, m.filter).hits;
   return hits.length === 0 || hits.some((f) => f.path === m.selected) ? null : (hits[0]?.path ?? null);
 }
 
@@ -1141,19 +1164,36 @@ export function filterPick(m: Model): string | null {
 // gets a second heading. A file the query does not match is left out, and so is the heading of a folder with no
 // match. Cutting a name that is too long is left to the drawing.
 export function sidebarRows(files: FileSummary[], query = ""): SideRow[] {
-  const out: SideRow[] = [];
+  return sidebarOf(files, query).rows;
+}
+
+export const NO_FILES: FileSummary[] = [];
+
+// What the files and the query give, found once: the matches (fileMatches runs once per path), the sidebar's rows, the `2/4` count
+// and the box's info. The sidebar, the box and Enter in it all ask for it on every render, and the answer changes only with the
+// files array or the query, so it is kept for the latest query of each files array. Callers must not change what they get.
+type Sidebar = { query: string; hits: FileSummary[]; rows: SideRow[]; count: { shown: number; total: number }; info: { count: string; none: boolean } };
+const sidebarMemo = new WeakMap<FileSummary[], Sidebar>();
+
+function sidebarOf(files: FileSummary[], query: string): Sidebar {
+  const kept = sidebarMemo.get(files);
+  if (kept !== undefined && kept.query === query) return kept;
+  const hits = files.filter((f) => fileMatches(query, f.path));
+  const rows: SideRow[] = [];
   let last: string | null = null;
-  for (const f of files) {
-    if (!fileMatches(query, f.path)) continue;
+  for (const f of hits) {
     const at = f.path.lastIndexOf("/");
     const dir = at < 0 ? "./" : f.path.slice(0, at + 1);
     if (dir !== last) {
-      out.push({ kind: "dir", key: `d:${out.length}`, text: cleanText(dir) });
+      rows.push({ kind: "dir", key: `d:${rows.length}`, text: cleanText(dir) });
       last = dir;
     }
-    out.push(fileRow(f));
+    rows.push(fileRow(f));
   }
-  return out;
+  const count = { shown: hits.length, total: files.length };
+  const made = { query, hits, rows, count, info: { count: `${count.shown}/${count.total}`, none: count.total > 0 && count.shown === 0 } };
+  sidebarMemo.set(files, made);
+  return made;
 }
 
 // A header button is always an icon; `label` is its tooltip and says what a click does, `on` is a toggle that is lit.
@@ -1179,11 +1219,18 @@ export function paneOrder(m: Model): ("sidebar" | "diff")[] {
 
 // What the sidebar's box shows besides the text: the `n/m` count, and whether the query leaves no file.
 export function filterInfo(m: Model): { count: string; none: boolean } {
-  const { shown, total } = filterCount(m.state === null ? [] : m.state.files, m.filter);
-  return { count: `${shown}/${total}`, none: total > 0 && shown === 0 };
+  return sidebarOf(m.state === null ? NO_FILES : m.state.files, m.filter).info;
 }
 
-export function totals(state: State | null): { files: number; add: number; del: number } {
-  const files = state === null ? [] : state.files;
-  return { files: files.length, add: files.reduce((n, f) => n + f.add, 0), del: files.reduce((n, f) => n + f.del, 0) };
+type Totals = { files: number; add: number; del: number };
+const NO_TOTALS: Totals = { files: 0, add: 0, del: 0 };
+const totalsMemo = new WeakMap<State, Totals>();
+export function totals(state: State | null): Totals {
+  if (state === null) return NO_TOTALS;
+  let sum = totalsMemo.get(state);
+  if (sum === undefined) {
+    sum = { files: state.files.length, add: state.files.reduce((n, f) => n + f.add, 0), del: state.files.reduce((n, f) => n + f.del, 0) };
+    totalsMemo.set(state, sum);
+  }
+  return sum;
 }

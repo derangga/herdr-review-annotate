@@ -8,7 +8,9 @@ import { makeCli } from "./cli.ts";
 import { realHost } from "./host.ts";
 import { listen, open, run, watch } from "./runner.ts";
 import type { Env } from "./runner.ts";
-import { layoutCache, scrolled } from "./rows.ts";
+import { noop, recorderFor } from "./perf.ts";
+import type { Recorder } from "./perf.ts";
+import { layoutCache, scrolled, visibleRange } from "./rows.ts";
 import { initModel, update } from "./update.ts";
 import type { Cmd, Model, Msg } from "./types.ts";
 import { draw } from "./view.ts";
@@ -26,12 +28,15 @@ export default class ReviewView extends View {
   nav!: FocusHandle;
   textarea: TextareaState | null = null;
   filter!: InputState;
+  // Timing: a recorder that does nothing until init reads `perf: true` from the props.
+  perf: Recorder = noop();
   // The stream's items, heights and prefix sums, kept while nothing they are built from changes (a wheel tick, a hover and a
   // drag change none of it).
-  layout = layoutCache();
+  layout = layoutCache(() => this.perf.rebuild());
 
   init(_props: unknown, cx: AsyncContext): void {
     this.cx = cx;
+    this.perf = recorderFor(realHost);
     this.handle = cx.focus_handle();
     this.nav = cx.focus_handle();
     // The filter box. Its text is mirrored into the model on every change, and focus and blur say whether a key
@@ -61,6 +66,7 @@ export default class ReviewView extends View {
 
   dispatch(msg: Msg): void {
     if (this.closed) return;
+    const t0 = this.perf.start();
     const before = this.model;
     let [model, cmds] = update(before, msg);
     // The offset, the stream's height and the files on screen follow the stream whatever moved it: a wheel tick, the
@@ -74,6 +80,7 @@ export default class ReviewView extends View {
       }
     }
     this.model = model;
+    this.perf.dispatch(t0);
     if (model.editor !== before.editor) this.syncEditor();
     if ((model.confirm !== null && model.confirm !== before.confirm) || (model.confirmArchive && !before.confirmArchive)) this.focusAsk();
     // The panel takes the keyboard back once a jump is asked, and once the editor or a question is closed.
@@ -138,12 +145,21 @@ export default class ReviewView extends View {
   }
 
   render(_cx: Context): Element {
-    return draw(this.model, this.layout(this.model, Date.now()), realHost.theme(), (msg) => this.dispatch(msg), { handle: this.handle, nav: this.nav, textarea: this.textarea, filter: this.filter });
+    const t0 = this.perf.start();
+    const stream = this.layout(this.model, Date.now());
+    const el = draw(this.model, stream, realHost.theme(), (msg) => this.dispatch(msg), { handle: this.handle, nav: this.nav, textarea: this.textarea, filter: this.filter });
+    if (this.perf.on) {
+      // The agent-message view draws no stream.
+      const { first, end } = this.model.view === "message" ? { first: 0, end: 0 } : visibleRange(stream, this.model.offset, this.model.height);
+      this.perf.render(t0, end - first);
+    }
+    return el;
   }
 
   // Bounded: set the flag and return. The watch loops end after their next wake.
   close(_cx: AsyncContext): void {
     this.closed = true;
+    this.perf.flush();
     this.textarea?.release();
     this.textarea = null;
     this.filter.release();

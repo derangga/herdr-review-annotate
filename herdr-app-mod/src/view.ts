@@ -4,7 +4,7 @@ import { div, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, cursorOn, dock, EDITOR_H, EDITOR_TEXT, editorKey, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, viewedClick, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
+import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, cursorOn, dock, EDITOR_H, EDITOR_TEXT, editorKey, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, NO_FILES, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, viewedClick, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
 import type { BodyItem, DockButton, EditorItem, FileItem, HeadItem, RowItem, SideRow, Side, SplitItem, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
 import { drawMessage } from "./message-view.ts";
@@ -476,7 +476,7 @@ function sideRow(r: SideRow, m: Model, t: Theme, dispatch: Dispatch): Element {
 // handler, so a click on it does nothing. The column has its own scroll handle and bar, laid over a relative box.
 function sidebar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui, empty: string): Element {
   const left = m.panel.side === "left";
-  const rows = sidebarRows(m.state === null ? [] : m.state.files, m.filter);
+  const rows = sidebarRows(m.state === null ? NO_FILES : m.state.files, m.filter);
   const info = filterInfo(m);
   return v_flex()
     .w(SIDEBAR_W)

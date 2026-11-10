@@ -12,7 +12,7 @@ Part of the [herdr-review design](../DESIGN.md).
 | `MessageError` (`message --json`, `message send`) | One line on stderr, exit 1, and for a delivery `Nothing was sent`. A send file that does not fit the message is `InvalidBatch`, exit 2 | The pane shows it as in [message-review](message-review.md) |
 | `CommandError::NotAllowed` (edit or delete of an agent's comment) | One line on stderr, exit 2 | Cannot occur, the TUI offers the action on the user's comments only |
 | Body file unreadable, a symlink, too long (`--body-file` 16 KiB, `--file` 256 KiB) | `InvalidBody`, one line, exit 2. The file is deleted when it was opened | Not used |
-| `view --set` for a path not in the diff, `file --path` for the same | One line, exit 2 | Not used |
+| `view --set` for a path not in the diff, `file --path` for the same, and any one `files --path` (the whole command fails) | One line, exit 2 | Not used |
 | `Warning` | Printed to stderr, exit 0 | One line under the status line until the next action |
 | Panic | Default hook, exit 101 | Terminal restored first, then the message |
 

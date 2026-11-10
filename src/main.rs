@@ -50,6 +50,9 @@ fn main() -> ExitCode {
         Ok(Command::File { query, path }) => {
             finish(&state::file(&query, &path, &env, run_git_bytes).unwrap_or_else(|f| f.output()))
         }
+        Ok(Command::Files { query, paths }) => finish(
+            &state::files(&query, &paths, &env, run_git_bytes).unwrap_or_else(|f| f.output()),
+        ),
         Ok(Command::Archive { repo, json }) => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             finish(

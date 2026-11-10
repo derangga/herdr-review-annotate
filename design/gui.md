@@ -222,9 +222,9 @@ index in it counts into the `rows` of the same `file` reply.
     `Cmd.LoadFiles`, three files at a time and one command at a time, shared with the state's load by `inFlight` and
     `pending`: a state load goes before more files. `rows.wanted` orders them: the files on screen and the three after
     them, then every file below, then the files above. A file not yet fetched is its header and a placeholder as tall
-    as its diff is guessed to be (`rows.estimateRows`: the changed lines and a hunk's header and context). Each fetch runs
-    its files one after the other, so a file that scrolls into view waits for the rest of three at most. A reload fetches
-    again the files whose summary changed and the files on screen. A fetch that fails puts its files in `skipped`, so the stream
+    as its diff is guessed to be (`rows.estimateRows`: the changed lines and a hunk's header and context). Each fetch is one
+    `files` call for its files, so the diff is read once for the three and a file that scrolls into view waits for the
+    rest of three at most. A reload fetches again the files whose summary changed, and not the files on screen whose summary is the same. A fetch that fails puts its files in `skipped`, so the stream
     does not ask again and again, and the next load of the state clears it.
   - The sidebar follows the stream. After every update that changed the model, `main.dispatch` asks `rows.scrolled(model, stream)`
     what the model has yet to learn (the offset clamped, the stream's height, the key of the first item on screen, the files on screen)
@@ -266,8 +266,8 @@ index in it counts into the `rows` of the same `file` reply.
     -> decodeState(stdout)                           boundary
   -> update(model, Loaded)                           pure
 -> load files                                        many: one in flight, three files at a time
-  -> ReviewCli.file(root, spec, path)                R: Host.exec, one per file
-    -> decodeFile(stdout)                            boundary
+  -> ReviewCli.files(root, spec, paths)             R: Host.exec, one per batch of three
+    -> decodeFiles(stdout, paths)                    boundary: the files in the order of the paths
   -> update(model, FilesLoaded)                      pure
 -> render                                            pure, thin
   -> rows.layoutCache(model, now)                    pure: every file's header, rows and thread cards in order, their heights and prefix sums
@@ -341,11 +341,12 @@ one test.
                                                          stale, and the reload fixes it. A second BadRequest
                                                          in a row only sets the status, so a request that is
                                                          always wrong cannot loop
--> ReviewCli.file (a fetch of files, Cmd.LoadFiles)
+-> ReviewCli.files (a fetch of files, Cmd.LoadFiles)
   E: every error above                                -> the same escape, as op `files`, and the files of the fetch go into
                                                         `skipped` so the stream does not ask for them again until the next
                                                         load of the state. The fetch of a file that is gone (BadRequest) also
-                                                        reloads the state once, which drops the file
+                                                        reloads the state once, which drops the file. One path
+                                                        that is gone fails the whole batch of three, as `files` is one call
 -> ReviewCli.send
   E: Refused Blocked    json error "blocked"           -> escape: status line and notify. Nothing is sent
   E: Refused NotReady   json error "not_ready"            or marked sent
@@ -399,7 +400,8 @@ casts it once.
 
 Untrusted: the stdout of `state`, `file`, `send --json` and `archive --json` (version skew, a half-written
 reply), `props()`, `focused()`, `panes()` and `terminals()`. Each is decoded once, in `decode.ts`, by a
-hand-written check of the fields the mod reads:
+hand-written check of the fields the mod reads, except one: the `perf` flag of `props()` is read in `perf.ts` (`recorderFor`)
+as a bare `=== true` check on the property, and `decode.ts` covers the rest of the props:
 
 ```
 decodeState(raw: unknown): State          throws ContractMismatch { path }
@@ -488,9 +490,11 @@ Per copy of the mod, released in `close(cx)`, which is bounded: start the cleanu
   text, since a mod cannot delete.
 - Nothing for the picker: it is drawn in the bar under the diff, and holds no overlay.
 
-State kept in module scope would be shared by every copy, so nothing is. It lives on the instance. The one cache is
-`rows.ts`'s memo of a fetched file's stream items, a `WeakMap` keyed by the reply's own object: it is pure (the same reply and
-the same inputs give the same items), no copy can reach another's reply, and an entry goes with its reply.
+State kept in module scope would be shared by every copy, so nothing is. It lives on the instance. The caches are
+`rows.ts`'s, each a pure memo in a `WeakMap` keyed by an object the model holds: a fetched file's stream items by the reply's own
+object, and the sidebar's rows, the counts, the filter hits, the totals and unsent count per state, and the stops per files map with the state and folds. The same inputs
+give the same result, no copy can reach another's object, and an entry goes with its key. Their keys are in
+[gui-perf](graphs/gui-perf.md).
 
 ## Swap R
 
@@ -509,7 +513,7 @@ reaches the panel.
 ```
 herdr-app-mod/
   package.json  tsconfig.json  mod.json  package-lock.json
-  src/  types.ts  decode.ts  host.ts  cli.ts  update.ts  icons.ts  rows.ts  runner.ts  view.ts  main.ts
+  src/  types.ts  decode.ts  host.ts  cli.ts  update.ts  icons.ts  rows.ts  runner.ts  view.ts  perf.ts  main.ts
   icons/ *.svg                the file-type drawings, copied to the mod folder by the stage script
   test/ *.test.ts   test/fixtures/*.json
 scripts/stage-app-mod.sh     build, then copy (the bundle, mod.json, icons/) to ${HERDR_APP_HOME:-~/.config/herdr-app}/mods/herdr-review
@@ -526,6 +530,7 @@ scripts/stage-app-mod.sh     build, then copy (the bundle, mod.json, icons/) to 
 | `rows.ts` | The stream (every file's items, heights and prefix sums, the layout cache, the scroll math, the thumb, the card height estimate, the fetch order, the keys, the side-by-side pairing, `isSplit` and `SPLIT_W`, `partner`, `layoutButton`), the thread cards, the sidebar's folder and file rows (with `icons.fileIcon`) and the filter's matcher, count and Enter pick, its header buttons and pane order, selection math, anchor and batch from a selection, which rows are tinted or hovered, the bar under the diff, what a click or a key means | `types.ts`, `icons.ts` |
 | `runner.ts` | `run(env, cmd)`, `withRecovery`, `watch` (one watch loop), `open(host)` (root and target at `init`), the read and write of `panel.json` | `cli.ts`, `decode.ts`, `types.ts` |
 | `view.ts` | GPUI drawing, the stream's visible items, its scrollbar and the rows' events | `gpui-kit`, `gpui-base`, `rows.ts` |
+| `perf.ts` | The opt-in timing recorder (`perf: true` in the props): a no-op unless on, else one summary line per window written through `Host.writeTextFile`. `main.ts` owns the recorder | `host.ts` |
 | `main.ts` | The exported `View` class: `init`, `render`, `close`, the loops, the layout cache, and the step after each update that feeds `Scrolled` back | `host.ts`, `view.ts`, the rest |
 
 Layout of the panel: a header (and the banner, status and notices when there are any) across the top, then one row

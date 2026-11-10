@@ -235,10 +235,29 @@ test("E: Wrote -> the editor stays, saving, until the file's reply brings the ca
   assert.equal(f.model.landing, null);
 });
 
-test("a saved draft whose file no fetch will bring lands with the state, and a failed reload does not keep it open", () => {
+test("E: a Wrote while a load runs marks the file dirty, so the load of the old state does not land the draft without its card", () => {
+  const m = withEditor(loaded(), plus(1), { _tag: "EditorSaved", text: "Why?" });
+  const r = steps({ ...m, inFlight: true }, { _tag: "Wrote", kind: "comment" }).model;
+  assert.equal(r.dirty.has("src/a.rs"), true);
+  // The reply is the state from before the write: the file's summary is the same, and still the editor stays.
+  const s = steps(r, { _tag: "Loaded", key: r.key, state });
+  assert.notEqual(s.model.editor, null);
+  assert.equal(s.model.saving, true);
+  // The load the write asked for goes first (pending); even a reply that again shows the same summary leaves the file to be fetched.
+  assert.equal(loadsOf(s.cmds).length, 1);
+  const t = steps(s.model, { _tag: "Loaded", key: r.key, state });
+  assert.notEqual(t.model.editor, null);
+  const fetch = t.cmds.find((c) => c._tag === "LoadFiles");
+  assert.ok(fetch && fetch._tag === "LoadFiles" && fetch.paths.includes("src/a.rs"));
+  const f = steps(t.model, { _tag: "FilesLoaded", key: r.key, files: [file] });
+  assert.equal(f.model.editor, null);
+  assert.equal(f.model.saving, false);
+});
+
+test("a saved draft whose file is not loaded lands with the state, and a failed reload does not keep it open", () => {
   const r = steps(withEditor(loaded(), plus(1), { _tag: "EditorSaved", text: "Why?" }), { _tag: "Wrote", kind: "comment" }).model;
-  // The same state: nothing to fetch for src/a.rs (not on screen, summary the same), so the editor goes now.
-  assert.equal(steps({ ...r, visible: [] }, { _tag: "Loaded", key: r.key, state }).model.editor, null);
+  // No diff of src/a.rs held (so none is marked dirty): the editor goes with the state.
+  assert.equal(steps({ ...r, visible: [], files: new Map(), dirty: new Set() }, { _tag: "Loaded", key: r.key, state }).model.editor, null);
   assert.equal(steps(r, { _tag: "Failed", op: "load", error: { _tag: "Busy" } }).model.editor, null);
 });
 

@@ -1,6 +1,6 @@
 // ReviewCli: builds argv, runs the binary through Host.exec, maps exit codes to the error list in
 // design/gui.md and decodes stdout. Inner functions throw tagged objects.
-import { decodeArchive, decodeFile, decodeMessage, decodeMessageSent, decodeSend, decodeState, parseJson } from "./decode.ts";
+import { decodeArchive, decodeFiles, decodeMessage, decodeMessageSent, decodeSend, decodeState, parseJson } from "./decode.ts";
 import type { ExecResult, Host } from "./host.ts";
 import type { ArchiveReply, FileView, MessageReply, MessageSentReply, ReviewError, SendReply, Spec, State } from "./types.ts";
 
@@ -9,7 +9,8 @@ const WRITE_TIMEOUT = 30_000;
 
 export type ReviewCli = {
   state(root: string, spec: Spec | null): Promise<State>;
-  file(root: string, spec: Spec | null, path: string): Promise<FileView>;
+  // The diffs of several files in one process, in the order of the paths. A path not in the diff fails them all.
+  files(root: string, spec: Spec | null, paths: string[]): Promise<FileView[]>;
   // The user's writes. A body is always a file the CLI reads and deletes, never an argument.
   apply(root: string, spec: Spec | null, batchFile: string): Promise<void>;
   reply(root: string, id: string, bodyFile: string): Promise<void>;
@@ -78,8 +79,9 @@ export function makeCli(host: Host, bin: string | null): ReviewCli {
     async state(root, spec) {
       return decodeState(parseJson(await exec(["state", "--json", "--repo", root, ...specArgs(spec)], READ_TIMEOUT)));
     },
-    async file(root, spec, path) {
-      return decodeFile(parseJson(await exec(["file", "--json", "--repo", root, ...specArgs(spec), "--path", path], READ_TIMEOUT)));
+    async files(root, spec, paths) {
+      const argv = ["files", "--json", "--repo", root, ...specArgs(spec), ...paths.flatMap((p) => ["--path", p])];
+      return decodeFiles(parseJson(await exec(argv, READ_TIMEOUT)), paths);
     },
     apply: (root, spec, file) => write(["comment", "apply", "--as", "user", "--file", file, "--repo", root, ...specArgs(spec)]),
     reply: (root, id, file) => write(["comment", "reply", "--as", "user", id, "--body-file", file, "--repo", root]),

@@ -234,19 +234,29 @@ test("a folded file is not fetched, and a file whose fetch failed is not asked f
   assert.equal(steps(timer.model, { _tag: "Loaded", key: timer.model.key, state: big(5) }).cmds[0]?._tag, "LoadFiles");
 });
 
-test("a reload fetches again the files whose summary changed and the files on screen, and no others", () => {
+test("a reload fetches again the files whose summary changed, and not a file on screen whose summary is the same", () => {
   const m = steps(drawn(), scroll("notes.txt|file", ["notes.txt"])).model;
   const next = { ...state, files: state.files.map((f) => (f.path === "src/a.rs" ? { ...f, add: 9 } : f)) };
   const out = steps({ ...m, inFlight: true }, { _tag: "Loaded", key: m.key, state: next });
-  assert.deepEqual([...out.model.dirty].sort(), ["notes.txt", "src/a.rs"]);
+  assert.ok(m.visible.includes("notes.txt"));
+  assert.deepEqual([...out.model.dirty], ["src/a.rs"]);
   const fetch = out.cmds[0];
   assert.ok(fetch && fetch._tag === "LoadFiles");
-  assert.deepEqual(fetch.paths, ["notes.txt", "src/a.rs"]);
+  assert.deepEqual(fetch.paths, ["src/a.rs"]);
+  // The on-screen file keeps its view object, so its cached runs and layout stay.
+  assert.equal(out.model.files.get("notes.txt"), m.files.get("notes.txt"));
   // Until it arrives the old diff stays drawn.
   assert.ok(out.model.files.has("src/a.rs"));
   // A file that left the diff goes.
   const gone = steps({ ...m, inFlight: true }, { _tag: "Loaded", key: m.key, state: { ...state, files: state.files.filter((f) => f.path !== "notes.txt") } });
   assert.equal(gone.model.files.has("notes.txt"), false);
+});
+
+test("a refresh marks the loaded files on screen dirty, and the timer and the watch do not", () => {
+  const m = steps(drawn(), scroll("notes.txt|file", ["notes.txt", "gone.rs"])).model;
+  const idle = { ...m, dirty: new Set<string>(), inFlight: true };
+  assert.deepEqual([...steps(idle, { _tag: "Triggered", source: "refresh" }).model.dirty], ["notes.txt"]);
+  for (const source of ["timer", "watch"] as const) assert.equal(steps(idle, { _tag: "Triggered", source }).model.dirty.size, 0, source);
 });
 
 test("a reload fetches again an off-screen file whose summary differs only in its hash, and not one whose summary is the same", () => {

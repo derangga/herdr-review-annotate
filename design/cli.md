@@ -8,6 +8,7 @@ herdr-review open   [--repo <root>] [--base <ref>]
 herdr-review send   [--repo <root>] [--all-open] [--backend herdr|hc] [--target <t7>] [--thread <id>]... [--json]
 herdr-review state  [--repo <root>] [--spec worktree|branch] [--base <ref>] --json
 herdr-review file   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --json
+herdr-review files  [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p>... --json
 herdr-review archive [--repo <root>] [--json]
 herdr-review message --json (--pane <herdr pane> | --target <t7>)
 herdr-review message send (--pane <herdr pane> | --target <t7>) --file <f>
@@ -85,8 +86,14 @@ does not. The herdr backend is the one the TUI plugin uses in plain Herdr, and i
 
 ### The panel's commands
 
-- `state` and `file` print JSON ([shapes](shapes.md)) and write nothing: no event, no `meta.json`, no lock,
+- `state`, `file` and `files` print JSON ([shapes](shapes.md)) and write nothing: no event, no `meta.json`, no lock,
   and `.git/index` is as it was. `--json` is required, since there is no other form.
+- `files` is `file` for several `--path` flags (at least one, kept in the order given). It exists because every
+  `file` runs the whole-repo `git diff`, `ls-files`, the untracked reads and the event replay to return one file,
+  so a panel that fetched N files paid for N diffs. `files` reads the repo once and returns the files of all the
+  paths. One path the diff does not have fails the whole command, as `file` does (exit 2, `not in diff: <p>`,
+  nothing on stdout). `file` stays for callers that want one. A binary from before `files` gives the usual
+  `unknown command 'files'`, exit 2.
 - `--repo` may be any folder inside the work tree. The reply names the root.
 - `--spec branch` without `--base` uses the base in `meta.json`, else the default base ([diff](diff.md)).
   A base that does not resolve falls back to the working tree with a notice. `--base` without `--spec` is the

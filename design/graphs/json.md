@@ -1,4 +1,4 @@
-# Call graphs: `state` and `file`
+# Call graphs: `state`, `file` and `files`
 
 Part of the [herdr-review design](../../DESIGN.md). The JSON they print is in [shapes](../shapes.md), the
 commands in [cli](../cli.md). The mod is the caller ([gui](../gui.md)), and the TUI does not use these.
@@ -102,10 +102,35 @@ screen. If a load becomes slow the answer is a cache keyed by `rev`, in a later 
 
 Cardinality: one-shot, called once per load for the selected file.
 
+## `files`
+
+```
+-> parse args                              R: env     E: usage, no --path -> exit 2
+                                                      --path repeats, the order given is kept
+-> resolve root, load meta, choose the spec, load the diff, read the review, place the threads
+                                           as in `state`, once for the whole command
+-> per path, in the order given: the steps of `file` from "find the path in the diff" to "threads of this
+   path", over the one read above
+                                                      E: one path not in the diff -> the whole command fails,
+                                                         exit 2, "not in diff: <path>", nothing on stdout
+-> print {schema, files} with each element exactly the JSON `file` prints for that path   R: stdout
+```
+
+`files` exists so that N files cost one `git diff`, one `ls-files`, one read of the untracked files and one
+replay of the log, where N `file` calls cost N of each. `file` and `files` share one function for the per-path
+work, so the elements are the same as `file`'s. Each path has its own highlighter `Cache`, as in `file`.
+
+Cardinality: one-shot, called once per batch of files the panel fetches.
+
 ## Tests
 
 Each `E:` line is one test. The rest are in [tests](../tests.md):
 
+- `files` with two paths returns both files, each equal to what `file` returns for that path, in the order asked.
+- `files` runs the repo diff once for two paths, where two `file` calls run it twice.
+- `files` with one path not in the diff fails the whole command: NotInDiff, exit 2, nothing on stdout.
+- `files` without `--path` is a usage error; several `--path` keep their order; `--spec` and `--base` are
+  accepted as for `file`.
 - Read-only: run `state` and `file` over a repo with a review, a `meta.json`, an unstaged change and an
   untracked file. Compare `review.jsonl`, `meta.json`, the work tree files and `.git/index` byte for byte
   before and after. Run it again with no store directory and check that none was created.

@@ -30,23 +30,28 @@ test("a load runs state alone and answers Loaded with the key it was asked for",
   assert.deepEqual(execs(t.calls).map((c) => c.argv), [["state", "--json", "--repo", "/repo"]]);
 });
 
-test("a fetch of files runs one file after the other, in the order asked, and answers FilesLoaded with the key", async () => {
+test("a fetch of files is one files call with a --path for each, and answers FilesLoaded with the key and the files in the order asked", async () => {
   const t = env();
   const msg = await run(t.env, files(["src/a.rs", "notes.txt"]));
   assert.ok(msg && msg._tag === "FilesLoaded");
   assert.equal(msg.key, "k");
-  assert.equal(msg.files.length, 2);
-  assert.deepEqual(execs(t.calls).map((c) => c.argv), [
-    ["file", "--json", "--repo", "/repo", "--path", "src/a.rs"],
-    ["file", "--json", "--repo", "/repo", "--path", "notes.txt"],
-  ]);
+  assert.deepEqual(msg.files.map((f) => f.path), ["src/a.rs", "notes.txt"]);
+  assert.deepEqual(execs(t.calls).map((c) => c.argv), [["files", "--json", "--repo", "/repo", "--path", "src/a.rs", "--path", "notes.txt"]]);
 });
 
-test("E: a file that fails fails the fetch, as op files, and the files after it are not asked for", async () => {
-  const t = env({ exec: (_c, args) => exit(2, `not in diff: ${args[args.length - 1]}`) });
-  const msg = await run(t.env, files(["gone.rs", "src/a.rs"]));
+test("E: a path not in the diff fails the whole fetch, as op files with BadRequest", async () => {
+  const t = env({ exec: () => exit(2, "not in diff: gone.rs") });
+  const msg = await run(t.env, files(["src/a.rs", "gone.rs"]));
   assert.deepEqual(msg, { _tag: "Failed", op: "files", error: { _tag: "BadRequest", stderr: "not in diff: gone.rs" } });
   assert.equal(execs(t.calls).length, 1);
+});
+
+test("E: an old binary without files -> TooOld, and files in another order or number than asked -> ContractMismatch", async () => {
+  const old = env({ exec: () => exit(2, "unknown command 'files'\nusage: ...") });
+  assert.deepEqual(await run(old.env, files(["src/a.rs"])), { _tag: "Failed", op: "files", error: { _tag: "TooOld" } });
+  const swapped = env({ exec: () => ok(JSON.stringify({ schema: 1, files: [JSON.parse(fixture("file"))] })) });
+  const msg = await run(swapped.env, files(["notes.txt"]));
+  assert.ok(msg && msg._tag === "Failed" && msg.error._tag === "ContractMismatch");
 });
 
 test("the spec goes on both calls as --spec and --base", async () => {
@@ -55,7 +60,7 @@ test("the spec goes on both calls as --spec and --base", async () => {
   await run(t.env, load(spec));
   await run(t.env, files(["src/a.rs"], spec));
   assert.deepEqual(execs(t.calls)[0]?.argv, ["state", "--json", "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
-  assert.deepEqual(execs(t.calls)[1]?.argv.slice(0, 8), ["file", "--json", "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
+  assert.deepEqual(execs(t.calls)[1]?.argv.slice(0, 8), ["files", "--json", "--repo", "/repo", "--spec", "branch", "--base", "origin/main"]);
 });
 
 test("a read gets 60 seconds", async () => {

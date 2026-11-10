@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, parseJson } from "../src/decode.ts";
+import { decodeFile, decodeFiles, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, parseJson } from "../src/decode.ts";
 import { fixture } from "./fake-host.ts";
 
 const state = () => JSON.parse(fixture("state"));
@@ -43,6 +43,16 @@ test("unread_resolved is required and must be an integer", () => {
     const raw = { ...state(), unread_resolved: value };
     assert.equal(mismatch(() => decodeState(raw)).path, "$.unread_resolved");
   }
+});
+
+test("files decode in the order asked, and a different count, order or path is a contract mismatch", () => {
+  const a = file();
+  const b = { ...file(), path: "notes.txt" };
+  assert.deepEqual(decodeFiles({ schema: 1, files: [a, b] }, ["src/a.rs", "notes.txt"]).map((f) => f.path), ["src/a.rs", "notes.txt"]);
+  assert.equal(mismatch(() => decodeFiles({ schema: 1, files: [b, a] }, ["src/a.rs", "notes.txt"])).path, "$.files[0].path");
+  assert.equal(mismatch(() => decodeFiles({ schema: 1, files: [a] }, ["src/a.rs", "notes.txt"])).path, "$.files");
+  assert.equal(mismatch(() => decodeFiles({ schema: 2, files: [a] }, ["src/a.rs"])).path, "schema");
+  assert.equal(mismatch(() => decodeFiles({ schema: 1, files: [{ ...a, rows: 3 }] }, ["src/a.rs"])).path, "$.rows");
 });
 
 test("the file fixture decodes, rows and threads with their row indexes", () => {

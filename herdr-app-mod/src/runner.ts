@@ -26,13 +26,9 @@ export function run(env: Env, cmd: Cmd): Promise<Msg | null> {
     case "Load":
       return withRecovery("load", async () => ({ _tag: "Loaded", key: cmd.key, state: await env.cli.state(cmd.root, cmd.spec) }));
     case "LoadFiles":
-      // One file after the other: a file is a process, and a fetch that holds many would keep one that scrolled into
-      // view waiting. A file that fails fails the fetch, and the reducer does not ask for those files again.
-      return withRecovery("files", async () => {
-        const files = [];
-        for (const path of cmd.paths) files.push(await env.cli.file(cmd.root, cmd.spec, path));
-        return { _tag: "FilesLoaded", key: cmd.key, files };
-      });
+      // One process for the batch, so the diff is read once. A file that fails fails the fetch, and the reducer does
+      // not ask for those files again.
+      return withRecovery("files", async () => ({ _tag: "FilesLoaded", key: cmd.key, files: await env.cli.files(cmd.root, cmd.spec, cmd.paths) }));
     case "WatchStore":
       return watch(env, cmd.dir, "watch-store");
     case "Notify":

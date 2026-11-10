@@ -438,13 +438,15 @@ function settle(m: Model): Model {
   };
 }
 
-// The state arrived. A file that is gone from the diff goes from the stream. A file whose summary changed, and the
-// files on screen, are fetched again. The sidebar's file stays while it is in the diff, else it is the first.
+// The state arrived. A file that is gone from the diff goes from the stream. A file whose summary changed is fetched
+// again; the summary's hash covers its rows and cards, so one that is the same keeps its view and its cached runs.
+// Syntax colours depend on text outside the diff, so a change there reaches a file on screen only through Refresh or a
+// changed summary (design/graphs/gui-stream.md has the detail). The sidebar's file stays while it is in the diff, else it is the first.
 function loadedState(m: Model, key: string, state: State): Step {
   if (key !== m.key) return flush({ ...m, inFlight: false }); // stale: the reply is dropped
   const paths = new Set(state.files.map((f) => f.path));
   const files = new Map([...m.files].filter(([path]) => paths.has(path)));
-  const dirty = new Set([...m.dirty, ...[...files.keys()].filter((p) => m.visible.includes(p) || summaryJson(m.state, p) !== summaryJson(state, p))].filter((p) => files.has(p)));
+  const dirty = new Set([...m.dirty, ...[...files.keys()].filter((p) => summaryJson(m.state, p) !== summaryJson(state, p))].filter((p) => files.has(p)));
   // A fold the user made that agrees with the file's mark is the file's own again.
   const folds = new Map([...m.folds].filter(([path, fold]) => paths.has(path) && state.files.find((f) => f.path === path)?.viewed !== fold));
   const shown = settle(
@@ -505,7 +507,9 @@ export function update(m: Model, msg: Msg): Step {
       return trigger(rekey({ ...m, target: msg.target }, { root: msg.root }));
     }
     case "Triggered": {
-      if (msg.source === "refresh") return trigger({ ...m, stopped: false, retried: false, status: m.sticky ? null : m.status, sticky: false });
+      // Refresh also fetches the files on screen again, which the timer and the watch do not: a change the summary does not show
+      // (the colours, see loadedState) reaches them this way.
+      if (msg.source === "refresh") return trigger({ ...m, dirty: new Set([...m.dirty, ...m.visible.filter((p) => m.files.has(p))]), stopped: false, retried: false, status: m.sticky ? null : m.status, sticky: false });
       if (m.stopped && (msg.source === "watch" || msg.source === "timer")) return [m, []];
       return trigger(m);
     }
@@ -597,7 +601,10 @@ export function update(m: Model, msg: Msg): Step {
       // A draft is written: the editor stays, saving, until the reload brings the card (`landing`), and goes in the same
       // update. The other writes leave an editor opened since then alone.
       const draft = msg.kind === "comment" || msg.kind === "reply" || msg.kind === "edit";
-      return trigger(draft ? { ...m, saving: true, landing: draftFile(m) } : m);
+      // A load already in flight may carry the state from before the write, with the file's summary unchanged, so the
+      // file is fetched after the write: that fetch is what lands the draft with its card.
+      const at = draft ? draftFile(m) : "";
+      return trigger(draft ? { ...m, saving: true, landing: at, dirty: at !== "" && m.files.has(at) ? new Set([...m.dirty, at]) : m.dirty } : m);
     }
     case "SendClicked":
       return sendClicked(m, msg.threads ?? []);

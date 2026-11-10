@@ -215,6 +215,16 @@ A file that is not rendered (`binary`, `submodule`, `too_large`, `unparsed`) has
 `old` is null on an `add` row, `new` is null on a `del` row, and both are null on a `hunk` row. A thread
 whose `row` is not null has it as an index into `rows`.
 
+### `files`
+
+```
+{ "schema": 1,
+  "files": [ File ] }              one `file` reply per `--path`, in the order the paths were given
+```
+
+Each element is exactly what `file --json` prints for that path, with its own `schema`. `files` is a new command
+and no field changed, so `schema` stays 1.
+
 ### `Thread`
 
 ```

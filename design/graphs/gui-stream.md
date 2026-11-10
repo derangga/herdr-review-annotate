@@ -161,9 +161,10 @@ resolved card ([gui-thread](gui-thread.md)) adds its id to `seenSent` too.
        and it is not folded and not in `skipped`
   -> the first BATCH (3) of them: batch = those, Cmd.LoadFiles { key, paths }, inFlight = true
 -> run Cmd.LoadFiles                                   one in flight, shared with Load
-  -> ReviewCli.file(root, spec, path) for each path, one after the other      R: Host.exec, 60 s
+  -> ReviewCli.files(root, spec, paths): one `files --json --path P1 --path P2 ...` process for the batch   R: Host.exec, 60 s
+       the CLI reads the diff once for the batch; decodeFiles checks that the reply holds the paths asked for, in that order
        E: BinaryMissing, TooOld, BackendFailed, BadRequest, ContractMismatch -> Msg.Failed { op: files }
-       a file that fails ends the command: the files after it in the batch are asked for again, later
+       a path the CLI does not find in the diff (exit 2, `not in diff: P`) fails the whole batch: the files in it are asked for again, later
   -> Msg.FilesLoaded { key, files }
 -> update(model, FilesLoaded)                          (pure)
   -> key differs from the model's?                     E: stale reply -> dropped, then flush
@@ -180,9 +181,16 @@ resolved card ([gui-thread](gui-thread.md)) adds its id to `seenSent` too.
        `skipped` is emptied by the next load of the state (the timer, a watch wake, Refresh, a write)
 ```
 
-A reload of the state marks as `dirty` the files whose summary changed and the files on screen, and nothing else: with
-100 files, a 10 s timer must not run 100 `file` commands. The summary's `hash` changes with any line of the file's diff and any
-of its threads, so a file off screen whose lines or cards changed at the same counts is fetched again too.
+A reload of the state marks as `dirty` the files whose summary changed, and nothing else: with 100 files, a 10 s timer
+must not fetch 100 diffs, nor the files on screen again when nothing in them changed. The summary is compared whole (counts,
+`viewed` and `hash`). The `hash` changes with any hunk header, any row with its kind and line numbers, and the cards of the
+file's threads, and the file view is drawn from those rows, threads, `viewed` and the change (`note`): so a file whose lines
+or cards changed at the same counts is fetched again, wherever it is, and one whose summary is the same keeps its view,
+its cached runs and its layout. The colours of the rows are the one thing read beyond the hash (the file's whole text at
+the revision, so a line outside the hunks that opens a comment or a string); a change only there that leaves the diff
+as it was shows at the next change of the file or at Refresh, which fetches the files on screen again (the timer and the watch do not).
+A draft written (a comment, a reply, an edit) adds its file to `dirty`, so the fetch that follows the write, and not a state load
+already in flight, lands the draft with its card.
 
 ## Selecting a file and scrolling to an item
 
@@ -236,7 +244,7 @@ estimate for the text, the width and the line count, the layout kept while a whe
 its inputs alone, and rebuilt when the minute, the width, the focus or a fold changes, the rows' runs kept across a new minute,
 the order of fetches (the screen and the next three, the rest below, the rest above, one
 fetch at a time, a folded file left out, a failed file not asked for again until the next load), a reload fetching the
-files whose summary changed and the files on screen only, a stale reply dropped, the selection (topmost file wins, the
+files whose summary changed and not a file on screen whose summary is the same, a stale reply dropped, the selection (topmost file wins, the
 file a click scrolled to wins where the stream ends short, only the threads not in the diff leave it alone), the offset of a click in the
 sidebar and of next and previous comment (and a key not in the stream kept waiting), a stream shorter than the screen sitting at the top, and the item that was at the top staying there when
 a file above it arrives. Side by side is in `test/split.test.ts`: the pairing, the card order, the threshold and the toggle, and the item on top kept across a flip.

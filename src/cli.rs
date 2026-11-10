@@ -31,6 +31,7 @@ pub const USAGE: &str = "usage:
   herdr-review send   [--repo <root>] [--all-open] [--backend herdr|hc] [--target <t7>] [--thread <id>]... [--json]
   herdr-review state  [--repo <root>] [--spec worktree|branch] [--base <ref>] --json
   herdr-review file   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --json
+  herdr-review files  [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p>... --json
   herdr-review archive [--repo <root>] [--json]
   herdr-review view   [--repo <root>] [--spec worktree|branch] [--base <ref>] --path <p> --set|--unset
   herdr-review message --json (--pane <herdr pane> | --target <t7>)
@@ -132,6 +133,11 @@ pub enum Command {
     File {
         query: Query,
         path: String,
+    },
+    /// `files --json`: `file` for several paths from one read of the repo.
+    Files {
+        query: Query,
+        paths: Vec<String>,
     },
     Message,
     MessageTui,
@@ -402,9 +408,9 @@ fn require_stdin_dash(what: &str, text: &str) -> Result<(), Usage> {
     }
 }
 
-/// The flags `state` and `file` share, and `--path` for `file`. Both print JSON and nothing else, so
-/// `--json` is required.
-fn parse_read(args: &[String], with_path: bool) -> Result<(Query, Option<String>), Usage> {
+/// The flags `state`, `file` and `files` share, and `--path` (which may repeat, for `files`) for the
+/// last two. The three print JSON and nothing else, so `--json` is required.
+fn parse_read(args: &[String], with_path: bool) -> Result<(Query, Vec<String>), Usage> {
     let values: &[&str] = if with_path {
         &["--repo", "--spec", "--base", "--path"]
     } else {
@@ -415,9 +421,9 @@ fn parse_read(args: &[String], with_path: bool) -> Result<(Query, Option<String>
         return Err(Usage("this command prints JSON only, pass --json".into()));
     }
     let query = query_of(&mut parsed)?;
-    let path = parsed.value("--path");
+    let paths = parsed.all("--path");
     no_arguments(parsed)?;
-    Ok((query, path))
+    Ok((query, paths))
 }
 
 /// `--repo`, `--spec` and `--base`.
@@ -572,9 +578,19 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             Ok(Command::State { query })
         }
         "file" => {
-            let (query, path) = parse_read(rest, true)?;
-            let path = path.ok_or_else(|| Usage("file needs --path <p>".into()))?;
+            let (query, mut paths) = parse_read(rest, true)?;
+            // More than one --path: the last wins, as with any single-valued flag.
+            let path = paths
+                .pop()
+                .ok_or_else(|| Usage("file needs --path <p>".into()))?;
             Ok(Command::File { query, path })
+        }
+        "files" => {
+            let (query, paths) = parse_read(rest, true)?;
+            if paths.is_empty() {
+                return Err(Usage("files needs at least one --path <p>".into()));
+            }
+            Ok(Command::Files { query, paths })
         }
         "archive" => {
             let mut parsed = split(rest, &["--repo"], &["--json"])?;
@@ -903,6 +919,38 @@ mod tests {
 
     fn usage(line: &str) -> String {
         parse(&args(line)).unwrap_err().0
+    }
+
+    #[test]
+    fn file_takes_the_last_of_several_paths() {
+        assert_eq!(
+            parse(&args("file --json --path a.rs --path b.rs")),
+            Ok(Command::File {
+                query: Query::default(),
+                path: "b.rs".into()
+            })
+        );
+    }
+
+    #[test]
+    fn files_needs_a_path_and_keeps_every_path_in_order() {
+        for line in ["files --json", "files --path a.rs", "files --json --path"] {
+            assert!(parse(&args(line)).is_err(), "{line}");
+        }
+        let query = Query {
+            repo: Some("/r".into()),
+            spec: Some(SpecChoice::Branch),
+            base: Some("main".into()),
+        };
+        assert_eq!(
+            parse(&args(
+                "files --json --path b.rs --repo=/r --path a.rs --spec=branch --base=main --path c.rs"
+            )),
+            Ok(Command::Files {
+                query,
+                paths: vec!["b.rs".into(), "a.rs".into(), "c.rs".into()]
+            })
+        );
     }
 
     #[test]

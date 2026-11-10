@@ -25,6 +25,8 @@ export const exit = (code: number, stderr: string): ExecResult => ({ code, stdou
 export function defaultExec(_command: string, args: string[]): Reply {
   if (args[0] === "state") return ok(fixture("state"));
   if (args[0] === "file") return ok(fixture("file"));
+  // The fixture file under each path asked for.
+  if (args[0] === "files") return ok(JSON.stringify({ schema: 1, files: args.flatMap((a, i) => (args[i - 1] === "--path" ? [{ ...JSON.parse(fixture("file")), path: a }] : [])) }));
   return exit(2, "unexpected call");
 }
 

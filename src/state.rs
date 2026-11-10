@@ -14,7 +14,7 @@ use crate::diff::{
 };
 use crate::env::Env;
 use crate::json::{
-    AnchorJson, AnchorKind, ChangeJson, CommentJson, FileJson, FileSummary, MarkJson,
+    AnchorJson, AnchorKind, ChangeJson, CommentJson, FileJson, FileSummary, FilesJson, MarkJson,
     PlacementJson, PlacementKind, RowJson, RowType, SCHEMA, SideJson, StateJson, StatusJson,
     ThreadJson, TokenJson, TokenKind,
 };
@@ -484,6 +484,33 @@ pub fn file(
     mut git: impl FnMut(&[String]) -> Result<Vec<u8>, GitError>,
 ) -> Result<Output, Failure> {
     let loaded = read(query, env, &mut git)?;
+    Ok(print(&file_json(&loaded, path, &mut git)?))
+}
+
+/// `files --json --path P --path Q`: `file` for each path, from one read of the repo. One path that
+/// is not in the diff fails the whole command.
+pub fn files(
+    query: &Query,
+    paths: &[String],
+    env: &Env,
+    mut git: impl FnMut(&[String]) -> Result<Vec<u8>, GitError>,
+) -> Result<Output, Failure> {
+    let loaded = read(query, env, &mut git)?;
+    let files = paths
+        .iter()
+        .map(|path| file_json(&loaded, path, &mut git))
+        .collect::<Result<_, _>>()?;
+    Ok(print(&FilesJson {
+        schema: SCHEMA,
+        files,
+    }))
+}
+
+fn file_json(
+    loaded: &Loaded,
+    path: &str,
+    git: &mut impl FnMut(&[String]) -> Result<Vec<u8>, GitError>,
+) -> Result<FileJson, Failure> {
     let diff = &loaded.diff;
     // The path wins. The old path of a renamed file answers only when no file has the path.
     let wanted = RelPath::parse(path);
@@ -509,27 +536,27 @@ pub fn file(
             parsed += 1;
             parsed < MAX_PARSED_LINES
         };
-        cache.step(loaded.root.path(), &diff.rev, file, &mut git, &mut more);
+        cache.step(loaded.root.path(), &diff.rev, file, git, &mut more);
     }
     let none = FileTokens::default();
     let rows = rows(file, cache.file(file.path.as_str()).unwrap_or(&none));
-    let threads = placed(&loaded)
+    let threads = placed(loaded)
         .filter(|(_, placement)| *placement != Placement::NotInDiff)
         .filter(|(thread, _)| diff.file_index(&thread.anchor.path) == Some(index))
         .map(|(thread, placement)| thread_json(thread, placement, &rows))
         .collect();
-    Ok(print(&FileJson {
+    Ok(FileJson {
         schema: SCHEMA,
         path: file.path.to_string(),
         old_path: file.old_path.as_ref().map(ToString::to_string),
         change: change_json(file.change),
         add,
         del,
-        viewed: viewed(&loaded, file),
+        viewed: viewed(loaded, file),
         note: note(file.change).map(str::to_owned),
         rows,
         threads,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -1063,6 +1090,56 @@ rename to src/b.rs
             assert_eq!(output.stderr, format!("not in diff: {path}\n"));
             assert!(output.stdout.is_empty());
         }
+    }
+
+    fn files_of(output: &Output) -> FilesJson {
+        assert_eq!(output.code, 0);
+        serde_json::from_str(&output.stdout).unwrap()
+    }
+
+    #[test]
+    fn files_returns_what_file_returns_for_each_path_in_the_order_asked() {
+        let world = World::new("files");
+        let paths = ["src/a.rs".to_owned(), "img.png".to_owned()];
+        let out = files(&query(""), &paths, &world.env, |args| world.git(args)).unwrap();
+        assert!(out.stdout.ends_with("}\n"));
+        let reply = files_of(&out);
+        assert_eq!(reply.schema, 1);
+        let each = paths
+            .iter()
+            .map(|path| file_of(&world.file("", path).unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(reply.files, each);
+    }
+
+    #[test]
+    fn files_reads_the_repo_diff_once_where_file_reads_it_once_per_path() {
+        let world = World::new("files-once");
+        let paths = ["src/a.rs".to_owned(), "src/b.rs".to_owned()];
+        let diffs = std::cell::Cell::new(0);
+        let counting = |args: &[String]| {
+            diffs.set(diffs.get() + args.iter().filter(|a| *a == "diff").count());
+            world.git(args)
+        };
+        files(&query(""), &paths, &world.env, counting).unwrap();
+        assert_eq!(diffs.get(), 1);
+        diffs.set(0);
+        for path in &paths {
+            file(&query(""), path, &world.env, counting).unwrap();
+        }
+        assert_eq!(diffs.get(), 2);
+    }
+
+    #[test]
+    fn one_path_that_is_not_in_the_diff_fails_the_whole_files_command() {
+        let world = World::new("files-not-in-diff");
+        let paths = ["src/a.rs".to_owned(), "src/zzz.rs".to_owned()];
+        let output = files(&query(""), &paths, &world.env, |args| world.git(args))
+            .unwrap_err()
+            .output();
+        assert_eq!(output.code, 2);
+        assert_eq!(output.stderr, "not in diff: src/zzz.rs\n");
+        assert!(output.stdout.is_empty());
     }
 
     #[test]

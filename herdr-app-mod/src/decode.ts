@@ -252,6 +252,17 @@ export function decodeFile(raw: unknown): FileView {
   };
 }
 
+// The reply of `files`: the files asked for, each as `file` prints it, in the order of the paths. Anything else is
+// a contract mismatch, so a file is never drawn from another file's reply.
+export function decodeFiles(raw: unknown, paths: string[]): FileView[] {
+  const o = obj(raw, "$");
+  schema(o);
+  const files = list(o, "files", "$", (v) => decodeFile(v));
+  if (files.length !== paths.length) bad("$.files", `expected ${paths.length} files, got ${files.length}`);
+  for (const [i, f] of files.entries()) if (f.path !== paths[i]) bad(`$.files[${i}].path`, `expected ${JSON.stringify(paths[i])}, got ${JSON.stringify(f.path)}`);
+  return files;
+}
+
 function candidate(v: unknown, path: string): Candidate {
   const o = obj(v, path);
   return { address: str(o, "address", path), agent: str(o, "agent", path), cwd: str(o, "cwd", path), status: str(o, "status", path) };

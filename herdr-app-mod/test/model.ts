@@ -37,8 +37,12 @@ export function answer(m: Model, cmds: Cmd[], file: FileView = fixtureFile()): {
 }
 
 // The state arrives and the files it names are fetched. `file` is the one with comments (src/a.rs in the fixtures).
+// A file that is not what the model holds has a new hash in the state, as the CLI's would be, so it is fetched again.
 export function reload(m: Model, state: State, file: FileView = fixtureFile()): { model: Model; cmds: Cmd[] } {
-  const out = steps(m, { _tag: "Loaded", key: m.key, state });
+  const held = m.files.get(file.path);
+  const changed = held !== undefined && JSON.stringify(held) !== JSON.stringify(file);
+  const next = changed ? { ...state, files: state.files.map((f) => (f.path === file.path ? { ...f, hash: `${f.hash}+` } : f)) } : state;
+  const out = steps(m, { _tag: "Loaded", key: m.key, state: next });
   return answer(out.model, out.cmds, file);
 }
 
