@@ -22,6 +22,7 @@ impl Repo {
             ("diff.renames", "false"),
             ("diff.submodule", "log"),
             ("core.quotePath", "true"),
+            ("diff.suppressBlankEmpty", "true"),
             ("color.ui", "always"),
             ("commit.gpgsign", "false"),
         ] {
@@ -205,6 +206,23 @@ fn a_rename_with_edits_is_one_renamed_file_whatever_the_local_config_says() {
     assert_eq!(file.change, Change::Renamed);
     assert_eq!(file.old_path.as_ref().unwrap().as_str(), "old.txt");
     assert!(!file.hunks.is_empty());
+}
+
+#[test]
+fn a_blank_context_line_parses_whatever_diff_suppress_blank_empty_says() {
+    let repo = Repo::new("blank-context");
+    repo.write("a.txt", "a\n\nb\nc\n");
+    repo.commit("base");
+    repo.write("a.txt", "a\n\nb\nX\n");
+    let diff = repo.load(&Spec::WorkTree);
+    let file = find(&diff, "a.txt");
+    assert_eq!(file.change, Change::Modified);
+    let rows = file.hunks[0]
+        .rows
+        .iter()
+        .map(|row| row.text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(rows, ["a", "", "b", "c", "X"]);
 }
 
 #[test]

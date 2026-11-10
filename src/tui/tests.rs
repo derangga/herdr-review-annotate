@@ -159,7 +159,7 @@ impl Fixture {
                 Err(failed())
             }
             ["rev-parse" | "merge-base", ..] => Ok(b"abc\n".to_vec()),
-            ["-c", _, "diff", ..] => {
+            ["-c", _, "-c", _, "diff", ..] => {
                 self.diffs.set(self.diffs.get() + 1);
                 match self.diff_error.borrow().clone() {
                     Some(error) => Err(error),

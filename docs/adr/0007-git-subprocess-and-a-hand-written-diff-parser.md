@@ -21,7 +21,7 @@ spec compares the working tree with the merge base, `git diff $(git merge-base <
 ## Consequences
 
 - The parser must not depend on the user's git config. Every call passes
-  `-c core.quotePath=false --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -M`,
+  `-c core.quotePath=false -c diff.suppressBlankEmpty=false --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -M`,
   and paths come from the `---`, `+++` and `rename` lines, not from the `diff --git` header.
 - Untracked files need a synthesized patch and a size check before the file is read.
 - The plugin needs `git` on `PATH` and reports clearly when the directory is not a repository, has no

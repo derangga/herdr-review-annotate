@@ -166,7 +166,7 @@ index 1111111..2222222 100644
                     Ok(b"abc\n".to_vec())
                 }
                 [_, _, "merge-base", ..] => Ok(b"mb123\n".to_vec()),
-                [_, _, "-c", _, "diff", ..] => Ok(PATCH.as_bytes().to_vec()),
+                [_, _, "-c", _, "-c", _, "diff", ..] => Ok(PATCH.as_bytes().to_vec()),
                 [_, _, "ls-files", ..] => Ok(Vec::new()),
                 _ => Err(failed()),
             }

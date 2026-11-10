@@ -653,8 +653,8 @@ rename to src/b.rs
                     .merge_base
                     .then(|| b"mb123\n".to_vec())
                     .ok_or_else(failed),
-                [_, _, "-c", _, "diff", ..] if self.diff_error => Err(failed()),
-                [_, _, "-c", _, "diff", ..] => Ok(self.patch.clone().into_bytes()),
+                [_, _, "-c", _, "-c", _, "diff", ..] if self.diff_error => Err(failed()),
+                [_, _, "-c", _, "-c", _, "diff", ..] => Ok(self.patch.clone().into_bytes()),
                 [_, _, "ls-files", ..] => self.listing.clone(),
                 _ => Err(failed()),
             }

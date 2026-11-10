@@ -10,9 +10,10 @@ diff.autoRefreshIndex=false`, which `git diff` would otherwise use to refresh `.
 rely on this: the panel watches the repo root, and a write by the read would make it reload without end.
 
 Common flags, written as `GIT` below:
-`git -C <root> -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3`
+`git -C <root> -c core.quotePath=false -c diff.suppressBlankEmpty=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3`
 and `--` after the revision. `--submodule=short` is there because `diff.submodule = log` in a user's config
-would otherwise replace the two commit ids with a log.
+would otherwise replace the two commit ids with a log. `diff.suppressBlankEmpty = true` in a user's config would
+print an empty context line with no leading space, which the parser rejects.
 
 | Spec | Command |
 |---|---|

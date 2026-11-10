@@ -182,6 +182,12 @@ impl<G: FnMut(&[String]) -> Result<String, GitError>> Files<'_, G> {
         let revision = match self.spec {
             Spec::WorkTree => "HEAD".to_owned(),
             Spec::Branch { base } => {
+                if base.starts_with('-') {
+                    return Err(GitError::Failed {
+                        args: "merge-base".to_owned(),
+                        stderr: format!("the base '{base}' starts with '-'"),
+                    });
+                }
                 let args = [
                     "-C",
                     &self.root.to_string_lossy(),
@@ -213,6 +219,7 @@ impl<G: FnMut(&[String]) -> Result<String, GitError>> Files<'_, G> {
                     "-C".to_owned(),
                     self.root.to_string_lossy().into_owned(),
                     "show".to_owned(),
+                    "--no-textconv".to_owned(),
                     format!("{revision}:{path}"),
                 ];
                 match (self.git)(&args) {

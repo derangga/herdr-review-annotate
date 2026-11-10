@@ -693,6 +693,8 @@ pub fn load(
     let patch = run(&[
         "-c",
         "core.quotePath=false",
+        "-c",
+        "diff.suppressBlankEmpty=false",
         "diff",
         "--no-color",
         "--no-ext-diff",
@@ -1372,7 +1374,7 @@ mod tests {
                     .map(|sha| format!("{sha}\n").into_bytes())
                     .ok_or_else(failed),
                 ["hash-object", "-t", "tree", "/dev/null"] => Ok(format!("{TREE}\n").into_bytes()),
-                ["-c", _, "diff", ..] => Ok(self.patch.clone()),
+                ["-c", _, "-c", _, "diff", ..] => Ok(self.patch.clone()),
                 ["ls-files", ..] => self.others.clone().ok_or_else(failed),
                 _ => Err(failed()),
             }
@@ -1395,7 +1397,7 @@ mod tests {
         diff.files.iter().map(|file| file.path.as_str()).collect()
     }
 
-    const DIFF_ARGS: &str = "-c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3";
+    const DIFF_ARGS: &str = "-c core.quotePath=false -c diff.suppressBlankEmpty=false diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --submodule=short -M -U3";
 
     #[test]
     fn the_working_tree_spec_diffs_against_head_with_the_fixed_flags() {

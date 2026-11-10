@@ -11,6 +11,7 @@ Part of the [herdr-review design](../../DESIGN.md).
 -> for each new root comment: read the anchored line
   -> new side: read the file in the worktree  R: dir of repo  E: missing line -> InvalidBatch
   -> old side: git show <base>:<path>         R: git          E: missing line -> InvalidBatch
+                                                           E: a base that starts with '-' -> exit 1
 -> detect agent name                       R: herdr, env   E: any -> escape, Author::Agent(None)
 -> store::write                            R: dir, now     E: UnknownId -> exit 2
                                                            E: Busy, Io -> exit 1

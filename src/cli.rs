@@ -1242,7 +1242,9 @@ mod tests {
             {
                 [_, _, "rev-parse", ..] => Ok(format!("{}\n", self.root.display())),
                 [_, _, "merge-base", ..] => Ok("abc123\n".into()),
-                [_, _, "show", spec] => self.old.get(*spec).cloned().ok_or_else(failed),
+                [_, _, "show", "--no-textconv", spec] => {
+                    self.old.get(*spec).cloned().ok_or_else(failed)
+                }
                 _ => Err(failed()),
             }
         }
@@ -1925,6 +1927,24 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(Failure::from(error).output().code, 1);
+    }
+
+    #[test]
+    fn a_base_that_starts_with_a_dash_is_refused_before_git_sees_it() {
+        let root = std::env::temp_dir();
+        let comments = decode(&batch(&[
+            r#"{"path":"a.rs","side":"old","line":1,"body":"x"}"#,
+        ]))
+        .unwrap();
+        let spec = Spec::Branch { base: "-x".into() };
+        let mut calls = Vec::new();
+        let error = read_lines(comments, &root, &spec, |args| {
+            calls.push(args.join(" "));
+            Ok(String::new())
+        })
+        .unwrap_err();
+        assert_eq!(Failure::from(error).output().code, 1);
+        assert!(calls.is_empty());
     }
 
     // The user CLI: `--as user`, body files, `edit`, `delete` and `seen`.
