@@ -709,8 +709,11 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
   return stream;
 }
 
+// What the Viewed checkbox on a file's header sends: the opposite of what the file is now.
+export const viewedClick = (f: FileItem): Msg => ({ _tag: "ViewedClicked", path: f.path, viewed: !f.viewed });
+
 function fileHead(m: Model, f: FileSummary, folded: boolean): FileItem {
-  const hides = [f.viewed ? "viewed" : "", folded && f.threads > 0 ? plural(f.threads, "thread", "threads") : ""].filter((x) => x !== "").join(", ");
+  const hides = folded && f.threads > 0 ? plural(f.threads, "thread", "threads") : "";
   return { kind: "file", key: itemKey(f.path, "file"), path: f.path, title: cleanText(f.path), letter: LETTERS[f.change], add: f.add, del: f.del, viewed: f.viewed, folded, hides };
 }
 
@@ -1052,10 +1055,9 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
   const actions: DockButton[] = [
     { id: "prev-thread", label: "Previous comment", icon: "arrow-up", iconOnly: true, key: "shift+n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: false }, danger: false, off: none },
     { id: "next-thread", label: "Next comment", icon: "arrow-down", iconOnly: true, key: "n", tip: none ? "No comments yet" : undefined, msg: { _tag: "ThreadJumped", forward: true }, danger: false, off: none },
-    { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", icon: "send", accent: true, tip: unsent > 0 ? `Send ${plural(unsent, "unsent comment", "unsent comments")}` : "Send", msg: { _tag: "SendClicked" }, danger: false, off: m.sending },
+    { id: "send", label: unsent > 0 ? `Send ${unsent}` : "Send", icon: "send", accent: unsent > 0, tip: m.sending ? "Sending..." : unsent > 0 ? `Send ${plural(unsent, "unsent comment", "unsent comments")}` : "No unsent comments", msg: { _tag: "SendClicked" }, danger: false, off: m.sending || unsent === 0 },
     { id: "archive", label: archivable > 0 ? `Archive ${archivable}` : "Archive", icon: "archive", tip: archivable > 0 ? `Archive ${plural(archivable, "resolved thread", "resolved threads")}` : (note?.text ?? "No resolved threads to archive"), msg: { _tag: "ArchiveClicked" }, danger: false, off: m.inFlight || archivable === 0 },
   ];
-  if (shown !== undefined) actions.push({ id: "viewed", label: shown.viewed ? "Mark unviewed" : "Mark viewed", icon: "circle-check", iconOnly: true, accent: shown.viewed, msg: { _tag: "ViewedClicked", path: shown.path, viewed: !shown.viewed }, danger: false, off: false });
   return { label, buttons, actions, note };
 }
 

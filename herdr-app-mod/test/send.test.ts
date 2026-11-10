@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeCli } from "../src/cli.ts";
-import { confirmKey, confirmRow, dock, pickerOptions, streamLayout } from "../src/rows.ts";
+import { confirmKey, confirmRow, dock, pickerOptions, streamLayout, viewedClick } from "../src/rows.ts";
 import { run } from "../src/runner.ts";
 import type { Env } from "../src/runner.ts";
 import { initModel } from "../src/update.ts";
@@ -354,14 +354,20 @@ test("E: archive Busy -> status review is busy, BackendFailed -> the stderr, Con
 
 // viewed
 
-test("a viewed click asks for SetViewed with the model's spec, and the dock offers the opposite", () => {
+const fileHeadOf = (m: Model, path: string) => {
+  const it = streamLayout(m, Date.parse("2026-11-09T10:00:30Z")).items.find((i) => i.kind === "file" && i.path === path);
+  assert.ok(it && it.kind === "file", path);
+  return it;
+};
+
+test("a viewed click asks for SetViewed with the model's spec, and the file's header offers the opposite", () => {
   const m = loaded();
-  assert.deepEqual(dock(m).actions.find((b) => b.id === "viewed")?.msg, { _tag: "ViewedClicked", path: "src/a.rs", viewed: true });
+  assert.deepEqual(viewedClick(fileHeadOf(m, "src/a.rs")), { _tag: "ViewedClicked", path: "src/a.rs", viewed: true });
   assert.deepEqual(steps(m, { _tag: "ViewedClicked", path: "src/a.rs", viewed: true }).cmds, [{ _tag: "SetViewed", root: "/repo", spec: { kind: "worktree" }, path: "src/a.rs", viewed: true }]);
   const branch = steps(m, { _tag: "SpecChosen", spec: { kind: "branch", base: "origin/main" } }).model;
   assert.deepEqual(steps(branch, { _tag: "ViewedClicked", path: "src/a.rs", viewed: false }).cmds, [{ _tag: "SetViewed", root: "/repo", spec: { kind: "branch", base: "origin/main" }, path: "src/a.rs", viewed: false }]);
   const done = loadedModel({ ...state, files: state.files.map((f) => (f.path === "src/a.rs" ? { ...f, viewed: true } : f)) }, { ...file, viewed: true });
-  assert.equal(dock(done).actions.find((b) => b.id === "viewed")?.label, "Mark unviewed");
+  assert.deepEqual(viewedClick(fileHeadOf(done, "src/a.rs")), { _tag: "ViewedClicked", path: "src/a.rs", viewed: false });
 });
 
 test("the view argv: --set or --unset, and the spec flags", async () => {

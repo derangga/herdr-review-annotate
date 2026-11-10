@@ -4,7 +4,7 @@ import { div, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, cursorOn, dock, EDITOR_H, EDITOR_TEXT, editorKey, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
+import { badgeColor, CARD_W, codeWidth, confirmKey, confirmRow, cursorOn, dock, EDITOR_H, EDITOR_TEXT, editorKey, filterInfo, GUTTER_W, isSplit, itemClick, keyPath, layoutButton, letterColor, maxShift, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, viewedClick, visibleRange, wheelDelta, wheelShift, WARN } from "./rows.ts";
 import type { BodyItem, DockButton, EditorItem, FileItem, HeadItem, RowItem, SideRow, Side, SplitItem, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
 import { drawMessage } from "./message-view.ts";
@@ -232,11 +232,49 @@ function editorBox(item: EditorItem, m: Model, t: Theme, dispatch: Dispatch, ui:
   );
 }
 
-function fileHead(item: FileItem, t: Theme): Element {
+// The GitHub-style checkbox at the right of a file's header. Its press is its own: it must not also fold the file behind it.
+function viewedBox(item: FileItem, t: Theme, dispatch: Dispatch): Element {
+  const tip = item.viewed ? "Mark unviewed" : "Mark viewed";
+  return h_flex()
+    .id(`viewed-${item.key}`)
+    .h(22)
+    .flex_none()
+    .px(6)
+    .gap(6)
+    .items_center()
+    .rounded(6)
+    .cursor_pointer()
+    .hover((s) => s.bg(t.hover))
+    .active((s) => s.bg(t.selected))
+    .tooltip(tip)
+    .accessibility_label(tip)
+    .on_click((_e, cx) => {
+      cx.stop_propagation();
+      dispatch(viewedClick(item));
+    })
+    .child(
+      div()
+        .w(14)
+        .h(14)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(3)
+        .border_1()
+        .border_color(item.viewed ? t.accent : t.dim)
+        .when(item.viewed, (e) => e.bg(t.selected).child(svg(drawing("check")).size(10).flex_none().text_color(t.accent))),
+    )
+    .child(div().text_size(11).text_color(item.viewed ? t.foreground : t.muted).child("Viewed"));
+}
+
+function fileHead(item: FileItem, t: Theme, dispatch: Dispatch): Element {
   return h_flex()
     .w_full()
     .h_full()
-    .px(12)
+    .pl(12)
+    // The stream's scrollbar track is 12 px wide over its right edge, so the checkbox keeps 12 more clear of it.
+    .pr(24)
     .gap(8)
     .items_center()
     .bg(t.raised)
@@ -247,7 +285,9 @@ function fileHead(item: FileItem, t: Theme): Element {
     .child(div().min_w(0).truncate().font_semibold().text_size(12).text_color(item.viewed ? t.dim : t.foreground).child(item.title))
     .when(item.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${item.add}`)))
     .when(item.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`-${item.del}`)))
-    .when(item.hides !== "", (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(item.hides)));
+    .when(item.hides !== "", (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(item.hides)))
+    .child(div().flex_1().min_w(0))
+    .child(viewedBox(item, t, dispatch));
 }
 
 // One item of the stream, in a box of the height the stream counted for it. A header, a card and a thread take a click of
@@ -270,7 +310,7 @@ function inner(i: StreamItem, shift: number, m: Model, t: Theme, dispatch: Dispa
   if (i.kind === "head") return head(i, t);
   if (i.kind === "body") return body(i, t, dispatch);
   if (i.kind === "editor") return editorBox(i, m, t, dispatch, ui);
-  if (i.kind === "file") return fileHead(i, t);
+  if (i.kind === "file") return fileHead(i, t, dispatch);
   if (i.kind === "wait") return div().w_full().pl(48).pt(8).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "note") return div().w_full().pl(48).pt(4).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "label") return div().w_full().px(12).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(i.text);

@@ -50,7 +50,7 @@ test("a file marked viewed is its header alone, a folded one says what it hides,
   assert.equal(isFolded(m, state.files[0] as FileSummary), true); // img.png is viewed
   const head = streamLayout(m, NOW).items.find((i) => i.key === "img.png|file");
   assert.ok(head && head.kind === "file");
-  assert.deepEqual([head.folded, head.hides], [true, "viewed"]);
+  assert.deepEqual([head.folded, head.viewed, head.hides], [true, true, ""]);
   const folded = steps(m, { _tag: "FoldToggled", path: "src/a.rs" }).model;
   assert.deepEqual(keys(folded).filter((k) => k.startsWith("src/a.rs|")), ["src/a.rs|file"]);
   const a = streamLayout(folded, NOW).items.find((i) => i.key === "src/a.rs|file");

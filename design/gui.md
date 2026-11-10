@@ -163,7 +163,7 @@ index in it counts into the `rows` of the same `file` reply.
   handling (nothing shown) and is not retried by looking; opening the card sends it again.
 - Next and previous comment. `ThreadJumped { forward }` comes from two icon buttons (`arrow-up`, `arrow-down`; tooltips `Previous
   comment (shift+n)` and `Next comment (n)`) and from the keys. The buttons are the first two of the second row of the bar under the stream, with
-  Send, Archive and Mark viewed: the header already wraps on a narrow panel, and the bar is where the other
+  Send and Archive: the header already wraps on a narrow panel, and the bar is where the other
   review-wide buttons are. They are off when the review has no thread (the tooltip then says `No comments yet`), and the bar is replaced by the editor or
   the question while those are up, so they are not there then. The row wraps when it is narrow.
   - The order is the TUI's. The threads not in the diff come first (they are drawn above every file), then
@@ -239,8 +239,10 @@ index in it counts into the `rows` of the same `file` reply.
   - What is seen and what is not: [herdr-app-facts](herdr-app-facts.md) sections 10 to 12 list each finding, with
     "not yet seen in the window" where it is read from the declarations only. Those are what the user confirms in their own panel.
   - A fold. A header is a click (`FoldToggled`). A file marked viewed is folded and a click opens it, as the TUI's `z`
-    and `m`: `rows.isFolded` is `folds[path]`, else the file's `viewed`. A folded file is its header, which says `viewed`
-    and how many threads it hides, and is not fetched. Marking a file viewed folds it and scrolls to its header. The fold
+    and `m`: `rows.isFolded` is `folds[path]`, else the file's `viewed`. A folded file is its header, which says
+    how many threads it hides, and is not fetched. The mark is a `Viewed` checkbox at the right of the file's header, as on GitHub (`view.viewedBox`, a check drawing in a box, lit once viewed;
+    tooltip `Mark viewed` or `Mark unviewed`), and not a button in the bar. Its press is its own and does not also fold the file, and it sends
+    `rows.viewedClick`, `ViewedClicked` with the opposite of the file's state. Marking a file viewed folds it and scrolls to its header. The fold
     is the panel's and is not saved; a reload drops a fold that agrees with the file's mark.
 - `Selection`: `path`, `side` (`old` or `new`), `from` and `to` as row indexes, and `anchor`, the row a drag began on (`from` or
   `to`). A drag makes it (`rows.span`), and `rows.pick` makes the one-row selection a `[+]` comments on when its row is outside any
@@ -543,9 +545,9 @@ sidebar shows, since moving a hidden column changes nothing on screen; `SidebarF
 `LayoutToggled`) and `refresh`. The first three change `panel` or `split` at once, and the first two send `Cmd.SavePanel`.
 The group moves to a second line when the panel is too narrow for it, never between an icon and its neighbour.
 
-Which control is an icon: a toggle, a step or a repeat action (the header's four, the comment arrows, Mark viewed, every button on a card, Edit and
+Which control is an icon: a toggle, a step or a repeat action (the header's four, the comment arrows, every button on a card, Edit and
 Delete on a message card, Refresh in both views). A control that starts a flow, carries a count or answers a question keeps its words:
-`Agent message`, `Comment on file`, `Send n` and `Archive n` (each with a leading icon, Send lit as the main action), the editor's Save and Cancel,
+`Agent message`, `Comment on file`, `Send n` and `Archive n` (each with a leading icon; Send is lit as the main action while there is something unsent, and off, with `No unsent comments` as its tooltip, when there is nothing), the editor's Save and Cancel,
 the confirm row and the agent picker. `view.iconButton` draws an icon: a 28 px square in the header and 24 px in the bar, on cards and in the
 message view, `t.muted` at rest, a `t.hover` ground on hover, `t.selected` while pressed (`.active`) or lit, `t.accent` for the lit icon and
 `t.ansi1` on a red ground for Delete, 40% opacity when off. Its tooltip is required, is also the screen-reader name, and carries the key where
