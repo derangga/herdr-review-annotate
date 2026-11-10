@@ -1328,6 +1328,33 @@ fn a_split_row_draws_old_and_new_on_one_line_with_an_empty_half_opposite() {
 }
 
 #[test]
+fn an_emoji_in_one_half_of_a_split_row_does_not_move_the_divider() {
+    let diff = diff_of(&SPLIT_PATCH.replace("-old4\n", "-old4 ✅\n"));
+    let view = view(&diff, &Review::default(), 130, 14);
+    let mut terminal = Terminal::new(TestBackend::new(130, 14)).unwrap();
+    render(&mut terminal, &view, &diff, &Keymap::default());
+    let buffer = terminal.backend().buffer();
+    let dividers = |needle: &str| -> Vec<usize> {
+        let row = buffer
+            .content
+            .chunks(usize::from(buffer.area.width))
+            .find(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap();
+        row.iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.symbol() == "│")
+            .map(|(x, _)| x)
+            .collect()
+    };
+    assert_eq!(dividers("old4"), dividers("c6"));
+}
+
+#[test]
 fn the_file_header_shows_the_counts_on_the_right() {
     let diff = diff_of(SPLIT_PATCH);
     let view = view(&diff, &Review::default(), 130, 14);

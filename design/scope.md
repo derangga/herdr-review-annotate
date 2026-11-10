@@ -56,7 +56,7 @@ herdr-review/
     editor.rs          multi-line comment editor   (adapted from herdr-annotate)
     edit_keys.rs       editor key map              (from herdr-annotate)
     icons.rs           the Nerd Font glyph for a file name, for the sidebar rows
-    width.rs           display width helpers       (from herdr-annotate)
+    width.rs           display width helpers, over unicode-width
     words.rs           the words that differ between a removed line and the added line paired with it
     agent_delivery.rs  readiness check and prompt  (from herdr-annotate)
     herdr.rs           herdr CLI wrapper           (from herdr-annotate)
@@ -84,7 +84,8 @@ herdr-review/
 ```
 
 Dependencies: `ratatui` 0.30 (brings crossterm), `serde`, `serde_json`, `toml` (for the keymap file,
-`config.md`), `chrono` with the `clock` feature. On Unix, `signal-hook` for clean terminal restore. Behind
+`config.md`), `chrono` with the `clock` feature. On Unix, `signal-hook` for clean terminal restore.
+`unicode-width`, the crate ratatui measures text with, so `width.rs` agrees with what is drawn. Behind
 the cargo feature `syntax`, which is on by default: `syntect` with `regex-fancy` and `default-syntaxes` and no
 default features, and `two-face` with `syntect-fancy` for TypeScript, TSX, TOML and the other grammars `bat`
 ships. Neither builds C code. `cargo build --no-default-features` leaves both out. No `uuid`, `notify`, `tokio`, `similar`,

@@ -1,51 +1,32 @@
-//! Terminal cell-width helpers matching the TypeScript implementation.
+//! Terminal cell-width helpers. They measure as ratatui draws: a string with ratatui's own
+//! `CellWidth`, a character with the `unicode-width` crate that `CellWidth` uses.
 
-const WIDE_RANGES: &[(u32, u32)] = &[
-    (0x1100, 0x115f),
-    (0x2e80, 0x303e),
-    (0x3041, 0x33ff),
-    (0x3400, 0x4dbf),
-    (0x4e00, 0x9fff),
-    (0xa000, 0xa4cf),
-    (0xa960, 0xa97f),
-    (0xac00, 0xd7a3),
-    (0xf900, 0xfaff),
-    (0xfe10, 0xfe19),
-    (0xfe30, 0xfe6f),
-    (0xff00, 0xff60),
-    (0xffe0, 0xffe6),
-    (0x1f300, 0x1f64f),
-    (0x1f900, 0x1f9ff),
-    (0x20000, 0x3fffd),
-];
+use ratatui::buffer::CellWidth;
+use unicode_width::UnicodeWidthChar;
 
-fn is_wide(code_point: u32) -> bool {
-    for &(start, end) in WIDE_RANGES {
-        if code_point < start {
-            return false;
-        }
-        if code_point <= end {
-            return true;
-        }
-    }
-    false
-}
-
-/// Cells occupied by a single character. Control characters count as zero.
+/// Cells occupied by a single character. Control characters count as zero. The halfwidth
+/// voiced-sound marks (U+FF9E, U+FF9F) are zero for `unicode-width` and one cell for ratatui, which
+/// adds a cell for each in a string.
 pub fn char_width(character: char) -> usize {
-    let code_point = u32::from(character);
-    if code_point < 0x20 || (0x7f..0xa0).contains(&code_point) {
-        return 0;
+    if matches!(character, '\u{ff9e}' | '\u{ff9f}') {
+        return 1;
     }
-    if (0x0300..=0x036f).contains(&code_point) || (0x200b..=0x200f).contains(&code_point) {
-        return 0;
-    }
-    if is_wide(code_point) { 2 } else { 1 }
+    character.width().unwrap_or(0)
 }
 
-/// Cells occupied by a string.
+/// Cells occupied by a string. Control characters are left out, as ratatui leaves them out before
+/// it measures (`CellWidth` asserts on a lone control character), and an emoji sequence is one wide
+/// glyph, so this is not always the sum of `char_width`.
 pub fn string_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
+    let cells = if text.chars().any(char::is_control) {
+        text.chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>()
+            .cell_width()
+    } else {
+        text.cell_width()
+    };
+    usize::from(cells)
 }
 
 /// Longest prefix of `text` that fits without splitting a character.
@@ -89,7 +70,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn character_widths_match_the_typescript_ranges() {
+    fn cjk_and_ascii_widths() {
         for character in ['한', 'ㄱ', '漢', 'あ', 'Ａ'] {
             assert_eq!(char_width(character), 2);
         }
@@ -103,6 +84,42 @@ mod tests {
     fn string_width_adds_character_cells() {
         assert_eq!(string_width("한글abc"), 7);
         assert_eq!(string_width(""), 0);
+    }
+
+    #[test]
+    fn emoji_that_ratatui_draws_in_two_cells_are_two_cells() {
+        for character in ['✅', '❌', '✨', '⭐', '⚡', '🚀'] {
+            assert_eq!(char_width(character), 2, "{character}");
+        }
+    }
+
+    #[test]
+    fn a_variation_selector_and_combining_marks_take_no_cells() {
+        for character in ['\u{fe0f}', '\u{0301}', '\u{0e31}', '\u{094d}', '\u{200d}'] {
+            assert_eq!(char_width(character), 0, "{character:?}");
+        }
+    }
+
+    #[test]
+    fn a_string_is_as_wide_as_ratatui_draws_it() {
+        for (text, cells) in [
+            ("✅", 2),
+            ("🚀 go", 5),
+            ("❤\u{fe0f}", 2),
+            ("👨\u{200d}👩\u{200d}👧", 2),
+            ("한글abc", 7),
+            ("e\u{301}", 1),
+            ("ﾊﾟ", 2),
+            ("a·b", 3),
+            ("\u{e68b} main.rs", 9),
+        ] {
+            assert_eq!(string_width(text), cells, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn control_characters_take_no_cells_in_a_string() {
+        assert_eq!(string_width("a\tb\nc\u{7}"), 3);
     }
 
     #[test]
