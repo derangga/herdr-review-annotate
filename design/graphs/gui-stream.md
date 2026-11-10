@@ -16,10 +16,13 @@ copies is "How the body behaves" in [tui](../tui.md).
          folded?  nothing more                         isFolded: folds[path], else the file's `viewed`
          fetched? its note, its file comments and its rows with the cards under them
                                                        key `<path>|r<n>`, `<path>|h:<id>`, `<path>|c:<id>`, `<path>|note`
+           side by side (rows.isSplit: model.split, else width >= SPLIT_W 900)? one item per code row, key `<path>|p<n>`, 20 px:
+             a run of del rows pairs line by line with the add run after it, the longer run's rest faces a null half;
+             a ctx row is on both halves; a hunk header stays a plain row; the cards of a pair come after it, its left row's first
          else a placeholder `<path>|wait`              rows.estimateRows(summary) lines of 20 px
        starts = the prefix sum of sizes (one longer than items), total = the last of it, wide = the width the longest line needs
        E: the item at a pixel is the last one that begins at or above it (rows.itemAt, the hit test of a pixel)
-       per file, built once and kept (rows.fileStream) until an opened thread, the focus, the minute or the width changes
+       per file, built once and kept (rows.fileStream) until an opened thread, the focus, the minute, the width or the layout changes
        E: the stream is built once and kept while a wheel tick, a hover, a drag or a selection changes nothing it is built from
   -> view.diffPane: the items that overlap the screen, as plain children of a clipped box
        rows.visibleRange(stream, offset, height) -> { first, end, shift }
@@ -40,7 +43,7 @@ one, because the prefix sums, the scrollbar, the hit test and a scroll to an ite
 taller or shorter than it was counted would move every item under it away from where the offset says it is.
 
 The layout is kept while nothing it is built from changes (`rows.layoutCache`): the state, the files, the folds, the open threads,
-the focus, the width, the files that failed and the minute. A wheel tick, a hover, a drag and a selection change none of
+the focus, the width, the layout (`isSplit`), the files that failed and the minute. A wheel tick, a hover, a drag and a selection change none of
 them, so none of them cuts items or prefix sums again, and no render rebuilds the whole stream because the pointer moved. The code
 rows' text cut into runs is kept per file reply on top of that (`rowsOf`), so the minute or the width changing does not cut every
 row again inside one frame.
@@ -193,6 +196,19 @@ a file off screen whose lines changed at the same counts is fetched again too.
 The end of the stream stops a scroll short: the last file's header may not reach the top. The file the request named
 stays selected as long as it is on screen, so the click does not move the sidebar's mark up a row.
 
+## The layout
+
+```
+-> LayoutToggled                                       the header button (rows.layoutButton, "Side by side" or "Unified")
+  -> split = !isSplit(model), hover = null             the item under the pointer is another one in the other layout
+  -> E: the item that was on top is revealed           reveal = the key of the item holding the same row in the new layout
+       (`r<n>` <-> `p<n>`: the item that holds row n)  a file header or card key is found as it is
+-> Resized across SPLIT_W with split = null            the same: reveal, hover = null
+-> E: a forced layout (split true or false) ignores the width
+```
+
+The layout is not saved. A drag across halves ends at the hovered half's partner row on the drag's side ([gui-comment](gui-comment.md)).
+
 ## Fold
 
 ```
@@ -220,4 +236,4 @@ fetch at a time, a folded file left out, a failed file not asked for again until
 files whose summary changed and the files on screen only, a stale reply dropped, the selection (topmost file wins, the
 file a click scrolled to wins where the stream ends short, only the threads not in the diff leave it alone), the offset of a click in the
 sidebar and of next and previous comment (and a key not in the stream kept waiting), a stream shorter than the screen sitting at the top, and the item that was at the top staying there when
-a file above it arrives.
+a file above it arrives. Side by side is in `test/split.test.ts`: the pairing, the card order, the threshold and the toggle, and the item on top kept across a flip.

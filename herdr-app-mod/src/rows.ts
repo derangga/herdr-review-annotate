@@ -70,34 +70,47 @@ export type FileItem = { kind: "file"; key: string; path: string; title: string;
 // What stands for a file whose diff has not arrived: a stretch as tall as the diff is guessed to be.
 export type WaitItem = { kind: "wait"; key: string; text: string; height: number };
 export type NoteItem = { kind: "note"; key: string; text: string };
-export type StreamItem = RowItem | HeadItem | BodyItem | LabelItem | FileItem | WaitItem | NoteItem;
+// A row of the side-by-side layout: the old half and the new half. A context row is on both halves (the same item), a
+// removed row faces the added row paired with it, and a half with no partner is null. A hunk header is not one of these.
+export type SplitItem = { kind: "split"; key: string; left: RowItem | null; right: RowItem | null };
+export type StreamItem = RowItem | HeadItem | BodyItem | LabelItem | FileItem | WaitItem | NoteItem | SplitItem;
+
+// The side a code row's half is on, null in the unified layout.
+type Side = "old" | "new" | null;
+
+// The stream is this wide, in pixels, or wider: side by side, unless the user forced a layout.
+export const SPLIT_W = 900;
+export const isSplit = (m: Model): boolean => m.split ?? m.width >= SPLIT_W;
 
 const sideOf = (row: Row): "old" | "new" => (row.kind === "del" ? "old" : "new");
 const lineOn = (row: Row, side: "old" | "new"): number | null => (side === "old" ? row.old : row.new);
 
-// One row picked: a one-row selection on the side the row lives on, and nothing for a hunk header.
-export function pick(file: FileView, row: number): Selection | null {
+// One row picked: a one-row selection on `side` (the half clicked), else on the side the row lives on. Nothing for a hunk
+// header, or for a row with no line on that side.
+export function pick(file: FileView, row: number, side: Side = null): Selection | null {
   const r = file.rows[row];
   if (r === undefined) throw new Error(`row ${row} is out of range`);
-  return r.kind === "hunk" ? null : { path: file.path, side: sideOf(r), from: row, to: row, anchor: row };
+  const on = side ?? sideOf(r);
+  return r.kind === "hunk" || lineOn(r, on) === null ? null : { path: file.path, side: on, from: row, to: row, anchor: row };
 }
 
 // What a [+] on a row comments on: the selection when the row is one of its lines, else the row alone. null for a
-// hunk header.
-export function plusTarget(file: FileView, sel: Selection | null, row: number): Selection | null {
+// hunk header. A [+] on a half of the other side than the selection's is the row alone.
+export function plusTarget(file: FileView, sel: Selection | null, row: number, side: Side = null): Selection | null {
   const r = file.rows[row];
   if (r === undefined) throw new Error(`row ${row} is out of range`);
-  return sel !== null && sel.path === file.path && row >= sel.from && row <= sel.to && lineOn(r, sel.side) !== null ? sel : pick(file, row);
+  return sel !== null && (side === null || side === sel.side) && sel.path === file.path && row >= sel.from && row <= sel.to && lineOn(r, sel.side) !== null ? sel : pick(file, row, side);
 }
 
 // The range a drag makes between the row it began on (`first`) and the row the pointer is on. It takes the first row's
-// side, and its ends are the first and last row in between that have a line on that side.
-export function span(file: FileView, first: number, second: number): Selection | null {
+// side (or `side`, the half it began on), and its ends are the first and last row in between that have a line on that side.
+export function span(file: FileView, first: number, second: number, side: Side = null): Selection | null {
   const a = file.rows[first];
   if (a === undefined || file.rows[second] === undefined) throw new Error(`row ${first} or ${second} is out of range`);
   if (a.kind === "hunk") return null;
-  const side = sideOf(a);
   const on: number[] = [];
+  side ??= sideOf(a);
+  if (lineOn(a, side) === null) return null;
   for (let i = Math.min(first, second); i <= Math.max(first, second); i++) {
     const r = file.rows[i];
     if (r !== undefined && lineOn(r, side) !== null) on.push(i);
@@ -105,6 +118,30 @@ export function span(file: FileView, first: number, second: number): Selection |
   const from = on[0];
   const to = on[on.length - 1];
   return from === undefined || to === undefined ? null : { path: file.path, side, from, to, anchor: first };
+}
+
+// The row that faces `row` in the side-by-side layout, by the pairing fileStream makes: a removed row faces the added row at
+// its place in the run of added rows right after its run, and the other way round; a context row faces itself. null when no
+// row does, and for a hunk header.
+export function partner(file: FileView, row: number): number | null {
+  const kind = (i: number): string | undefined => file.rows[i]?.kind;
+  const k = kind(row);
+  if (k === "ctx") return row;
+  if (k !== "del" && k !== "add") return null;
+  const edge = (from: number, step: number, of: string): number => {
+    let i = from;
+    while (kind(i + step) === of) i += step;
+    return i;
+  };
+  if (k === "del") {
+    const start = edge(row, 1, "del") + 1;
+    const at = start + row - edge(row, -1, "del");
+    return kind(start) === "add" && at <= edge(start, 1, "add") ? at : null;
+  }
+  const start = edge(row, -1, "add");
+  const end = start - 1;
+  const at = edge(end, -1, "del") + row - start;
+  return kind(end) === "del" && at <= end ? at : null;
 }
 
 export function anchorOf(file: FileView, sel: Selection): NewAnchor {
@@ -296,6 +333,7 @@ export function heightOf(i: StreamItem, width: number): number {
     case "ctx":
     case "add":
     case "del":
+    case "split":
       return ROW;
     case "label":
       return LABEL_H;
@@ -351,7 +389,7 @@ function rowsOf(file: FileView): RowItem[] {
 
 function fileStream(m: Model, file: FileView, now: number): FileItems {
   const ids = new Set(file.threads.flatMap((t) => [t.id, ...t.comments.map((c) => c.id)]));
-  const dep = [file.threads.filter((t) => m.expanded.has(t.id)).map((t) => t.id).join(","), m.focus !== null && ids.has(m.focus) ? m.focus : "", Math.floor(now / 60000), m.width].join("|");
+  const dep = [file.threads.filter((t) => m.expanded.has(t.id)).map((t) => t.id).join(","), m.focus !== null && ids.has(m.focus) ? m.focus : "", Math.floor(now / 60000), m.width, isSplit(m)].join("|");
   const kept = memo.get(file);
   if (kept !== undefined && kept.dep === dep) return kept.stream;
   const items: StreamItem[] = [];
@@ -366,10 +404,38 @@ function fileStream(m: Model, file: FileView, now: number): FileItems {
   if (file.note !== null) items.push({ kind: "note", key: itemKey(file.path, "note"), text: cleanText(file.note) });
   for (const t of top) cardItems(items, file.path, t, m, now);
   const base = rowsOf(file);
-  file.rows.forEach((_row, index) => {
-    items.push(base[index] as RowItem);
-    for (const t of under.get(index) ?? []) cardItems(items, file.path, t, m, now);
-  });
+  const cards = (...rows: (RowItem | null)[]): void => {
+    for (const index of new Set(rows.flatMap((r) => (r === null ? [] : [r.index])))) for (const t of under.get(index) ?? []) cardItems(items, file.path, t, m, now);
+  };
+  if (!isSplit(m)) {
+    base.forEach((row) => {
+      items.push(row);
+      cards(row);
+    });
+  } else {
+    // A run of removed rows pairs with the run of added rows right after it; the cards of a pair are its left row's, then its right's.
+    const kindAt = (i: number): string | undefined => base[i]?.kind;
+    for (let i = 0; i < base.length; ) {
+      const row = base[i] as RowItem;
+      if (row.kind === "hunk" || row.kind === "ctx") {
+        items.push(row.kind === "hunk" ? row : { kind: "split", key: itemKey(file.path, `p${i}`), left: row, right: row });
+        cards(row);
+        i++;
+        continue;
+      }
+      let mid = i;
+      while (kindAt(mid) === "del") mid++;
+      let end = mid;
+      while (kindAt(end) === "add") end++;
+      for (let p = 0; p < Math.max(mid - i, end - mid); p++) {
+        const left = i + p < mid ? (base[i + p] as RowItem) : null;
+        const right = mid + p < end ? (base[mid + p] as RowItem) : null;
+        items.push({ kind: "split", key: itemKey(file.path, `p${(left ?? (right as RowItem)).index}`), left, right });
+        cards(left, right);
+      }
+      i = end;
+    }
+  }
   const stream = { items, sizes: items.map((i) => heightOf(i, m.width)) };
   memo.set(file, { dep, stream });
   return stream;
@@ -421,7 +487,7 @@ export function layoutCache(): (m: Model, now: number) => Stream {
   let deps: unknown[] = [];
   let kept: Stream | null = null;
   return (m, now) => {
-    const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, m.skipped, Math.floor(now / 60000)];
+    const next = [m.state, m.files, m.folds, m.expanded, m.focus, m.width, isSplit(m), m.skipped, Math.floor(now / 60000)];
     if (kept !== null && next.every((d, i) => d === deps[i])) return kept;
     deps = next;
     kept = streamLayout(m, now);
@@ -556,7 +622,16 @@ export function cardKey(m: Model, id: string): string | null {
 }
 
 // The index in the stream of the item with this key, which a scroll to it names.
-export const indexOfKey = (items: StreamItem[], key: string): number => items.findIndex((i) => i.key === key);
+// A key of a code row (`r5`, or `p5` in the side-by-side layout) that the other layout has no item for stands for the item of
+// the same file that holds row 5, so a place in the stream survives a flip of the layout.
+const holds = (i: StreamItem, n: number): boolean => (i.kind === "split" ? i.left?.index === n || i.right?.index === n : (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") && i.index === n);
+export function indexOfKey(items: StreamItem[], key: string): number {
+  const at = items.findIndex((i) => i.key === key);
+  const row = /^[rp](\d+)$/.exec(keyLocal(key));
+  if (at >= 0 || row === null) return at;
+  const path = keyPath(key);
+  return items.findIndex((i) => keyPath(i.key) === path && holds(i, Number(row[1])));
+}
 
 // A code row has a gutter GUTTER_W pixels wide at its left edge, where the [+] is drawn on the hovered line. The [+] is
 // icons/plus.svg, a filled rounded square with the + cut out, drawn in this theme colour.
@@ -564,14 +639,15 @@ export const GUTTER_W = 24;
 export const PLUS = "accent";
 
 // How a code row is drawn: tinted when it is in the selection (the rows of its file between `from` and `to` that have a line
-// on the selection's side), and with a [+] when it is the row under the pointer. A hunk header has no line, so no [+].
-export function rowState(m: Model, item: RowItem): { selected: boolean; hovered: boolean } {
+// on the selection's side), and with a [+] when it is the row under the pointer. A hunk header has no line, so no [+]. A half
+// of a side-by-side row (`side`) is tinted only when the selection is on its side, and has the [+] only when the pointer is on it.
+export function rowState(m: Model, item: RowItem, side: Side = null): { selected: boolean; hovered: boolean } {
   const path = keyPath(item.key);
   const sel = m.selection;
   const onSide = sel === null ? false : (sel.side === "old" ? item.old : item.new) !== "";
   return {
-    selected: sel !== null && sel.path === path && item.index >= sel.from && item.index <= sel.to && onSide,
-    hovered: item.kind !== "hunk" && m.hover !== null && m.hover.path === path && m.hover.row === item.index,
+    selected: sel !== null && sel.path === path && item.index >= sel.from && item.index <= sel.to && onSide && (side === null || sel.side === side),
+    hovered: item.kind !== "hunk" && m.hover !== null && m.hover.path === path && m.hover.row === item.index && m.hover.side === side,
   };
 }
 
@@ -700,7 +776,11 @@ export function dock(m: Model): { label: string; buttons: DockButton[]; actions:
 // A width that fits the longest line, for the horizontal scroll of the diff.
 export function diffWidth(items: StreamItem[]): number {
   let wide = 300;
-  for (const i of items) if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") wide = Math.max(wide, i.text.length * 7 + 150);
+  for (const i of items) {
+    if (i.kind === "hunk" || i.kind === "ctx" || i.kind === "add" || i.kind === "del") wide = Math.max(wide, i.text.length * 7 + 150);
+    // Both halves are as wide as the wider text, so the row needs two of them.
+    else if (i.kind === "split") wide = Math.max(wide, 2 * (Math.max(i.left?.text.length ?? 0, i.right?.text.length ?? 0) * 7 + 110));
+  }
   return wide;
 }
 
@@ -788,6 +868,11 @@ export function sidebarButtons(m: Model): HeaderButton[] {
   const buttons: HeaderButton[] = [{ id: "sidebar-toggle", label: m.panel.open ? "Hide files" : "Show files", msg: { _tag: "SidebarToggled" } }];
   if (m.panel.open) buttons.push({ id: "sidebar-flip", label: m.panel.side === "left" ? "Move right" : "Move left", msg: { _tag: "SidebarFlipped" } });
   return buttons;
+}
+
+// The button that forces the other layout than the one drawn, until pressed again.
+export function layoutButton(m: Model): HeaderButton {
+  return { id: "layout-toggle", label: isSplit(m) ? "Unified" : "Side by side", msg: { _tag: "LayoutToggled" } };
 }
 
 // What sits under the header, left to right: the sidebar on its side, or left out when hidden, and the diff.

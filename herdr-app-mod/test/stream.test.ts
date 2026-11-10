@@ -130,7 +130,7 @@ test("E: the stream is built once and kept while a wheel tick, a hover, a drag o
   const m = drawn();
   const first = layout(m, NOW);
   const row = (x: Model) => layout(x, NOW);
-  const press: Msg[] = [{ _tag: "RowPressed", path: "src/a.rs", row: 1 }, { _tag: "Hovered", path: "src/a.rs", row: 4, on: true }, { _tag: "Wheeled", dy: 40 }, { _tag: "Released" }];
+  const press: Msg[] = [{ _tag: "RowPressed", path: "src/a.rs", row: 1, side: null }, { _tag: "Hovered", path: "src/a.rs", row: 4, side: null, on: true }, { _tag: "Wheeled", dy: 40 }, { _tag: "Released" }];
   let x: Model = { ...m, total: first.total };
   for (const msg of press) {
     x = steps(x, msg).model;
@@ -159,7 +159,7 @@ test("a file's items are kept while nothing they show changes, and the same rows
   const cut = runsOf(m, NOW);
   assert.equal(runsOf(m, NOW + 120000), cut);
   assert.equal(runsOf({ ...m, width: m.width + 200 }, NOW), cut);
-  assert.equal(runsOf(steps(m, { _tag: "RowPressed", path: "src/a.rs", row: 1 }, { _tag: "Hovered", path: "src/a.rs", row: 3, on: true }).model, NOW), cut);
+  assert.equal(runsOf(steps(m, { _tag: "RowPressed", path: "src/a.rs", row: 1, side: null }, { _tag: "Hovered", path: "src/a.rs", row: 3, side: null, on: true }).model, NOW), cut);
 });
 
 // --- the order files are fetched in ---

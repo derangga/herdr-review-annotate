@@ -4,8 +4,8 @@ import { div, svg } from "gpui-kit";
 import type { Context, Element, FocusHandle, ScrollWheelEvent } from "gpui-kit";
 import { h_flex, Input, Scrollbar, Textarea, v_flex } from "gpui-base";
 import type { InputState, TextareaState } from "gpui-base";
-import { badgeColor, CARD_W, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, itemClick, keyPath, letterColor, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, WARN } from "./rows.ts";
-import type { BodyItem, DockButton, FileItem, HeadItem, RowItem, SideRow, Stream, StreamItem } from "./rows.ts";
+import { badgeColor, CARD_W, confirmKey, confirmRow, dock, editorKey, editorTitle, filterInfo, GUTTER_W, itemClick, keyPath, layoutButton, letterColor, paneOrder, panelKey, pickerOptions, PLUS, rowState, ROW, sidebarButtons, sidebarRows, tagColor, thumbOf, toneColor, totals, visibleRange, wheelDelta, WARN } from "./rows.ts";
+import type { BodyItem, DockButton, FileItem, HeadItem, RowItem, SideRow, SplitItem, Stream, StreamItem } from "./rows.ts";
 import type { Model, Msg } from "./types.ts";
 
 export type Theme = Record<string, `#${string}`>;
@@ -138,35 +138,41 @@ function inner(i: StreamItem, m: Model, t: Theme, dispatch: Dispatch): Element {
   if (i.kind === "wait") return div().w_full().pl(48).pt(8).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "note") return div().w_full().pl(48).pt(4).text_size(11).text_color(t.dim).child(i.text);
   if (i.kind === "label") return div().w_full().px(12).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(i.text);
-  return diffRow(i, m, t, dispatch);
+  if (i.kind === "split") return splitRow(i, m, t, dispatch);
+  return diffRow(i, null, m, t, dispatch);
 }
 
 // A code row is an ordinary element, so it can carry the pointer's events: the hover (and the move, which also reports the
 // row when the stream scrolled under a pointer that did not move), the press that starts a drag, and in the gutter the [+],
 // drawn only on the hovered line, with a click of its own that does not start a drag.
-function diffRow(item: RowItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+// `side` is null for a unified row (two number columns, the whole width) and "old" or "new" for one half of a side-by-side
+// item (one number column, half the width); the half is the side its events and its tint are for.
+function diffRow(item: RowItem, side: "old" | "new" | null, m: Model, t: Theme, dispatch: Dispatch): Element {
   const path = keyPath(item.key);
-  const over = (on: boolean): void => dispatch({ _tag: "Hovered", path, row: item.index, on });
+  const over = (on: boolean): void => dispatch({ _tag: "Hovered", path, row: item.index, on, side });
+  const key = side === null ? item.key : `${item.key}-${side}`;
   if (item.kind === "hunk") {
-    return div().id(`row-${item.key}`).w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).on_hover((on) => over(on)).on_mouse_move(() => over(true)).child(item.text);
+    return div().id(`row-${key}`).w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).on_hover((on) => over(on)).on_mouse_move(() => over(true)).child(item.text);
   }
-  const { selected, hovered } = rowState(m, item);
+  const { selected, hovered } = rowState(m, item, side);
   const sign = item.kind === "add" ? "+" : item.kind === "del" ? "-" : " ";
+  const num = (n: string): Element => div().w(36).flex_none().text_right().text_color(t.dim).child(n);
   return h_flex()
-    .id(`row-${item.key}`)
-    .w_full()
+    .id(`row-${key}`)
     .h(ROW)
     .flex_none()
     .gap(6)
+    .when(side === null, (e) => e.w_full())
+    .when(side !== null, (e) => e.flex_1().min_w(0).overflow_hidden())
     .when(item.kind === "add", (e) => e.bg(tint(t.ansi2, "18")))
     .when(item.kind === "del", (e) => e.bg(tint(t.ansi1, "18")))
     .when(selected, (e) => e.bg(tint(t.accent, "30")))
     .on_hover((on) => over(on))
     .on_mouse_move(() => over(true))
-    .on_mouse_down("left", () => dispatch({ _tag: "RowPressed", path, row: item.index }))
+    .on_mouse_down("left", () => dispatch({ _tag: "RowPressed", path, row: item.index, side }))
     .child(
       div()
-        .id(`plus-${item.key}`)
+        .id(`plus-${key}`)
         .w(GUTTER_W)
         .h_full()
         .flex_none()
@@ -178,12 +184,12 @@ function diffRow(item: RowItem, m: Model, t: Theme, dispatch: Dispatch): Element
             .cursor_pointer()
             // The press on the [+] is its own: it must not start a drag on the row behind it.
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-            .on_click(() => dispatch({ _tag: "PlusClicked", path, row: item.index }))
+            .on_click(() => dispatch({ _tag: "PlusClicked", path, row: item.index, side }))
             .child(svg("mods/herdr-review/icons/plus.svg").size(16).flex_none().text_color(pick(PLUS, t))),
         ),
     )
-    .child(div().w(36).flex_none().text_right().text_color(t.dim).child(item.old))
-    .child(div().w(36).flex_none().text_right().text_color(t.dim).child(item.new))
+    .when(side !== "new", (e) => e.child(num(item.old)))
+    .when(side !== "old", (e) => e.child(num(item.new)))
     .child(div().w(10).flex_none().text_color(item.kind === "add" ? t.ansi2 : item.kind === "del" ? t.ansi1 : t.dim).child(sign))
     .child(
       h_flex()
@@ -191,6 +197,20 @@ function diffRow(item: RowItem, m: Model, t: Theme, dispatch: Dispatch): Element
         .min_w(0)
         .children(item.runs.map((r) => div().flex_none().whitespace_nowrap().text_color(t[r.color] ?? t.foreground).child(r.text))),
     );
+}
+
+// A side-by-side item: the old half and the new half with a 1px rule between. A missing half faces the longer run of a
+// change and is an empty faint box with no handlers.
+function splitRow(i: SplitItem, m: Model, t: Theme, dispatch: Dispatch): Element {
+  const half = (row: RowItem | null, side: "old" | "new"): Element =>
+    row === null ? div().flex_1().min_w(0).h_full().bg(tint(t.dim, "10")) : diffRow(row, side, m, t, dispatch);
+  return h_flex()
+    .w_full()
+    .h(ROW)
+    .flex_none()
+    .child(half(i.left, "old"))
+    .child(div().w(1).h_full().flex_none().bg(t.border))
+    .child(half(i.right, "new"));
 }
 
 function dockBar(m: Model, t: Theme, dispatch: Dispatch, ui: Ui): Element {
@@ -465,7 +485,7 @@ export function draw(m: Model, stream: Stream, t: Theme, dispatch: Dispatch, ui:
         .child(div().text_size(11).text_color(t.ansi2).child(`+${sum.add}`))
         .child(div().text_size(11).text_color(t.ansi1).child(`-${sum.del}`))
         .child(div().flex_1())
-        .children(sidebarButtons(m).map((b) => button(b.id, b.label, false, t, () => dispatch(b.msg))))
+        .children([...sidebarButtons(m), layoutButton(m)].map((b) => button(b.id, b.label, false, t, () => dispatch(b.msg))))
         .child(button("spec-worktree", "Working tree", m.spec !== null && m.spec.kind === "worktree", t, () => dispatch({ _tag: "SpecChosen", spec: { kind: "worktree" } })))
         .child(
           button("spec-branch", base === null ? "Branch" : `Branch ${base}`, m.spec !== null && m.spec.kind === "branch", t, base === null ? null : () => dispatch({ _tag: "SpecChosen", spec: { kind: "branch", base } })),

@@ -11,12 +11,12 @@ pointer's handlers ([herdr-app-facts](../herdr-app-facts.md) section 12): `on_ho
 `[+]` shows only on the line under the mouse, a plain click on a line highlights nothing, holding the mouse on a line and dragging
 selects the lines between, and the `[+]` on a line inside the range comments on the range, the `[+]` elsewhere on that line.
 
-The model has `hover` (the row under the pointer, `{ path, row }`), `drag` (a press that has not been released: the row it began on,
+The model has `hover` (the row under the pointer, `{ path, row, side }`; `side` is the half of a side-by-side row, `old` or `new`, null in the unified layout), `drag` (a press that has not been released: the row it began on, its side,
 the row the pointer is on now, and whether it ever left the first row) and `selection` (the range, as before; a range is in one file).
 There is no cursor and no shift-click.
 
 ```
--> on_hover(on) and on_mouse_move of a row               Msg.Hovered { path, row, on }; the move always says on = true, so a
+-> on_hover(on) and on_mouse_move of a row               Msg.Hovered { path, row, side, on }; the move always says on = true, so a
                                                        row the stream scrolled under a still pointer is found at the next move
 -> update(model, Hovered)                              (pure)
   -> on = false?  hover = null only when it is this row (the next row's enter can come before this row's leave)
@@ -24,14 +24,15 @@ There is no cursor and no shift-click.
   -> hover = this row; the same row again returns the model as it was, so a move within a row draws nothing
   -> a drag in this file, and the row is not its head? the pointer moved: drag.head = row, moved = true
        selection = rows.span(file, drag.row, row)      (pure) the range between the row the press began on and this row
-         side = the side of the first row, new for ctx and add, old for del
+         side = the side of the first row, new for ctx and add, old for del; in a side-by-side half the half's side
+         the hovered row is in the other half: the head is that row's partner on the drag's side (rows.partner), so the range stays on one side
          a range that holds rows of both sides keeps the first row's side. Its ends are the first and last
          row between the two that have a line on that side. The first row stays where it was (anchor)
          a hunk header as the first row: no selection   E: a hunk header row is ignored
          back on the first row: that row alone
        focus and confirm are cleared                   (a card and a line are never both picked)
        a row of another file: ignored                  a drag is in one file
--> on_mouse_down("left") of a code row                  Msg.RowPressed { path, row }; main.ts gives the keyboard to the panel (focusNav) so Esc reaches it
+-> on_mouse_down("left") of a code row                  Msg.RowPressed { path, row, side }; main.ts gives the keyboard to the panel (focusNav) so Esc reaches it
 -> update(model, RowPressed)
   -> editor open, or a row not in the file? ignored    the rows are not pressable while the editor is open
   -> drag = { path, row, head: row, moved: false }, hover = the row
@@ -53,8 +54,8 @@ sidebar, the header or the bar below the stream.
 ```
 -> the [+]: drawn in a code row's gutter only when rows.rowState(model, row).hovered (a hunk header has none)
 -> on_mouse_down("left") of the [+]                      cx.stop_propagation(): the press is the [+]'s, it must not start a drag
--> on_click of the [+]                                   Msg.PlusClicked { path, row }
--> PlusClicked { path, row }
+-> on_click of the [+]                                   Msg.PlusClicked { path, row, side }
+-> PlusClicked { path, row, side }
   -> editor open? status "finish or cancel the comment first", nothing else
   -> rows.plusTarget(file, selection, row)             (pure)
        E: the row is in the selection and has a line on its side:  the selection, the whole range

@@ -146,12 +146,14 @@ export type Jump = { path: string; edge: "first" | "last" };
 // A request to scroll the stream so the item with this key is at the top. A new object is a new request.
 export type Reveal = { key: string };
 
-// The row the pointer is over, if it is a row of a file's diff.
-export type Hover = { path: string; row: number };
+// The row the pointer is over, if it is a row of a file's diff. `side` is the half of a side-by-side row it is over, null
+// in the unified layout.
+export type Hover = { path: string; row: number; side: "old" | "new" | null };
 
 // A left press on a row, until the button is released. `row` is where it began, `head` the row the pointer is on now, and
-// `moved` says the pointer left the first row, so the press is a drag and not a click.
-export type Drag = { path: string; row: number; head: number; moved: boolean };
+// `moved` says the pointer left the first row, so the press is a drag and not a click. `side` is the half the press began on
+// (null in the unified layout), which the drag's range takes.
+export type Drag = { path: string; row: number; head: number; moved: boolean; side: "old" | "new" | null };
 
 // A grip on the scrollbar's thumb: where the pointer was and where the stream was.
 export type Grip = { y: number; offset: number };
@@ -171,6 +173,7 @@ export type Model = {
   height: number; // the stream's height, the part of it on screen
   offset: number; // how far the stream is scrolled, in pixels from its top; the mod scrolls it itself
   total: number; // the stream's height in pixels as the last Scrolled saw it, to clamp the offset and size the thumb
+  split: boolean | null; // the layout the user forced (true: side by side), null for the width to decide; not saved
   hover: Hover | null; // the code row under the pointer: the one that draws a [+]
   drag: Drag | null; // a press on a row that has not been released
   grip: Grip | null; // a press on the scrollbar's thumb that has not been released
@@ -220,15 +223,15 @@ export type Msg =
   | { _tag: "ThumbMoved"; y: number }
   | { _tag: "TrackClicked"; y: number }
   | { _tag: "Resized"; width: number; height: number }
-  | { _tag: "Hovered"; path: string; row: number; on: boolean }
-  | { _tag: "RowPressed"; path: string; row: number }
+  | { _tag: "Hovered"; path: string; row: number; side: "old" | "new" | null; on: boolean }
+  | { _tag: "RowPressed"; path: string; row: number; side: "old" | "new" | null }
   | { _tag: "Released" }
   | { _tag: "FoldToggled"; path: string }
   | { _tag: "Failed"; op: Op; error: ReviewError }
   | { _tag: "SpecChosen"; spec: Spec }
   | { _tag: "FileChosen"; path: string }
   | { _tag: "EditorCancelled" }
-  | { _tag: "PlusClicked"; path: string; row: number }
+  | { _tag: "PlusClicked"; path: string; row: number; side: "old" | "new" | null }
   | { _tag: "SelectionCleared" }
   | { _tag: "FileCommentClicked" }
   | { _tag: "EditorSaved"; text: string }
@@ -247,6 +250,7 @@ export type Msg =
   | { _tag: "Wrote"; kind: WriteKind }
   | { _tag: "SidebarToggled" }
   | { _tag: "SidebarFlipped" }
+  | { _tag: "LayoutToggled" }
   | { _tag: "FilterChanged"; text: string }
   | { _tag: "FilterFocused"; on: boolean }
   | { _tag: "FilterOpened" }

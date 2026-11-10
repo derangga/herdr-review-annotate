@@ -27,12 +27,12 @@ function steps(m: Model, ...msgs: Msg[]): { model: Model; cmds: Cmd[] } {
   return { model: m, cmds };
 }
 const loadsOf = (cmds: Cmd[]) => cmds.filter((c) => c._tag === "Load");
-const press = (row: number): Msg => ({ _tag: "RowPressed", path: "src/a.rs", row });
-const over = (row: number, on = true): Msg => ({ _tag: "Hovered", path: "src/a.rs", row, on });
+const press = (row: number): Msg => ({ _tag: "RowPressed", path: "src/a.rs", row, side: null });
+const over = (row: number, on = true): Msg => ({ _tag: "Hovered", path: "src/a.rs", row, side: null, on });
 const release: Msg = { _tag: "Released" };
 // A press on row `a`, the pointer moved on to each of `through`, and the release: a click when `through` is empty.
 const drag = (a: number, ...through: number[]): Msg[] => [press(a), ...through.map((r) => over(r)), release];
-const plus = (row: number): Msg => ({ _tag: "PlusClicked", path: "src/a.rs", row });
+const plus = (row: number): Msg => ({ _tag: "PlusClicked", path: "src/a.rs", row, side: null });
 const act = (id: string, action: "focus" | "toggle" | "reply" | "edit" | "resolve" | "reopen" | "delete"): Msg => ({ _tag: "ThreadAction", id, action });
 const failedMsg = (error: ReviewError, op: "write" | "seen" = "write"): Msg => ({ _tag: "Failed", op, error });
 
@@ -66,7 +66,7 @@ test("E: a plain click on a line highlights nothing, opens nothing, and clears a
   // The press alone changes no selection: it shows only once the pointer moves.
   const held = steps(loaded(), ...drag(1, 4), press(3));
   assert.deepEqual(held.model.selection, { path: "src/a.rs", side: "new", from: 1, to: 4, anchor: 1 });
-  assert.deepEqual(held.model.drag, { path: "src/a.rs", row: 3, head: 3, moved: false });
+  assert.deepEqual(held.model.drag, { path: "src/a.rs", row: 3, head: 3, moved: false, side: null });
   // The release without a move is the click, and it clears.
   assert.equal(steps(held.model, release).model.selection, null);
 });
@@ -98,25 +98,25 @@ test("E: holding the press on a line and moving onto others selects the lines be
 test("a new drag starts over, a press whose release was lost is replaced by the next press, and moves with no press select nothing", () => {
   assert.deepEqual(steps(loaded(), ...drag(1, 4), ...drag(5, 6)).model.selection, { path: "src/a.rs", side: "new", from: 5, to: 6, anchor: 5 });
   const lost = steps(loaded(), press(1), over(3), press(5));
-  assert.deepEqual(lost.model.drag, { path: "src/a.rs", row: 5, head: 5, moved: false });
+  assert.deepEqual(lost.model.drag, { path: "src/a.rs", row: 5, head: 5, moved: false, side: null });
   assert.deepEqual(steps(lost.model, over(6)).model.selection, { path: "src/a.rs", side: "new", from: 5, to: 6, anchor: 5 });
   assert.equal(steps(loaded(), over(1), over(4)).model.selection, null);
 });
 
 test("a drag is in one file, and a row that is not in the file is ignored", () => {
   const m = steps(loaded(), press(1)).model;
-  assert.equal(steps(m, { _tag: "Hovered", path: "notes.txt", row: 0, on: true }).model.drag, m.drag);
+  assert.equal(steps(m, { _tag: "Hovered", path: "notes.txt", row: 0, side: null, on: true }).model.drag, m.drag);
   assert.equal(steps(m, over(99)).model.selection, null);
   assert.equal(steps(loaded(), press(99)).model.drag, null);
-  assert.equal(steps(loaded(), { _tag: "RowPressed", path: "nowhere.rs", row: 0 }).model.drag, null);
+  assert.equal(steps(loaded(), { _tag: "RowPressed", path: "nowhere.rs", row: 0, side: null }).model.drag, null);
 });
 
 test("a hover is the row under the pointer, and a leave only counts for the row that has it", () => {
   const m = steps(loaded(), over(3)).model;
-  assert.deepEqual(m.hover, { path: "src/a.rs", row: 3 });
+  assert.deepEqual(m.hover, { path: "src/a.rs", row: 3, side: null });
   assert.equal(steps(m, over(3)).model, m); // the same row again changes nothing, so no frame
   // The next row's enter can come before this row's leave.
-  assert.deepEqual(steps(m, over(4), over(3, false)).model.hover, { path: "src/a.rs", row: 4 });
+  assert.deepEqual(steps(m, over(4), over(3, false)).model.hover, { path: "src/a.rs", row: 4, side: null });
   assert.equal(steps(m, over(3, false)).model.hover, null);
   assert.equal(steps(m, over(99)).model, m);
 });

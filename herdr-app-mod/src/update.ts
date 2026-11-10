@@ -1,8 +1,10 @@
 // The reducer. (Model, Msg) -> (Model, Cmd[]). Pure. Single flight lives here: at most one load runs, and
 // a trigger that comes during one, or while an editor is open, sets `pending` and starts one more load
 // when the load ends or the editor closes.
-import { anchorOf, archivableCount, BATCH, cardKey, cardOrder, clampOffset, filterCount, filterPick, findComment, isFolded, itemKey, jumpStop, keyPath, maxOffset, offsetOfThumb, plural, plusTarget, sameRows, span, thumbOf, unsentCount, wanted } from "./rows.ts";
+import { anchorOf, archivableCount, BATCH, cardKey, cardOrder, clampOffset, filterCount, filterPick, findComment, isFolded, isSplit, itemKey, jumpStop, keyPath, maxOffset, offsetOfThumb, partner, plural, plusTarget, sameRows, span, thumbOf, unsentCount, wanted } from "./rows.ts";
 import type { Cmd, FileView, Jump, Model, Msg, Panel, ReviewError, Spec, State, ThreadActionKind, WriteOp } from "./types.ts";
+
+type Side = "old" | "new" | null;
 
 export const specText = (spec: Spec | null): string => (spec === null ? "meta" : spec.kind === "worktree" ? "worktree" : `branch:${spec.base}`);
 const keyOf = (root: string | null, spec: Spec | null): string => JSON.stringify([root, specText(spec)]);
@@ -25,6 +27,7 @@ export function initModel(): Model {
     height: 600,
     offset: 0,
     total: 0,
+    split: null,
     hover: null,
     drag: null,
     grip: null,
@@ -105,26 +108,35 @@ const rowOf = (m: Model, path: string, row: number): FileView | null => {
   return file !== undefined && file.rows[row] !== undefined ? file : null;
 };
 
+// `next` is `m` changed in a way that may flip the layout. The rows are other items in the other layout, so the pixel offset
+// would land elsewhere: the stream scrolls back to the item on top (or the one that holds its row), unless a scroll is
+// already on its way, and no hover is kept.
+function flipped(m: Model, next: Model): Model {
+  return isSplit(m) === isSplit(next) ? next : { ...next, hover: null, reveal: next.reveal ?? (m.top === null ? null : { key: m.top }) };
+}
+
 // The pointer is over a row, or left it. The [+] is drawn on the hovered row. A leave only counts when it is the row
 // the model has, since the next row's enter can come before this row's leave. While a press is held, the pointer coming
 // onto another row of the same file makes the range between the row the press began on and this one.
-function hovered(m: Model, path: string, row: number, on: boolean): Step {
-  const same = m.hover !== null && m.hover.path === path && m.hover.row === row;
+function hovered(m: Model, path: string, row: number, side: Side, on: boolean): Step {
+  const same = m.hover !== null && m.hover.path === path && m.hover.row === row && m.hover.side === side;
   if (!on) return same ? [{ ...m, hover: null }, []] : [m, []];
   const file = rowOf(m, path, row);
   if (file === null) return [m, []];
-  const next = same ? m : { ...m, hover: { path, row } };
+  const next = same ? m : { ...m, hover: { path, row, side } };
   const d = next.drag;
-  if (d === null || d.path !== path || d.head === row || rowOf(m, path, d.row) === null) return [next, []];
-  return [{ ...next, drag: { ...d, head: row, moved: true }, selection: span(file, d.row, row), focus: null, confirm: null }, []];
+  // The pointer's place in a side-by-side drag is a pair: on the other half than the press began on, it is the row facing this one.
+  const head = d !== null && d.side !== null && side !== null && side !== d.side ? (partner(file, row) ?? row) : row;
+  if (d === null || d.path !== path || d.head === head || rowOf(m, path, d.row) === null) return [next, []];
+  return [{ ...next, drag: { ...d, head, moved: true }, selection: span(file, d.row, head, d.side), focus: null, confirm: null }, []];
 }
 
 // A left press on a code row. It starts a drag and changes nothing else yet: a release without a move is a click, which
 // clears the selection, and a move makes the new one. A press that is still held from before (its release was lost
 // outside the window) is replaced. The editor open means the rows take no press.
-function pressed(m: Model, path: string, row: number): Step {
+function pressed(m: Model, path: string, row: number, side: Side): Step {
   if (m.editor !== null || rowOf(m, path, row) === null) return [m, []];
-  return [{ ...m, hover: { path, row }, drag: { path, row, head: row, moved: false } }, []];
+  return [{ ...m, hover: { path, row, side }, drag: { path, row, head: row, moved: false, side } }, []];
 }
 
 // The button went up, anywhere in the panel. A press that never moved was a click, and a click on a line clears the
@@ -157,11 +169,11 @@ function trackClicked(m: Model, y: number): Step {
 
 // A click on the [+] of a row opens the editor on the range when the row is in it, else on the row alone. What is commented
 // becomes the selection, so it stays lit while the editor is open.
-function plusClicked(m: Model, path: string, row: number): Step {
+function plusClicked(m: Model, path: string, row: number, side: Side): Step {
   const file = m.files.get(path);
   if (file === undefined) return [m, []];
   if (m.editor !== null) return [{ ...m, status: BUSY_EDITOR }, []];
-  const sel = plusTarget(file, m.selection, row);
+  const sel = plusTarget(file, m.selection, row, side);
   if (sel === null) return [m, []];
   return [{ ...m, selection: sel, focus: null, confirm: null, status: null, editor: { kind: "comment", anchor: anchorOf(file, sel), thread: null, comment: null, initial: "" } }, []];
 }
@@ -409,11 +421,13 @@ export function update(m: Model, msg: Msg): Step {
     case "TrackClicked":
       return trackClicked(m, msg.y);
     case "Resized":
-      return msg.width === m.width && msg.height === m.height ? [m, []] : [{ ...m, width: msg.width, height: msg.height }, []];
+      return msg.width === m.width && msg.height === m.height ? [m, []] : [flipped(m, { ...m, width: msg.width, height: msg.height }), []];
     case "Hovered":
-      return hovered(m, msg.path, msg.row, msg.on);
+      return hovered(m, msg.path, msg.row, msg.side, msg.on);
     case "RowPressed":
-      return pressed(m, msg.path, msg.row);
+      return pressed(m, msg.path, msg.row, msg.side);
+    case "LayoutToggled":
+      return [flipped(m, { ...m, split: !isSplit(m) }), []];
     case "Released":
       return released(m);
     case "FoldToggled": {
@@ -443,7 +457,7 @@ export function update(m: Model, msg: Msg): Step {
     case "SelectionCleared":
       return m.selection === null ? [m, []] : [{ ...m, selection: null }, []];
     case "PlusClicked":
-      return plusClicked(m, msg.path, msg.row);
+      return plusClicked(m, msg.path, msg.row, msg.side);
     case "FileCommentClicked":
       if (m.editor !== null || m.selected === null) return [m, []];
       return [{ ...m, selection: null, status: null, editor: { kind: "comment", anchor: { path: m.selected, old_path: null, side: null, line: null, end_line: null }, thread: null, comment: null, initial: "" } }, []];

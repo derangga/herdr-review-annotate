@@ -21,6 +21,7 @@ In v1:
 - A sidebar of the changed files grouped by folder, with an icon for each file type and change counts, beside one scrolling stream of every file's unified diff. The selected file in the sidebar is the topmost file on
   screen, and a click on a file scrolls the stream to it.
   A header button hides and shows it and another moves it to the other side. The panel remembers both.
+- A side-by-side layout of the diff, as the TUI's `t`: on by itself when the stream is wide, and a header button switches it ("The side-by-side layout" below).
 - A filter box at the top of the sidebar, as the TUI's `filter`: typing narrows the file list to the paths that
   match, and `/` goes to the box.
 - Comments on a line, a range or a whole file, as in the TUI. The `[+]` shows only on the code line under the mouse; a plain click on a
@@ -37,7 +38,7 @@ In v1:
   and the mod colours them from `theme()`. No highlighter runs in the mod. A build
   of the binary without the `syntax` feature, or one older than the mod, sends none and the rows draw plain.
 
-Left out on purpose, each a follow-up: side-by-side layout, changed words inside a line, the
+Left out on purpose, each a follow-up: changed words inside a line, the
 agent-message review, vim motions, the whole-file view, a key for the sidebar and a key to fold.
 
 ## Method: how Effect maps onto plain TypeScript
@@ -68,9 +69,9 @@ variants   Spec          WorkTree | Branch { base }
            Change        modified | added | deleted | renamed | untracked | binary | submodule
                          | too_large | unparsed
            Placement     matched | outdated | not_in_diff, with a row index or null
-           Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked, SelectionCleared,
+           Msg           what happened: Opened, Triggered, Loaded, Hovered, RowPressed, Released, PlusClicked (these three carry `side`: `old`, `new` or null, null in the unified layout), SelectionCleared,
                          FileCommentClicked, EditorSaved, EditorCancelled, ThreadAction, SendClicked, PickerChosen, PickerCancelled, ArchiveClicked, ArchiveConfirmed, DeleteConfirmed, ConfirmCancelled, Archived, ViewedClicked,
-                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
+                         SpecChosen, FileChosen, ThreadJumped, FilesLoaded, Scrolled, Glanced, Wheeled, ThumbGrabbed, ThumbMoved, TrackClicked, Resized, FoldToggled, SidebarToggled, SidebarFlipped, LayoutToggled, FilterChanged, FilterFocused, FilterOpened, FilterEntered, FilterCleared, PanelLoaded, Failed, Wrote, Sent ...
            Cmd           what to do next: Load, LoadFiles, WatchStore, Write, Send, Archive, SetViewed, Notify, ReadPanel, SavePanel
 errors     BinaryMissing | TooOld | ContractMismatch { path } | Busy | BackendFailed { code, stderr }
            BadRequest { stderr } | Refused { Blocked | NotReady | AgentGone }
@@ -88,7 +89,7 @@ index in it counts into the `rows` of the same `file` reply.
   screen) and `visible` (the paths of the files on screen, topmost first), `reveal` (a scroll not made yet:
   the key of an item to put at the top), `width` and `height` (the stream's box, for the height of a card and the part of the stream
   on screen), `offset` (how far the mod has scrolled the stream, in pixels from its top) and `total` (the stream's height as the last
-  `Scrolled` saw it), `hover` (the code row under the pointer), `drag` (a press on a row that has not been released) and `grip` (a press
+  `Scrolled` saw it), `split` (the layout the user forced, `true` for side by side, `false` for unified, null for the width to decide; not saved), `hover` (the code row under the pointer, and the half of it, `side`) and `drag` (a press on a row that has not been released, with the half it began on) and `grip` (a press
   on the scrollbar's thumb that has not been released), `folds` (the files the
   user folded or opened, by path; a file not in it is folded when it is viewed), `dirty` (fetched files to fetch again),
   `fresh`, `glance` and `seenSent` (the new resolved cards on screen, as of the last scroll and the last tick, and the threads a seen was sent for), `skipped` (files whose last fetch failed) and `batch` (the files the running fetch is for), `expanded` (a set of root ids: the
@@ -472,9 +473,9 @@ scripts/stage-app-mod.sh     build, then copy (the bundle, mod.json, icons/) to 
 | `decode.ts` | The boundary checks, for the replies, for `props()`, `focused()` and `panes()`, and for `panel.json` | `types.ts` |
 | `host.ts` | The `Host` interface and the real one | `herdr` |
 | `cli.ts` | `ReviewCli`: argv, exit code and JSON error mapping | `types.ts`, `decode.ts` |
-| `update.ts` | `update`, `failed`, single flight for the state and the files, the fetch order, the wheel, the thumb, the hover and the drag | `types.ts`, `rows.ts` |
+| `update.ts` | `update`, `failed`, single flight for the state and the files, the fetch order, the wheel, the thumb, the hover and the drag (across halves a drag ends at the hovered half's `partner` row), the layout toggle and the reveal across a flip | `types.ts`, `rows.ts` |
 | `icons.ts` | `fileIcon(name)`: the drawing for a file name, whole names then lower-cased extensions then `file` | nothing |
-| `rows.ts` | The stream (every file's items, heights and prefix sums, the layout cache, the scroll math, the thumb, the card height estimate, the fetch order, the keys), the thread cards, the sidebar's folder and file rows (with `icons.fileIcon`) and the filter's matcher, count and Enter pick, its header buttons and pane order, selection math, anchor and batch from a selection, which rows are tinted or hovered, the bar under the diff, what a click or a key means | `types.ts`, `icons.ts` |
+| `rows.ts` | The stream (every file's items, heights and prefix sums, the layout cache, the scroll math, the thumb, the card height estimate, the fetch order, the keys, the side-by-side pairing, `isSplit` and `SPLIT_W`, `partner`, `layoutButton`), the thread cards, the sidebar's folder and file rows (with `icons.fileIcon`) and the filter's matcher, count and Enter pick, its header buttons and pane order, selection math, anchor and batch from a selection, which rows are tinted or hovered, the bar under the diff, what a click or a key means | `types.ts`, `icons.ts` |
 | `runner.ts` | `run(env, cmd)`, `withRecovery`, `watch` (one watch loop), `open(host)` (root and target at `init`), the read and write of `panel.json` | `cli.ts`, `decode.ts`, `types.ts` |
 | `view.ts` | GPUI drawing, the stream's visible items, its scrollbar and the rows' events | `gpui-kit`, `gpui-base`, `rows.ts` |
 | `main.ts` | The exported `View` class: `init`, `render`, `close`, the loops, the layout cache, and the step after each update that feeds `Scrolled` back | `host.ts`, `view.ts`, the rest |
@@ -507,6 +508,24 @@ the new one, the sign, and the code. The gutter holds `icons/plus.svg`, a 16 px 
   window never arrives and a move carries no button state; the next press replaces a drag that was never released.
 - `hover` is in the model and a row is redrawn when it changes. After a wheel tick with a still pointer the line under it changes
   without a move; the `[+]` follows at the next move.
+
+### The side-by-side layout
+
+`rows.ts` turns the unified rows into one `split` item per code row (key `<path>|p<n>`, `n` the row of the left half, else of the right): an old half on the left and a new half on the right, each a
+`RowItem`, in a box `ROW` high. A run of removed rows pairs line by line with the run of added rows right after it, and the longer run's extra rows
+face an empty half; a context row is on both halves; a hunk header stays one full-width row. Unlike the TUI there are no "N unchanged
+lines" rows, because the stream already shows every row. A card sits under the paired item that holds its row, at the full width, not in a half.
+
+- The layout is side by side when the stream (`width`) is 900 px or wider and unified otherwise. The header button (`layoutButton`) forces the
+  other layout until it is pressed again. It is not saved, so a new panel starts from the width.
+- A half is drawn as a unified row with one number column (the old number on the left, the new on the right), the sign, the coloured runs, its own
+  gutter and its own tint; the two halves share a 1px `theme().border` rule, and an empty half is a faint box with no handlers.
+- The half chooses the side: `Hovered`, `RowPressed` and `PlusClicked` carry `side`, `old` for the left half and `new` for the right, and a
+  unified row sends `null`. The `[+]` shows, and a drag selects, per half (`rowState(m, row, side)`), and a selection is tinted only on the half of its side.
+  A drag that crosses to the other half ends at that half's `partner(file, row)`, the row facing the hovered one on the drag's side.
+- `isSplit(m)` is `m.split ?? m.width >= SPLIT_W` and is part of the layout cache's inputs. `LayoutToggled` sets `split` to the opposite of
+  `isSplit` and clears `hover`. A flip, by the button or by a resize across 900 px with no forced layout, reveals the item that was on top: its
+  key `r<n>` or `p<n>` maps to the item that holds row `n` in the other layout.
 
 ### The filter box
 
