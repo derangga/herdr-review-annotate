@@ -3,7 +3,8 @@
 import { View } from "gpui-kit";
 import type { AsyncContext, Context, Element, FocusHandle } from "gpui-kit";
 import { InputState, TextareaState } from "gpui-base";
-import { decodeProps } from "./decode.ts";
+import { decodeProps, reviewPane } from "./decode.ts";
+import { drawToggle } from "./toggle.ts";
 import { makeCli } from "./cli.ts";
 import { realHost } from "./host.ts";
 import { listen, open, run, watch } from "./runner.ts";
@@ -18,10 +19,13 @@ import { draw } from "./view.ts";
 const TIMER_MS = 10_000;
 // A card has been looked at once it is still on screen a whole tick later, so a fast scroll marks nothing.
 const GLANCE_MS = 500;
+const TOGGLE_MS = 500;
 
 export default class ReviewView extends View {
   model: Model = initModel();
   closed = false;
+  // Set only on the tab-bar button's copy: the review pane it last saw in the focused tab (null for none).
+  toggle: string | null | undefined = undefined;
   cx!: AsyncContext;
   env!: Env;
   handle!: FocusHandle;
@@ -36,6 +40,18 @@ export default class ReviewView extends View {
 
   init(_props: unknown, cx: AsyncContext): void {
     this.cx = cx;
+    if (decodeProps(realHost.props()).toggle) {
+      this.toggle = reviewPane(realHost.panes(), realHost.focused());
+      // shortcut: polls panes() because herdr.d.ts does not say a mod redraws when a pane opens or closes; drop it if it does.
+      cx.timer.every(TOGGLE_MS, () => {
+        const now = reviewPane(realHost.panes(), realHost.focused());
+        if (now !== this.toggle) {
+          this.toggle = now;
+          cx.notify();
+        }
+      });
+      return;
+    }
     this.perf = recorderFor(realHost);
     this.handle = cx.focus_handle();
     this.nav = cx.focus_handle();
@@ -177,6 +193,12 @@ export default class ReviewView extends View {
   }
 
   render(_cx: Context): Element {
+    if (this.toggle !== undefined) {
+      const pane = reviewPane(realHost.panes(), realHost.focused());
+      // The same split as the cmd-shift-r key, or a close of the pane that is open.
+      const click = () => (pane === null ? realHost.run("pane.split", { direction: "right", mod: "herdr-review" }) : realHost.run("pane.close", { pane }));
+      return drawToggle(pane !== null, realHost.theme(), click);
+    }
     const t0 = this.perf.start();
     const stream = this.layout(this.model, Date.now());
     const el = draw(this.model, stream, themed(realHost.theme(), this.model), (msg) => this.dispatch(msg), { handle: this.handle, nav: this.nav, textarea: this.textarea, filter: this.filter });
@@ -191,6 +213,9 @@ export default class ReviewView extends View {
   // Bounded: set the flag and return. The watch loops end after their next wake.
   close(_cx: AsyncContext): void {
     this.closed = true;
+    if (this.toggle !== undefined) {
+      return;
+    }
     this.perf.flush();
     this.textarea?.release();
     this.textarea = null;

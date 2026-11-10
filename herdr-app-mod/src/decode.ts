@@ -361,7 +361,18 @@ const nonEmpty = (v: unknown): string | null => (typeof v === "string" && v !== 
 
 // Never throws: a field that is not what it should be is dropped.
 export function decodeProps(raw: unknown): Props {
-  return { root: nonEmpty(field(raw, "root")), target: nonEmpty(field(raw, "target")), bin: nonEmpty(field(raw, "bin")) };
+  return { root: nonEmpty(field(raw, "root")), target: nonEmpty(field(raw, "target")), bin: nonEmpty(field(raw, "bin")), toggle: field(raw, "role") === "toggle" };
+}
+
+// The tab-bar button's question: the id of the review pane in the focused tab, or null when that tab has none. A mod
+// pane in panes() carries `mod` and `tab` and no `cwd`, so decodePanes would drop it.
+export function reviewPane(panes: unknown, focus: unknown): string | null {
+  const tab = nonEmpty(field(focus, "tab"));
+  if (tab === null || !Array.isArray(panes)) {
+    return null;
+  }
+  const p: unknown = panes.find((x: unknown) => field(x, "mod") === "herdr-review" && field(x, "tab") === tab);
+  return nonEmpty(field(p, "pane"));
 }
 
 // The settings file is the user's to edit, so it is untrusted too. Never throws: text that is not JSON, or a field

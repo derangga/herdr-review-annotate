@@ -830,6 +830,19 @@ One key in `keys.json`, an object action that calls `pane.split` with the mod na
 "cmd-shift-r": {"command": "pane.split", "args": {"direction": "right", "mod": "herdr-review"}}
 ```
 
+Or the Annotate button in the tab bar (a speech bubble with `</>` in it, `icons/annotate.svg`, drawn at stroke 1.5 as the tabs mod's
+own icons are; "Review" next to "Changes" did not say the panel is for comments). The mod API has no slot there: Herdr's `tabs` mod draws Files and Changes
+itself and is read-only. So `herdr-app-mod/layouts/herdr-review.json` is a copy of Herdr's `main` layout whose
+42 px tab block becomes a row: `tabs` (weight 1) and a 92 px `review-toggle` block, this mod with props
+`role: "toggle"`. That copy of the mod draws only the button (`toggle.ts`), styled as the tabs mod's Files and
+Changes. `decode.reviewPane` finds the `herdr-review` pane of the focused tab in `panes()` (a mod pane has `mod`
+and `tab` and no `cwd`). A click closes that pane (`pane.close`), or runs the same `pane.split` as the key. The
+button is lit while the pane exists. `herdr.d.ts` does not say a mod redraws when panes change, so the button
+reads `panes()` every 500 ms and redraws when its answer changes. The panel itself is unchanged. `stage-app-mod.sh`
+copies the layout to `layouts/`, and `layout.switch {name: "herdr-review"}` shows it. The copy is never updated by
+Herdr: on a new Herdr version, copy `main` again and redo the row. Skillshare's Herdr layout
+(github.com/runkids/skillshare, `herdr/skillshare`) is where the row comes from.
+
 The object form cannot put the focused folder in `props`, so the mod finds its own root and target at `init`:
 
 1. `props().root` and `props().target` when given (a test, or a later key that carries them).

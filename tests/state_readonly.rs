@@ -47,6 +47,10 @@ impl World {
             .env("GIT_AUTHOR_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            // The machine's own git config stays out: a global core.fsmonitor starts a daemon on macOS that
+            // makes and removes files under .git while the snapshots walk it.
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .status()
             .unwrap();
         assert!(status.success(), "git {args:?}");
@@ -117,7 +121,10 @@ fn snapshot(dir: &Path, into: &mut BTreeMap<PathBuf, Vec<u8>>) {
         if path.is_dir() {
             snapshot(&path, into);
         } else {
-            into.insert(path.clone(), std::fs::read(&path).unwrap());
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))
+                .unwrap();
+            into.insert(path, bytes);
         }
     }
 }

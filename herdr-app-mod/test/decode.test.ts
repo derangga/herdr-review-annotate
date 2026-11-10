@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeFile, decodeFiles, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, decodeTheme, parseJson } from "../src/decode.ts";
+import { decodeFile, decodeFiles, decodeFocus, decodePanel, decodePanes, decodeProps, decodeState, decodeTheme, parseJson, reviewPane } from "../src/decode.ts";
 import { fixture } from "./fake-host.ts";
 
 const state = () => JSON.parse(fixture("state"));
@@ -215,9 +215,23 @@ test("a reply that is not JSON is a mismatch", () => {
 });
 
 test("props never throw and drop a bad field", () => {
-  assert.deepEqual(decodeProps({ root: "/r", target: 7, bin: "" }), { root: "/r", target: null, bin: null });
-  assert.deepEqual(decodeProps(undefined), { root: null, target: null, bin: null });
-  assert.deepEqual(decodeProps("text"), { root: null, target: null, bin: null });
+  assert.deepEqual(decodeProps({ root: "/r", target: 7, bin: "" }), { root: "/r", target: null, bin: null, toggle: false });
+  assert.deepEqual(decodeProps(undefined), { root: null, target: null, bin: null, toggle: false });
+  assert.deepEqual(decodeProps("text"), { root: null, target: null, bin: null, toggle: false });
+  assert.equal(decodeProps({ role: "toggle" }).toggle, true);
+  assert.equal(decodeProps({ role: "panel" }).toggle, false);
+});
+
+test("the tab-bar button finds the review pane of the focused tab only", () => {
+  const panes = [
+    { pane: "p1", terminal: "t1", tab: "a", cwd: "/r" },
+    { pane: "p2", terminal: null, mod: "herdr-review", tab: "b" },
+    { pane: "p3", terminal: null, mod: "files", tab: "a" },
+  ];
+  assert.equal(reviewPane(panes, { tab: "b" }), "p2");
+  assert.equal(reviewPane(panes, { tab: "a" }), null, "another mod in the tab is not the review");
+  assert.equal(reviewPane(panes, null), null);
+  assert.equal(reviewPane("nonsense", { tab: "b" }), null);
 });
 
 test("focused and panes are read loosely", () => {
