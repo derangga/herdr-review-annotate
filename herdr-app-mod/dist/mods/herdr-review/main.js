@@ -3082,7 +3082,7 @@ function editorBox(item2, m, t, dispatch, ui) {
     item2.half,
     t,
     (e) => e.pt(6).pb(6).child(
-      v_flex2().id("review-editor").h(EDITOR_H - 12).flex_none().overflow_hidden().px(10).py(6).gap(4).border_l(2).border_color(t.accent).bg(tint2(t.accent, "14")).track_focus(ui.handle).on_key_down((ev, cx) => {
+      v_flex2().id("review-editor").h(EDITOR_H - 12).max_w(CARD_W).flex_none().overflow_hidden().px(10).py(6).gap(4).border_l(2).border_color(t.accent).bg(tint2(t.accent, "14")).track_focus(ui.handle).on_key_down((ev, cx) => {
         const msg = editorKey(ev.keystroke, ta.value());
         if (msg !== null) {
           dispatch(msg);

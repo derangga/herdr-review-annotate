@@ -339,6 +339,7 @@ function editorBox(item: EditorItem, m: Model, t: Theme, dispatch: Dispatch, ui:
         v_flex()
           .id("review-editor")
           .h(EDITOR_H - 12)
+          .max_w(CARD_W)
           .flex_none()
           .overflow_hidden()
           .px(10)
