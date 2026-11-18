@@ -197,7 +197,7 @@ export default class ReviewView extends View {
       const pane = reviewPane(realHost.panes(), realHost.focused());
       // The same split as the cmd-shift-r key, or a close of the pane that is open.
       const click = () => (pane === null ? realHost.run("pane.split", { direction: "right", mod: "herdr-review" }) : realHost.run("pane.close", { pane }));
-      return drawToggle(pane !== null, realHost.theme(), click);
+      return drawToggle(pane !== null, realHost.theme(), click, decodeProps(realHost.props()).underline);
     }
     const t0 = this.perf.start();
     const stream = this.layout(this.model, Date.now());

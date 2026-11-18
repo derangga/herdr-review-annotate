@@ -361,7 +361,13 @@ const nonEmpty = (v: unknown): string | null => (typeof v === "string" && v !== 
 
 // Never throws: a field that is not what it should be is dropped.
 export function decodeProps(raw: unknown): Props {
-  return { root: nonEmpty(field(raw, "root")), target: nonEmpty(field(raw, "target")), bin: nonEmpty(field(raw, "bin")), toggle: field(raw, "role") === "toggle" };
+  return {
+    root: nonEmpty(field(raw, "root")),
+    target: nonEmpty(field(raw, "target")),
+    bin: nonEmpty(field(raw, "bin")),
+    toggle: field(raw, "role") === "toggle",
+    underline: field(raw, "underline") !== false,
+  };
 }
 
 // The tab-bar button's question: the id of the review pane in the focused tab, or null when that tab has none. A mod

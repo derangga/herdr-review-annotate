@@ -113,7 +113,9 @@ export type Colors = Record<string, `#${string}`>;
 export type ThemeReply = { schema: 1; gui: "app" | "plugin"; colors: Colors | null; warnings: string[] };
 
 // `toggle`: this copy is the tab-bar button (props `role: "toggle"`), not the panel.
-export type Props = { root: string | null; target: string | null; bin: string | null; toggle: boolean };
+// `underline`: the button's bottom border, which continues a tab bar's divider; props `underline: false` drop it
+// for layouts whose tab bar is a rounded card with no divider.
+export type Props = { root: string | null; target: string | null; bin: string | null; toggle: boolean; underline: boolean };
 
 // What the host says about the focused terminal and the panes, after decoding.
 export type Focus = { tab: string | null; cwd: string | null; terminal: string | null; agent: boolean };

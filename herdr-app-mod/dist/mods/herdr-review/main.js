@@ -307,7 +307,13 @@ function field(v, k) {
 }
 var nonEmpty = (v) => typeof v === "string" && v !== "" ? v : null;
 function decodeProps(raw) {
-  return { root: nonEmpty(field(raw, "root")), target: nonEmpty(field(raw, "target")), bin: nonEmpty(field(raw, "bin")), toggle: field(raw, "role") === "toggle" };
+  return {
+    root: nonEmpty(field(raw, "root")),
+    target: nonEmpty(field(raw, "target")),
+    bin: nonEmpty(field(raw, "bin")),
+    toggle: field(raw, "role") === "toggle",
+    underline: field(raw, "underline") !== false
+  };
 }
 function reviewPane(panes2, focus) {
   const tab = nonEmpty(field(focus, "tab"));
@@ -356,8 +362,8 @@ function decodePanes(raw) {
 // src/toggle.ts
 import { svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-function drawToggle(on, t, click) {
-  return h_flex().size_full().pr(10).items_center().bg(t.chrome).border_b(1).border_color(t.border).child(
+function drawToggle(on, t, click, underline = true) {
+  return h_flex().size_full().pr(10).items_center().bg(t.chrome).when(underline, (el) => el.border_b(1).border_color(t.border)).child(
     h_flex().id("toggle-review").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover)).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(click).child(svg("mods/herdr-review/icons/annotate.svg").size(14)).child("Annotate")
   );
 }
@@ -3521,7 +3527,7 @@ var ReviewView = class extends View {
     if (this.toggle !== void 0) {
       const pane = reviewPane(realHost.panes(), realHost.focused());
       const click = () => pane === null ? realHost.run("pane.split", { direction: "right", mod: "herdr-review" }) : realHost.run("pane.close", { pane });
-      return drawToggle(pane !== null, realHost.theme(), click);
+      return drawToggle(pane !== null, realHost.theme(), click, decodeProps(realHost.props()).underline);
     }
     const t0 = this.perf.start();
     const stream = this.layout(this.model, Date.now());

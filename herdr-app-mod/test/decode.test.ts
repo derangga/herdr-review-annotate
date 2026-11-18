@@ -215,11 +215,14 @@ test("a reply that is not JSON is a mismatch", () => {
 });
 
 test("props never throw and drop a bad field", () => {
-  assert.deepEqual(decodeProps({ root: "/r", target: 7, bin: "" }), { root: "/r", target: null, bin: null, toggle: false });
-  assert.deepEqual(decodeProps(undefined), { root: null, target: null, bin: null, toggle: false });
-  assert.deepEqual(decodeProps("text"), { root: null, target: null, bin: null, toggle: false });
+  assert.deepEqual(decodeProps({ root: "/r", target: 7, bin: "" }), { root: "/r", target: null, bin: null, toggle: false, underline: true });
+  assert.deepEqual(decodeProps(undefined), { root: null, target: null, bin: null, toggle: false, underline: true });
+  assert.deepEqual(decodeProps("text"), { root: null, target: null, bin: null, toggle: false, underline: true });
   assert.equal(decodeProps({ role: "toggle" }).toggle, true);
   assert.equal(decodeProps({ role: "panel" }).toggle, false);
+  // Only an explicit false drops the button's divider; anything else keeps it.
+  assert.equal(decodeProps({ role: "toggle", underline: false }).underline, false);
+  assert.equal(decodeProps({ role: "toggle", underline: "no" }).underline, true);
 });
 
 test("the tab-bar button finds the review pane of the focused tab only", () => {

@@ -4,14 +4,13 @@ import { svg } from "gpui-kit";
 import type { Element } from "gpui-kit";
 import { h_flex } from "gpui-base";
 
-export function drawToggle(on: boolean, t: Record<string, `#${string}`>, click: () => void): Element {
+export function drawToggle(on: boolean, t: Record<string, `#${string}`>, click: () => void, underline = true): Element {
   return h_flex()
     .size_full()
     .pr(10)
     .items_center()
     .bg(t.chrome)
-    .border_b(1)
-    .border_color(t.border)
+    .when(underline, (el) => el.border_b(1).border_color(t.border))
     .child(
       h_flex()
         .id("toggle-review")
